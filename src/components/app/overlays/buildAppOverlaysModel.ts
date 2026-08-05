@@ -135,8 +135,8 @@ export const buildAppOverlaysModel = ({
     moveQueueSongToNext,
     queueCoverUrl,
 }: BuildAppOverlaysModelParams): AppOverlaysModel => ({
-    // 控制栏的播放列表按钮在所有视图都落到这里，播放页也不例外。
-    queuePopover: {
+    // 播放页的队列在右下角面板里，浮层只服务其余视图，两者不会同时可见。
+    queuePopover: currentView === 'player' ? null : {
         isOpen: isQueuePopoverOpen,
         onClose: closeQueuePopover,
         playQueue,

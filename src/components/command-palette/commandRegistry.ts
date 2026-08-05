@@ -11,6 +11,7 @@ import type {
 } from './types';
 import type { SearchSource } from '../../stores/useSearchNavigationStore';
 import { getProviderSongMetadata } from '../../services/onlineMusic/songMetadata';
+import { buildQueueSongSearchText as buildQueueSearchText, normalizeQueueSearchText } from '../../utils/queueSearch';
 import { ListMusic, Pause, Play, Repeat, Search, Shuffle, SkipBack, SkipForward } from 'lucide-react';
 
 // src/components/command-palette/commandRegistry.ts
@@ -18,22 +19,13 @@ import { ListMusic, Pause, Play, Repeat, Search, Shuffle, SkipBack, SkipForward 
 
 const MAX_COMMAND_MATCHES = 10;
 
-const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
+const normalize = normalizeQueueSearchText;
 
 const getSongArtistLabel = (song: SongResult) => {
     return getProviderSongMetadata(song).artists.map(artist => artist.name).filter(Boolean).join(', ');
 };
 
 const getSongAlbumLabel = (song: SongResult) => getProviderSongMetadata(song).album?.name || '';
-
-const buildQueueSearchText = (song: SongResult, index: number) => [
-    String(index + 1),
-    song.name,
-    getSongArtistLabel(song),
-    getSongAlbumLabel(song),
-    ...getProviderSongMetadata(song).aliases,
-    ...getProviderSongMetadata(song).translatedNames,
-].filter(Boolean).join(' ');
 
 const buildQueueSongDescription = (song: SongResult, index: number, context: CommandPaletteContext) => {
     const metadata = [getSongArtistLabel(song), getSongAlbumLabel(song)].filter(Boolean).join(' · ');

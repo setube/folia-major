@@ -1672,6 +1672,8 @@ export default {
     "moveToEnd": "移到队尾",
     "playNext": "下一首播放",
     "empty": "播放列表为空",
+    "searchPlaceholder": "搜索播放列表",
+    "searchEmpty": "没有匹配的歌曲",
     "title": "播放队列",
     "shuffle": "打乱队列"
   },

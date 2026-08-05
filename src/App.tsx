@@ -2735,11 +2735,31 @@ export default function App() {
     // 控制栏的"播放列表"按钮：已停在队列页则收起面板，否则打开并切到队列页
     const closeQueuePopover = useCallback(() => setIsQueuePopoverOpen(false), []);
 
-    // 控制栏的播放列表按钮统一落到 QueuePopover：右下角那块面板还挂着设置入口与标签切换，
-    // 不该被一个"播放列表"按钮顺带唤起。播放页也走同一条路径，各视图行为一致。
+    // 进播放页时收起浮层：那边它不再渲染，开关若留在 true，返回其它视图会莫名弹出来。
+    useEffect(() => {
+        if (currentView === 'player') {
+            setIsQueuePopoverOpen(false);
+        }
+    }, [currentView]);
+
+    // 播放列表按视图分流：播放页交给右下角面板的队列标签（那里本来就是它的位置），
+    // 其余视图 UnifiedPanel 根本没挂载，用独立的 QueuePopover 承载。
+    // 两个容器互斥，任何时候只开一个。
     const toggleQueuePanel = useCallback(() => {
+        if (currentView === 'player') {
+            setIsQueuePopoverOpen(false);
+            if (isPanelOpen && panelTab === 'queue') {
+                setIsPanelOpen(false);
+                return;
+            }
+            setPanelTab('queue');
+            setIsPanelOpen(true);
+            return;
+        }
+
+        setIsPanelOpen(false);
         setIsQueuePopoverOpen(previous => !previous);
-    }, []);
+    }, [currentView, isPanelOpen, panelTab]);
     // 控制栏点击歌手名：解析成在线艺术家详情并跳转
     const openCurrentSongArtist = useCallback((artistIndex: number) => {
         const artist = currentSong?.artists?.[artistIndex];

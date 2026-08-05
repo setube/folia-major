@@ -1671,6 +1671,8 @@ export default {
     "moveToEnd": "Move to end",
     "playNext": "Play next",
     "empty": "Queue is empty",
+    "searchPlaceholder": "Search the queue",
+    "searchEmpty": "No matching tracks",
     "title": "Play Queue",
     "shuffle": "Shuffle Queue"
   },
