@@ -24,6 +24,7 @@ import type { LyricData } from '../../types';
 import { selectSettingsUiSnapshot, type SettingsSubviewId, type VisualizerSettingsSection, useSettingsUiStore } from '../../stores/useSettingsUiStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { ObsBrowserSourceStatus } from '../../types/obsBrowserSource';
+import { getAiProviderLabel, type AiProviderCredentialMap } from '../../services/aiProviders';
 import { getWebAiProvider } from '../../services/runtimeConfig';
 
 const DEFAULT_OPENAI_TEMPERATURE = '0.7';
@@ -382,6 +383,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         OPENAI_API_MODEL: '',
         OPENAI_API_TEMPERATURE: DEFAULT_OPENAI_TEMPERATURE,
         AI_PROVIDER: 'gemini',
+        AI_PROVIDER_CREDENTIALS: {} as AiProviderCredentialMap,
         USE_SYSTEM_PROXY_FOR_AI: false,
         ENABLE_UPDATE_CHECK: true,
         ENABLE_AUTO_UPDATE: false,
@@ -397,7 +399,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const [cacheDirectoryStatus, setCacheDirectoryStatus] = useState<'idle' | 'choosing'>('idle');
     const [stageActionStatus, setStageActionStatus] = useState<'idle' | 'regenerating'>('idle');
     const configuredAiProvider = isElectron ? electronSettings.AI_PROVIDER : getWebAiProvider();
-    const aiServiceLabel = configuredAiProvider === 'openai' ? 'OpenAI Compatible' : 'Google Gemini';
+    const aiServiceLabel = getAiProviderLabel(configuredAiProvider);
     const showQuarkDownload = electronSettings.UPDATE_CHANNEL === 'realeco';
     useEffect(() => {
         if ((window as any).electron) {
@@ -520,6 +522,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             await (window as any).electron.saveSettings('OPENAI_API_MODEL', electronSettings.OPENAI_API_MODEL);
             await (window as any).electron.saveSettings('OPENAI_API_TEMPERATURE', temperature);
             await (window as any).electron.saveSettings('AI_PROVIDER', electronSettings.AI_PROVIDER);
+            await (window as any).electron.saveSettings('AI_PROVIDER_CREDENTIALS', electronSettings.AI_PROVIDER_CREDENTIALS);
             await (window as any).electron.saveSettings('USE_SYSTEM_PROXY_FOR_AI', electronSettings.USE_SYSTEM_PROXY_FOR_AI);
             await (window as any).electron.saveSettings('ENABLE_UPDATE_CHECK', electronSettings.ENABLE_UPDATE_CHECK);
             await (window as any).electron.saveSettings('ENABLE_AUTO_UPDATE', electronSettings.ENABLE_AUTO_UPDATE);
@@ -1318,7 +1321,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                             >
                                                 {t('help.madeBy') || "Made by"}
                                             </button>{' '}
-                                            <a href="https://github.com/chthollyphile/folia-major" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors underline decoration-white/30 hover:decoration-white">chthollyphile/folia-major</a>
+                                            <a href="https://github.com/setube/folia-major" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors underline decoration-white/30 hover:decoration-white">setube/folia-major</a>
                                         </p>
                                     </div>
                                     <div className="flex flex-col items-center gap-2 mt-6 mb-2 text-xs font-mono text-center">

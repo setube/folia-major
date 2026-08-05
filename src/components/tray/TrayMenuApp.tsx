@@ -311,6 +311,9 @@ const TrayMenuApp: React.FC = () => {
                 {renderSeparator()}
 
                 {renderItem(Settings, t('tray.settings'), 'open-settings')}
+
+                {renderSeparator()}
+
                 {renderItem(Power, t('tray.quit'), 'quit')}
             </div>
         </div>

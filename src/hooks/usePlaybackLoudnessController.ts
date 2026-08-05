@@ -9,6 +9,7 @@ import {
     resolveLoudnessNormalization,
 } from '../utils/loudnessNormalization';
 import type { LoudnessAccumulator } from '../utils/loudnessNormalization';
+import { setCachedLoudnessGain } from '../services/loudnessCache';
 
 // src/hooks/usePlaybackLoudnessController.ts
 // 淡入淡出与实时音量均衡的运行时：两者都只写 AudioParam 与 ref，
@@ -131,20 +132,43 @@ export function usePlaybackLoudnessController({
         rampToTargetVolume(scene);
     }, [rampToTargetVolume]);
 
-    // 换曲重置测量窗口：上一首的统计对这一首没有意义。
-    useEffect(() => {
-        accumulatorRef.current = createLoudnessAccumulator();
-        measuredSongKeyRef.current = null;
-        measuredGainLinearRef.current = 1;
-    }, [currentSongKey, measuredGainLinearRef]);
-
-    // 实时响度测量：只在 auto 模式、当前曲目无标签、且确实在播放时跑。
-    useEffect(() => {
-        if (playerState !== PlayerState.PLAYING || !needsLoudnessMeasurementRef.current) {
+    // 把上一首累计到的样本结算进缓存。测量结果**不**作用于本次播放 ——
+    // 播到一半改增益正是"忽大忽小"的来源，同一首歌下次播放才从第 0 秒带上它。
+    const flushMeasurement = useCallback((songKey: string | null) => {
+        if (!songKey || accumulatorRef.current.sampleCount === 0) {
             return;
         }
 
-        if (measuredSongKeyRef.current === currentSongKey) {
+        const normalization = resolveLoudnessNormalization(accumulatorRef.current);
+        accumulatorRef.current = createLoudnessAccumulator();
+        if (!normalization) {
+            return;
+        }
+
+        setCachedLoudnessGain(songKey, normalization);
+        console.log(
+            `[AudioContext] Loudness learned ${songKey}: measured=${normalization.measuredDbfs.toFixed(1)}dBFS `
+            + `gain=${normalization.effectiveGainDb.toFixed(2)}dB (peak=${normalization.peak.toFixed(3)}), `
+            + '将在下次播放该曲时生效',
+        );
+    }, []);
+
+    // 换曲时先结算上一首，再清空窗口。measuredGainLinearRef 由音频桥在换曲时
+    // 从缓存里取，这里不要动它，否则会把刚读出来的增益覆盖成 1。
+    useEffect(() => {
+        const previousKey = measuredSongKeyRef.current;
+        measuredSongKeyRef.current = currentSongKey;
+        if (previousKey && previousKey !== currentSongKey) {
+            flushMeasurement(previousKey);
+        } else {
+            accumulatorRef.current = createLoudnessAccumulator();
+        }
+    }, [currentSongKey, flushMeasurement]);
+
+    // 实时响度测量：只在 auto 模式、当前曲目无标签、且确实在播放时跑。
+    // 采样贯穿整首歌而不是只取开头几秒 —— 前奏往往远比副歌安静，只测开头会系统性偏高。
+    useEffect(() => {
+        if (playerState !== PlayerState.PLAYING || !needsLoudnessMeasurementRef.current) {
             return;
         }
 
@@ -162,26 +186,13 @@ export function usePlaybackLoudnessController({
             const buffer = measurementSampleBufferRef.current;
             analyser.getFloatTimeDomainData(buffer);
             accumulatorRef.current = pushLoudnessBlock(accumulatorRef.current, buffer);
-
-            const normalization = resolveLoudnessNormalization(accumulatorRef.current);
-            if (!normalization) {
-                return;
-            }
-
-            measuredSongKeyRef.current = currentSongKey;
-            measuredGainLinearRef.current = normalization.linearGain;
-            console.log(
-                `[AudioContext] Loudness measured=${normalization.measuredDbfs.toFixed(1)}dBFS `
-                + `gain=${normalization.effectiveGainDb.toFixed(2)}dB (raw=${normalization.gainDb.toFixed(2)}dB, `
-                + `peak=${normalization.peak.toFixed(3)})`,
-            );
-            // 一次性平滑接上，别让电平突然跳一档。
-            syncOutputGain(getTargetPlaybackVolume(), 0.35);
-            window.clearInterval(timer);
         }, LOUDNESS_SAMPLE_INTERVAL_MS);
 
         return () => window.clearInterval(timer);
-    }, [analyserRef, currentSongKey, getTargetPlaybackVolume, measuredGainLinearRef, needsLoudnessMeasurementRef, playerState, syncOutputGain]);
+    }, [analyserRef, needsLoudnessMeasurementRef, playerState]);
+
+    // 卸载前把手上这首也结算掉，不然关窗前听的那首白测了。
+    useEffect(() => () => flushMeasurement(measuredSongKeyRef.current), [flushMeasurement]);
 
     useEffect(() => clearPendingPause, [clearPendingPause]);
 

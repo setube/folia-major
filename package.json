@@ -49,7 +49,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "chthollyphile",
+        "owner": "setube",
         "repo": "folia-major"
       }
     ],

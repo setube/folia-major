@@ -8,6 +8,8 @@ import { hasCachedSongAudio } from '../services/onlineMusic/resourceCache';
 import { getSongResourceCacheKey } from '../services/onlineMusic/resourceKeys';
 import { resolveNavidromePlaybackCarrier } from '../utils/appPlaybackGuards';
 import { calculateReplayGain } from '../utils/replayGain';
+import { getCachedLoudnessGain } from '../services/loudnessCache';
+import { getPlaybackSongKey } from '../utils/appPlaybackGuards';
 import { saveToCache } from '../services/db';
 
 // src/hooks/usePlaybackAudioBridge.ts
@@ -28,6 +30,7 @@ type UsePlaybackAudioBridgeParams = {
     gainNodeRef: MutableRefObject<GainNode | null>;
     replayGainLinearRef: MutableRefObject<number>;
     needsLoudnessMeasurementRef: MutableRefObject<boolean>;
+    measuredGainLinearRef: MutableRefObject<number>;
     sourceRef: MutableRefObject<MediaElementAudioSourceNode | null>;
     setPlayerState: React.Dispatch<React.SetStateAction<PlayerState>>;
     setStatusMsg: React.Dispatch<React.SetStateAction<StatusMessage | null>>;
@@ -58,6 +61,7 @@ export function usePlaybackAudioBridge({
     gainNodeRef,
     replayGainLinearRef,
     needsLoudnessMeasurementRef,
+    measuredGainLinearRef,
     sourceRef,
     setPlayerState,
     setStatusMsg,
@@ -103,7 +107,13 @@ export function usePlaybackAudioBridge({
         const calculation = calculateReplayGain(replayGainInfo, replayGainMode);
         replayGainLinearRef.current = calculation.linearGain;
         // auto 模式且这首歌没带 ReplayGain 标签时，才启动实时响度测量兜底。
-        needsLoudnessMeasurementRef.current = replayGainMode === 'auto' && !calculation.hasTagGain;
+        const needsMeasurement = replayGainMode === 'auto' && !calculation.hasTagGain;
+        needsLoudnessMeasurementRef.current = needsMeasurement;
+        // 只用之前学到的结果，且在起播前就定下来，全程不再变动 ——
+        // 播到一半改增益正是"一首接一首忽大忽小"的来源。
+        measuredGainLinearRef.current = needsMeasurement
+            ? (getCachedLoudnessGain(getPlaybackSongKey(currentSong)) ?? 1)
+            : 1;
 
         try {
             syncOutputGain(getTargetPlaybackVolume(), 0.1);
@@ -122,7 +132,7 @@ export function usePlaybackAudioBridge({
         } catch (error) {
             console.warn('[AudioContext] Failed to apply ReplayGain', error);
         }
-    }, [audioContextRef, currentSong, gainNodeRef, getTargetPlaybackVolume, localSongs, needsLoudnessMeasurementRef, replayGainLinearRef, replayGainMode, syncOutputGain]);
+    }, [audioContextRef, currentSong, gainNodeRef, getTargetPlaybackVolume, localSongs, measuredGainLinearRef, needsLoudnessMeasurementRef, replayGainLinearRef, replayGainMode, syncOutputGain]);
 
     const setupAudioAnalyzer = useCallback(() => {
         if (!audioRef.current || sourceRef.current) return;

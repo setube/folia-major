@@ -8,7 +8,7 @@ import type { Theme } from '../../types';
 
 const FOLIA_GUIDE_URL = 'https://folia-site.cielaniska.top/guide/llm-routing';
 const FOLIA_DOCS_URL = 'https://folia-site.cielaniska.top/guide/';
-const FOLIA_REPOSITORY_URL = 'https://github.com/chthollyphile/folia-major';
+const FOLIA_REPOSITORY_URL = 'https://github.com/setube/folia-major';
 
 type AiHelpPromptModalProps = {
     isOpen: boolean;

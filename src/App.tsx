@@ -123,6 +123,8 @@ export default function App() {
     const [statusMsg, setStatusMsg] = useState<StatusMessage | null>(null);
     const [isPanelOpen, setIsPanelOpen] = useState(false);
     const [isPlayerPanelGuideHotspotActive, setIsPlayerPanelGuideHotspotActive] = useState(false);
+    // 非播放页的播放列表浮层开关。切回播放页时收起，避免两个容器同时开着。
+    const [isQueuePopoverOpen, setIsQueuePopoverOpen] = useState(false);
     useElectronNeteaseApiStatus(setStatusMsg, t);
 
     // Auto-close the player panel when leaving the player view
@@ -1420,6 +1422,7 @@ export default function App() {
         gainNodeRef,
         replayGainLinearRef,
         needsLoudnessMeasurementRef,
+        measuredGainLinearRef,
         sourceRef,
         setPlayerState,
         setStatusMsg,
@@ -2716,14 +2719,13 @@ export default function App() {
         navigateDirectHome,
     ]);
     // 控制栏的"播放列表"按钮：已停在队列页则收起面板，否则打开并切到队列页
+    const closeQueuePopover = useCallback(() => setIsQueuePopoverOpen(false), []);
+
+    // 控制栏的播放列表按钮统一落到 QueuePopover：右下角那块面板还挂着设置入口与标签切换，
+    // 不该被一个"播放列表"按钮顺带唤起。播放页也走同一条路径，各视图行为一致。
     const toggleQueuePanel = useCallback(() => {
-        if (isPanelOpen && panelTab === 'queue') {
-            setIsPanelOpen(false);
-            return;
-        }
-        setPanelTab('queue');
-        setIsPanelOpen(true);
-    }, [isPanelOpen, panelTab]);
+        setIsQueuePopoverOpen(previous => !previous);
+    }, []);
     // 控制栏点击歌手名：解析成在线艺术家详情并跳转
     const openCurrentSongArtist = useCallback((artistIndex: number) => {
         const artist = currentSong?.artists?.[artistIndex];
@@ -2778,8 +2780,26 @@ export default function App() {
         onSeekMainAudio: seekMainAudio,
         onStagePlayerSeek: publishStagePlayerPlaybackUpdate,
         noTrackText: t('ui.noTrack'),
+        isQueuePopoverOpen,
+        closeQueuePopover,
+        playQueue,
+        playSong,
+        shuffleQueue,
+        removeQueueSong,
+        moveQueueSongToEnd,
+        moveQueueSongToNext,
+        queueCoverUrl: coverUrl,
     }), [
         activePlaybackContext,
+        closeQueuePopover,
+        coverUrl,
+        isQueuePopoverOpen,
+        moveQueueSongToEnd,
+        moveQueueSongToNext,
+        playQueue,
+        playSong,
+        removeQueueSong,
+        shuffleQueue,
         audioSrc,
         canToggleCurrentPlayback,
         closeSearchView,

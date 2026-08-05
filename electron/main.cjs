@@ -12,6 +12,7 @@ const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
 const { LAUNCH_AT_LOGIN_MODES, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
+const { getAiProviderAdapter, pickProviderCredentials, resolveAdapterEndpoint, resolveAdapterModel, stripJsonFence } = require('./aiProviderAdapters.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
 const useLinuxGraphicsDebugMode = process.env.ELECTRON_LINUX_PACKAGED_GRAPHICS === 'true';
 const isAppImageRuntime =
@@ -187,12 +188,13 @@ const REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY = 'REMOTE_CONTROL_SKIP_TASKBAR';
 const MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY = 'MAIN_WINDOW_ALWAYS_ON_TOP';
 const TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY = 'TRANSPARENT_PLAYER_BACKGROUND';
 const VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY = 'VOICE_INPUT_PAUSE_ENABLED';
+const AI_PROVIDER_CREDENTIALS_SETTING_KEY = 'AI_PROVIDER_CREDENTIALS';
 
 const DEFAULT_STAGE_API_PORT = 32107;
 const DEFAULT_OBS_BROWSER_SOURCE_PORT = 32108;
-const FOLIA_RELEASES_URL = 'https://github.com/chthollyphile/folia-major/releases';
+const FOLIA_RELEASES_URL = 'https://github.com/setube/folia-major/releases';
 const FOLIA_GITHUB_REPOSITORY = {
-  owner: 'chthollyphile',
+  owner: 'setube',
   repo: 'folia-major',
 };
 const WINDOWS_APP_USER_MODEL_ID = 'top.izuna.foliamajor';
@@ -3881,13 +3883,20 @@ const TRAY_MENU_ACTIONS = {
       mainWindow.hide();
     }
   },
+  // 最小化指的是"收进任务栏"，不是"收进托盘"：窗口若正处于隐藏态（例如刚从 mini 模式过来），
+  // 必须先 show() 让它重新出现在任务栏，再 minimize()，否则等于什么都没发生。
   'display-minimize': () => {
-    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-      mainWindow.minimize();
-    }
     if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
-      remoteControlWindow.minimize();
+      remoteControlWindow.close();
     }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    if (!mainWindow.isVisible()) {
+      mainWindow.showInactive();
+    }
+    mainWindow.minimize();
+    refreshTrayMenu();
   },
   quit: () => app.quit(),
 };
@@ -4224,44 +4233,58 @@ ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
 
     let dualTheme = null;
 
-    if (provider === 'openai') {
-      const apiKey = store.get('OPENAI_API_KEY');
-      const apiUrl = normalizeOpenAIChatCompletionsUrl(store.get('OPENAI_API_URL'));
-      const model = resolveOpenAICompatibleModel(apiUrl, store.get('OPENAI_API_MODEL'));
+    // Gemini 走原生 SDK，其余供应商（OpenAI / Claude / Grok / DeepSeek / Kimi / Qwen）
+    // 都提供 OpenAI 兼容的 /chat/completions，共用同一条链路；
+    // 具体地址与模型由设置页选预设时写进 OPENAI_API_URL / OPENAI_API_MODEL。
+    if (provider !== 'gemini') {
+      const adapter = getAiProviderAdapter(provider);
+      // 每家凭据独立存放，切换供应商不会互相冲掉；openai 回落到历史扁平键。
+      const credentials = pickProviderCredentials(
+        store.get(AI_PROVIDER_CREDENTIALS_SETTING_KEY),
+        provider,
+        {
+          apiKey: store.get('OPENAI_API_KEY'),
+          apiUrl: store.get('OPENAI_API_URL'),
+          apiModel: store.get('OPENAI_API_MODEL'),
+        },
+      );
+      const apiKey = credentials.apiKey;
+      const endpoint = resolveAdapterEndpoint(adapter, credentials.apiUrl);
+      const model = resolveAdapterModel(adapter, credentials.apiModel);
       const temperature = resolveOpenAICompatibleTemperature(store.get('OPENAI_API_TEMPERATURE'));
-      const openAICompatibleProvider = detectOpenAICompatibleProvider(apiUrl, model);
       const systemPrompt = buildThemeSystemPrompt(true);
       const sourcePrompt = buildThemeSourcePrompt(snippet, isPureMusic, songTitle);
 
       if (!apiKey) {
-        throw new Error("OPENAI_API_KEY is not configured in settings");
+        throw new Error(`${adapter.label} API key is not configured in settings`);
       }
 
-      const response = await customFetch(apiUrl, {
+      const response = await customFetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(buildOpenAICompatibleRequestBody(model, openAICompatibleProvider, systemPrompt, sourcePrompt, temperature)),
+        headers: adapter.buildHeaders(apiKey),
+        body: JSON.stringify(adapter.buildRequestBody({
+          model,
+          systemPrompt,
+          sourcePrompt,
+          temperature,
+          jsonSchema: THEME_JSON_SCHEMA,
+          jsonSchemaName: THEME_JSON_SCHEMA_NAME,
+        })),
       });
 
       if (!response.ok) {
         throw new Error(await formatOpenAICompatibleError(response));
       }
 
-      const data = await response.json();
-      const content = extractResponseContentText(data.choices[0]?.message);
+      const content = adapter.extractText(await response.json());
       if (!content) throw new Error("Failed to generate theme JSON");
 
-      let jsonStr = content.trim();
-      if (jsonStr.startsWith('```')) {
-        jsonStr = jsonStr.replace(/^```(json)?\n/, '').replace(/\n```$/, '');
-      }
-      dualTheme = sanitizeGeneratedDualTheme(JSON.parse(jsonStr));
+      dualTheme = sanitizeGeneratedDualTheme(JSON.parse(stripJsonFence(content)));
 
-      dualTheme.light.provider = 'OpenAI Compatible (Local)';
-      dualTheme.dark.provider = 'OpenAI Compatible (Local)';
+      // 主题卡片上标出实际用了哪家，混用多个供应商时才分得清结果来自谁。
+      const providerLabel = `${adapter.label} (Local)`;
+      dualTheme.light.provider = providerLabel;
+      dualTheme.dark.provider = providerLabel;
 
     } else {
       const apiKey = store.get('GEMINI_API_KEY');

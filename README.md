@@ -21,7 +21,7 @@ Lyrics Reimagined // 辞曲新境
 
 上游项目是一个以全屏沉浸式歌词播放为核心的音乐播放器，支持网易云、酷狗、Navidrome 和本地音乐库，通过智能歌词匹配、AI 生成配色主题以及多种全屏歌词动画提供听歌体验。核心功能与架构均来自上游，本仓库仅在其之上做增量修改。
 
-本仓库保留了上游的完整提交历史，二次开发的改动为 [`c1d2dd3`](https://github.com/setube/folia-major-setube/commit/c1d2dd3) 及其之后的提交。
+本仓库保留了上游的完整提交历史，二次开发的改动为 [`c1d2dd3`](https://github.com/setube/folia-major/commit/c1d2dd3) 及其之后的提交。
 
 > [!IMPORTANT]
 > 本仓库与上游项目**没有隶属关系**，并非官方分支，请勿向上游反馈本仓库引入的问题。

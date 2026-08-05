@@ -255,6 +255,9 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
                     disabled={!onToggleQueue}
                     aria-label={t('player.controls.queue')}
                     title={t('player.controls.queue')}
+                    // 标记给 QueuePopover 的外点关闭用：这颗按钮自己会 toggle，
+                    // 不打标记的话浮层会先被"点到外面"关掉，再被按钮打开，等于点了没反应。
+                    data-queue-popover-trigger="true"
                     className={`${ICON_BUTTON_CLASS} opacity-40 hover:opacity-100 hover:bg-(--control-hover-bg) disabled:opacity-20`}
                     style={withHoverVar(tokens.hoverBackground, { color: primaryColor })}
                 >

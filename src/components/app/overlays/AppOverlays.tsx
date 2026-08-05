@@ -1,5 +1,6 @@
 import React from 'react';
 import FloatingPlayerControls from '../../FloatingPlayerControls';
+import QueuePopover from '../../player-controls/QueuePopover';
 import SearchWorkspace from '../search/SearchWorkspace';
 import DevDebugOverlay from '../../DevDebugOverlay';
 import type { AppOverlaysModel } from './buildAppOverlaysModel';
@@ -14,6 +15,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({ model }) => {
         searchOverlay,
         debugOverlay,
         floatingControls,
+        queuePopover,
     } = model;
 
     return (
@@ -23,6 +25,8 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({ model }) => {
             {debugOverlay && <DevDebugOverlay {...debugOverlay} />}
 
             {floatingControls && <FloatingPlayerControls {...floatingControls} />}
+
+            {queuePopover && <QueuePopover {...queuePopover} />}
         </>
     );
 };

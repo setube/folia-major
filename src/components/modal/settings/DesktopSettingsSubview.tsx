@@ -20,6 +20,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { CloseMainPanelAction, LaunchAtLoginMode, Theme } from '../../../types';
 import { CustomSelect } from '../../shared/CustomSelect';
+import { AI_PROVIDER_PRESETS, getAiProviderLabel, getAiProviderPreset, isOpenAiCompatibleProvider, readAiProviderCredentials, writeAiProviderCredentials, type AiProviderCredentialMap, type AiProviderCredentials, type AiProviderPreset } from '../../../services/aiProviders';
 
 // src/components/modal/settings/DesktopSettingsSubview.tsx
 // Desktop-only tray, update, and AI settings separated from the global settings modal.
@@ -31,6 +32,7 @@ type ElectronSettingsState = {
     OPENAI_API_MODEL: string;
     OPENAI_API_TEMPERATURE: string;
     AI_PROVIDER: string;
+    AI_PROVIDER_CREDENTIALS: AiProviderCredentialMap;
     USE_SYSTEM_PROXY_FOR_AI: boolean;
     ENABLE_UPDATE_CHECK: boolean;
     ENABLE_AUTO_UPDATE: boolean;
@@ -148,6 +150,45 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
     if (!isElectron) {
         return null;
     }
+
+    const aiProviderAccentColor = theme?.accentColor || (isDaylight ? '#44403c' : '#f4f4f5');
+
+    const activeAiProvider = getAiProviderPreset(electronSettings.AI_PROVIDER);
+    const activeAiProviderLabel = getAiProviderLabel(electronSettings.AI_PROVIDER);
+    const activeAiProviderConsoleUrl = activeAiProvider?.consoleUrl;
+    const activeAiCredentials = readAiProviderCredentials(
+        electronSettings.AI_PROVIDER_CREDENTIALS,
+        electronSettings.AI_PROVIDER,
+    );
+
+    // 每家凭据分开存，切换供应商不会把上一家的 Key 冲掉，也不用来回重填。
+    const updateActiveAiCredentials = (patch: Partial<AiProviderCredentials>) => {
+        setElectronSettings({
+            ...electronSettings,
+            AI_PROVIDER_CREDENTIALS: writeAiProviderCredentials(
+                electronSettings.AI_PROVIDER_CREDENTIALS,
+                electronSettings.AI_PROVIDER,
+                patch,
+            ),
+        });
+    };
+
+    const handleSelectAiProvider = (preset: AiProviderPreset) => {
+        const existing = readAiProviderCredentials(electronSettings.AI_PROVIDER_CREDENTIALS, preset.id);
+        setElectronSettings({
+            ...electronSettings,
+            AI_PROVIDER: preset.id,
+            // 只补空字段：在这家下换过模型的人，点回该预设不该被重置。
+            AI_PROVIDER_CREDENTIALS: writeAiProviderCredentials(
+                electronSettings.AI_PROVIDER_CREDENTIALS,
+                preset.id,
+                {
+                    apiUrl: existing.apiUrl || preset.apiUrl || '',
+                    apiModel: existing.apiModel || preset.defaultModel || '',
+                },
+            ),
+        });
+    };
 
     const renderToggle = (checked: boolean, onChange: () => void, disabled?: boolean) => (
         <button
@@ -540,36 +581,39 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                             </p>
                         </div>
 
-                        <div className="flex bg-black/15 dark:bg-white/5 rounded-xl border border-white/5 p-1 shrink-0">
-                            <button
-                                type="button"
-                                onClick={() => setElectronSettings({ ...electronSettings, AI_PROVIDER: 'gemini' })}
-                                className={`px-4.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
-                                    electronSettings.AI_PROVIDER !== 'openai'
-                                        ? (isDaylight ? 'bg-white text-zinc-900 shadow-sm' : 'bg-white/10 text-white shadow-sm')
-                                        : 'opacity-50 hover:opacity-100 text-zinc-400 hover:text-zinc-200'
-                                }`}
-                                style={{ color: electronSettings.AI_PROVIDER !== 'gemini' ? 'var(--text-primary)' : undefined }}
-                            >
-                                Google Gemini
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setElectronSettings({ ...electronSettings, AI_PROVIDER: 'openai' })}
-                                className={`px-4.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
-                                    electronSettings.AI_PROVIDER === 'openai'
-                                        ? (isDaylight ? 'bg-white text-zinc-900 shadow-sm' : 'bg-white/10 text-white shadow-sm')
-                                        : 'opacity-50 hover:opacity-100 text-zinc-400 hover:text-zinc-200'
-                                }`}
-                                style={{ color: electronSettings.AI_PROVIDER === 'openai' ? 'var(--text-primary)' : undefined }}
-                            >
-                                OpenAI Compatible
-                            </button>
-                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {AI_PROVIDER_PRESETS.map((preset) => {
+                            const isSelected = electronSettings.AI_PROVIDER === preset.id;
+                            return (
+                                <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => handleSelectAiProvider(preset)}
+                                    aria-pressed={isSelected}
+                                    className="rounded-xl border px-3 py-2.5 text-center text-xs font-semibold transition-colors"
+                                    style={isSelected
+                                        ? {
+                                            borderColor: aiProviderAccentColor,
+                                            boxShadow: `inset 0 0 0 1px ${aiProviderAccentColor}`,
+                                            backgroundColor: isDaylight ? `${aiProviderAccentColor}12` : `${aiProviderAccentColor}18`,
+                                            color: 'var(--text-primary)',
+                                        }
+                                        : {
+                                            borderColor: isDaylight ? 'rgba(24, 24, 27, 0.12)' : 'rgba(255, 255, 255, 0.1)',
+                                            backgroundColor: isDaylight ? 'rgba(255, 255, 255, 0.72)' : 'rgba(255, 255, 255, 0.05)',
+                                            color: 'var(--text-secondary)',
+                                        }}
+                                >
+                                    {preset.label}
+                                </button>
+                            );
+                        })}
                     </div>
 
                     <div className="border-t border-white/5 pt-4 space-y-4">
-                        {electronSettings.AI_PROVIDER !== 'openai' ? (
+                        {!isOpenAiCompatibleProvider(electronSettings.AI_PROVIDER) ? (
                             <div className="space-y-2 text-left">
                                 <div className="flex items-center gap-1.5">
                                     <KeyRound size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
@@ -589,41 +633,52 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                         ) : (
                             <div className="space-y-4">
                                 <div className="space-y-2 text-left">
-                                    <div className="flex items-center gap-1.5">
-                                        <Globe size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
-                                        <label className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                                            {t('options.openaiApiUrl') || 'OpenAI API URL'}
-                                        </label>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5">
+                                            <Globe size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
+                                            <label className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                                {t('options.aiProviderApiUrl', { provider: activeAiProviderLabel })}
+                                            </label>
+                                        </div>
+                                        {activeAiProviderConsoleUrl && (
+                                            <button
+                                                type="button"
+                                                onClick={() => void window.electron?.openExternalUrl?.(activeAiProviderConsoleUrl)}
+                                                className="inline-flex items-center gap-1 text-[11px] opacity-50 transition-opacity hover:opacity-100"
+                                                style={{ color: 'var(--text-secondary)' }}
+                                            >
+                                                <ExternalLink size={12} />
+                                                {t('options.aiProviderConsole')}
+                                            </button>
+                                        )}
                                     </div>
                                     <input
                                         type="text"
-                                        value={electronSettings.OPENAI_API_URL || ''}
-                                        onChange={(e) => setElectronSettings({ ...electronSettings, OPENAI_API_URL: e.target.value })}
-                                        placeholder="https://api.openai.com/v1 or https://api.deepseek.com"
+                                        value={activeAiCredentials.apiUrl}
+                                        onChange={(e) => updateActiveAiCredentials({ apiUrl: e.target.value })}
+                                        placeholder={activeAiProvider?.apiUrl || 'https://api.openai.com/v1'}
                                         className="w-full px-3.5 py-2.5 bg-black/10 dark:bg-white/5 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-zinc-500 dark:focus:border-white/30 focus:ring-2 focus:ring-zinc-500/10 transition-all leading-normal"
                                         style={{ color: 'var(--text-primary)' }}
                                     />
                                 </div>
 
                                 <div className="space-y-2 text-left">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-1.5">
-                                            <Cpu size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
-                                            <label className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                                                {t('options.openaiApiModel') || 'OpenAI Model'}
-                                            </label>
-                                        </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <Cpu size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
+                                        <label className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                            {t('options.aiProviderApiModel', { provider: activeAiProviderLabel })}
+                                        </label>
                                     </div>
                                     <input
                                         type="text"
-                                        value={electronSettings.OPENAI_API_MODEL || ''}
-                                        onChange={(e) => setElectronSettings({ ...electronSettings, OPENAI_API_MODEL: e.target.value })}
-                                        placeholder="gpt-4o / gpt-4.1-mini / deepseek-v4-flash"
+                                        value={activeAiCredentials.apiModel}
+                                        onChange={(e) => updateActiveAiCredentials({ apiModel: e.target.value })}
+                                        placeholder={activeAiProvider?.defaultModel || 'gpt-4o'}
                                         className="w-full px-3.5 py-2.5 bg-black/10 dark:bg-white/5 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-zinc-500 dark:focus:border-white/30 focus:ring-2 focus:ring-zinc-500/10 transition-all leading-normal"
                                         style={{ color: 'var(--text-primary)' }}
                                     />
                                     <p className="text-[10px] opacity-40 leading-relaxed px-1" style={{ color: 'var(--text-secondary)' }}>
-                                        {t('options.openaiApiModelDesc') || 'Required for many OpenAI-compatible providers. DeepSeek models like deepseek-v4-flash must be filled explicitly if auto-detection does not apply.'}
+                                        {t('options.aiProviderApiModelDesc')}
                                     </p>
                                 </div>
 
@@ -643,7 +698,7 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                                         style={{ color: 'var(--text-primary)' }}
                                     />
                                     <p className="text-[10px] opacity-40 leading-relaxed px-1" style={{ color: 'var(--text-secondary)' }}>
-                                        {t('options.openaiApiTemperatureDesc') || 'Range: 0–2. Defaults to 0.7 when left blank.'}
+                                        {t('options.openaiApiTemperatureDesc')}
                                     </p>
                                 </div>
 
@@ -651,14 +706,14 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                                     <div className="flex items-center gap-1.5">
                                         <KeyRound size={14} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
                                         <label className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                                            {t('options.openaiApiKey') || 'OpenAI API Key'}
+                                            {t('options.aiProviderApiKey', { provider: activeAiProviderLabel })}
                                         </label>
                                     </div>
                                     <input
                                         type="password"
-                                        value={electronSettings.OPENAI_API_KEY || ''}
-                                        onChange={(e) => setElectronSettings({ ...electronSettings, OPENAI_API_KEY: e.target.value })}
-                                        placeholder="sk-..."
+                                        value={activeAiCredentials.apiKey}
+                                        onChange={(e) => updateActiveAiCredentials({ apiKey: e.target.value })}
+                                        placeholder={electronSettings.AI_PROVIDER === 'claude' ? 'sk-ant-...' : 'sk-...'}
                                         className="w-full px-3.5 py-2.5 bg-black/10 dark:bg-white/5 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-zinc-500 dark:focus:border-white/30 focus:ring-2 focus:ring-zinc-500/10 transition-all leading-normal"
                                         style={{ color: 'var(--text-primary)' }}
                                     />
@@ -681,9 +736,9 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
 
                     <div className="flex items-center justify-between pt-4 border-t border-white/5 gap-4">
                         <span className="text-[10px] opacity-40 leading-relaxed max-w-[280px] text-left" style={{ color: 'var(--text-secondary)' }}>
-                            {electronSettings.AI_PROVIDER !== 'openai'
+                            {!isOpenAiCompatibleProvider(electronSettings.AI_PROVIDER)
                                 ? (t('options.geminiApiKeyDesc') || 'Netease API backend runs locally.')
-                                : '使用兼容 OpenAI 格式的其它大模型接口。'}
+                                : t('options.aiProviderOpenAiCompatibleHint')}
                         </span>
                         <button
                             type="button"

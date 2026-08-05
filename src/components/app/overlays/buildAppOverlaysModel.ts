@@ -1,6 +1,7 @@
 import type React from 'react';
 import type { MotionValue } from 'framer-motion';
 import type FloatingPlayerControls from '../../FloatingPlayerControls';
+import type QueuePopover from '../../player-controls/QueuePopover';
 import type SearchWorkspace from '../search/SearchWorkspace';
 import type DevDebugOverlay from '../../DevDebugOverlay';
 import { PlayerState } from '../../../types';
@@ -11,11 +12,13 @@ import type { SongResult, UnifiedSong, LyricData, PlayerLoopMode } from '../../.
 type SearchOverlayProps = React.ComponentProps<typeof SearchWorkspace>;
 type FloatingControlsProps = React.ComponentProps<typeof FloatingPlayerControls>;
 type DebugOverlayProps = React.ComponentProps<typeof DevDebugOverlay>;
+type QueuePopoverProps = React.ComponentProps<typeof QueuePopover>;
 
 export type AppOverlaysModel = {
     searchOverlay?: SearchOverlayProps | null;
     debugOverlay?: DebugOverlayProps | null;
     floatingControls?: FloatingControlsProps | null;
+    queuePopover?: QueuePopoverProps | null;
 };
 
 type BuildAppOverlaysModelParams = {
@@ -64,6 +67,15 @@ type BuildAppOverlaysModelParams = {
     onSeekMainAudio: (time: number) => void;
     onStagePlayerSeek: () => Promise<unknown>;
     noTrackText: string;
+    isQueuePopoverOpen: boolean;
+    closeQueuePopover: () => void;
+    playQueue: SongResult[];
+    playSong: QueuePopoverProps['onPlaySong'];
+    shuffleQueue: QueuePopoverProps['onShuffle'];
+    removeQueueSong: QueuePopoverProps['onRemoveSong'];
+    moveQueueSongToEnd: QueuePopoverProps['onMoveSongToEnd'];
+    moveQueueSongToNext: QueuePopoverProps['onMoveSongToNext'];
+    queueCoverUrl: string | null;
 };
 
 // Builds the full overlay model, including detail overlays and floating playback controls.
@@ -113,7 +125,30 @@ export const buildAppOverlaysModel = ({
     onSeekMainAudio,
     onStagePlayerSeek,
     noTrackText,
+    isQueuePopoverOpen,
+    closeQueuePopover,
+    playQueue,
+    playSong,
+    shuffleQueue,
+    removeQueueSong,
+    moveQueueSongToEnd,
+    moveQueueSongToNext,
+    queueCoverUrl,
 }: BuildAppOverlaysModelParams): AppOverlaysModel => ({
+    // 控制栏的播放列表按钮在所有视图都落到这里，播放页也不例外。
+    queuePopover: {
+        isOpen: isQueuePopoverOpen,
+        onClose: closeQueuePopover,
+        playQueue,
+        currentSong,
+        coverUrl: queueCoverUrl,
+        onPlaySong: playSong,
+        onShuffle: shuffleQueue,
+        onRemoveSong: removeQueueSong,
+        onMoveSongToEnd: moveQueueSongToEnd,
+        onMoveSongToNext: moveQueueSongToNext,
+        isDaylight,
+    },
     searchOverlay: currentView === 'home'
         ? {
             theme,
