@@ -1115,7 +1115,8 @@ export interface UnifiedSong extends SongResult {
   navidromeData?: any;
 }
 
-export type ReplayGainMode = 'off' | 'track' | 'album';
+// off 关闭；track/album 只认 ReplayGain 标签；auto 在无标签时退回实时响度测量。
+export type ReplayGainMode = 'off' | 'track' | 'album' | 'auto';
 
 // Audio Analysis Types
 import { MotionValue } from 'framer-motion';

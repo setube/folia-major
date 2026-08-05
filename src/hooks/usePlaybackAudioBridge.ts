@@ -27,11 +27,15 @@ type UsePlaybackAudioBridgeParams = {
     analyserRef: MutableRefObject<AnalyserNode | null>;
     gainNodeRef: MutableRefObject<GainNode | null>;
     replayGainLinearRef: MutableRefObject<number>;
+    needsLoudnessMeasurementRef: MutableRefObject<boolean>;
     sourceRef: MutableRefObject<MediaElementAudioSourceNode | null>;
     setPlayerState: React.Dispatch<React.SetStateAction<PlayerState>>;
     setStatusMsg: React.Dispatch<React.SetStateAction<StatusMessage | null>>;
     syncOutputGain: (targetVolume: number, smoothing?: number) => void;
     getTargetPlaybackVolume: () => number;
+    /** 起播前把增益压到 0；返回 false 表示未启用淡变。 */
+    primeTrackFadeIn: () => boolean;
+    runTrackFadeIn: () => void;
     getCoverUrl: () => string | null;
     updateCacheSize: () => void;
     t: (key: string) => string;
@@ -53,11 +57,14 @@ export function usePlaybackAudioBridge({
     analyserRef,
     gainNodeRef,
     replayGainLinearRef,
+    needsLoudnessMeasurementRef,
     sourceRef,
     setPlayerState,
     setStatusMsg,
     syncOutputGain,
     getTargetPlaybackVolume,
+    primeTrackFadeIn,
+    runTrackFadeIn,
     getCoverUrl,
     updateCacheSize,
     t,
@@ -95,6 +102,8 @@ export function usePlaybackAudioBridge({
 
         const calculation = calculateReplayGain(replayGainInfo, replayGainMode);
         replayGainLinearRef.current = calculation.linearGain;
+        // auto 模式且这首歌没带 ReplayGain 标签时，才启动实时响度测量兜底。
+        needsLoudnessMeasurementRef.current = replayGainMode === 'auto' && !calculation.hasTagGain;
 
         try {
             syncOutputGain(getTargetPlaybackVolume(), 0.1);
@@ -113,7 +122,7 @@ export function usePlaybackAudioBridge({
         } catch (error) {
             console.warn('[AudioContext] Failed to apply ReplayGain', error);
         }
-    }, [audioContextRef, currentSong, gainNodeRef, getTargetPlaybackVolume, localSongs, replayGainLinearRef, replayGainMode, syncOutputGain]);
+    }, [audioContextRef, currentSong, gainNodeRef, getTargetPlaybackVolume, localSongs, needsLoudnessMeasurementRef, replayGainLinearRef, replayGainMode, syncOutputGain]);
 
     const setupAudioAnalyzer = useCallback(() => {
         if (!audioRef.current || sourceRef.current) return;
@@ -209,18 +218,34 @@ export function usePlaybackAudioBridge({
         if (audioSrc && audioRef.current) {
             if (shouldAutoPlayRef.current && !isLyricsLoading) {
                 shouldAutoPlayRef.current = false;
-                syncOutputGain(getTargetPlaybackVolume(), 0);
+                // 音频图要等第一次 play() 之后才建好，首曲没有 gainNode 可压，
+                // 淡入从第二首起才真正生效 —— 这符合预期：首曲本来就没有"上一首"要淡出。
+                const shouldFadeIn = primeTrackFadeIn();
+                if (!shouldFadeIn) {
+                    syncOutputGain(getTargetPlaybackVolume(), 0);
+                }
                 const playPromise = audioRef.current.play();
                 if (playPromise !== undefined) {
                     playPromise
                         .then(() => {
                             setPlayerState(PlayerState.PLAYING);
                             setupAudioAnalyzer();
+                            if (shouldFadeIn) {
+                                runTrackFadeIn();
+                            }
                         })
                         .catch(error => {
                             if (audioRef.current && !audioRef.current.paused && !audioRef.current.ended) {
+                                if (shouldFadeIn) {
+                                    runTrackFadeIn();
+                                }
                                 setPlayerState(PlayerState.PLAYING);
                                 return;
+                            }
+
+                            // 起播失败要还原增益，否则窗口会停在静音状态。
+                            if (shouldFadeIn) {
+                                syncOutputGain(getTargetPlaybackVolume(), 0);
                             }
 
                             if (error.name === 'NotAllowedError') {
@@ -231,7 +256,7 @@ export function usePlaybackAudioBridge({
                 }
             }
         }
-    }, [audioRef, audioSrc, getTargetPlaybackVolume, isLyricsLoading, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldAutoPlayRef, syncOutputGain, t]);
+    }, [audioRef, audioSrc, getTargetPlaybackVolume, isLyricsLoading, primeTrackFadeIn, runTrackFadeIn, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldAutoPlayRef, syncOutputGain, t]);
 
     return {
         setupAudioAnalyzer,

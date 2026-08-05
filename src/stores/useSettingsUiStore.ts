@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type React from 'react';
 import { getNextLoopMode } from '../utils/appStageHelpers';
+import { isAudioFadeDuration, type AudioFadeDuration } from '../utils/audioFade';
 import { DEFAULT_CADENZA_TUNING, DEFAULT_CAPPELLA_TUNING, DEFAULT_CLASSIC_TUNING, DEFAULT_CLADDAGH_TUNING, DEFAULT_DIORAMA_TUNING, DEFAULT_FUME_TUNING, DEFAULT_LATENT_BACKGROUND_TUNING, DEFAULT_MONET_BACKGROUND_TUNING, DEFAULT_MONET_TUNING, DEFAULT_NOMAND_BACKGROUND_TUNING, DEFAULT_PARTITA_TUNING, DEFAULT_PENDOLO_TUNING, DEFAULT_SONNET_TUNING, DEFAULT_TILT_TUNING, DIORAMA_PARTICLE_DENSITY_MAX, DIORAMA_PARTICLE_DENSITY_MIN, DIORAMA_PARTICLE_GLOW_INTENSITY_MAX, DIORAMA_PARTICLE_GLOW_INTENSITY_MIN, DIORAMA_PARTICLE_SIZE_MAX, DIORAMA_PARTICLE_SIZE_MIN, type CadenzaTuning, type CappellaAvatarImage, type CappellaAvatarSource, type CappellaEmojiImage, type CappellaTuning, type ClassicTuning, type CladdaghTuning, type DioramaTuning, type FumeTuning, type LatentBackgroundColorSource, type LatentBackgroundDisplayMode, type LatentBackgroundTuning, type LocalLyricsPriority, type LyricProviderSource, type MonetBackgroundImage, type MonetBackgroundLayout, type MonetBackgroundSource, type MonetBackgroundTuning, type MonetBackgroundWashColorMode, type MonetPortraitImage, type MonetPortraitSource, type MonetTuning, type NomandBackgroundDitheringType, type NomandBackgroundSource, type NomandBackgroundTuning, type PartitaTuning, type PendoloTuning, type CloseMainPanelAction, type LaunchAtLoginMode, type PlayerLoopMode, type PlaylistEntryBehavior, type QueueAddBehavior, type SonnetTuning, type StatusMessage, type StoredCappellaAvatarImage, type StoredCappellaEmojiImage, type StoredCustomLyricsFont, type StoredMonetBackgroundImage, type StoredMonetPortraitImage, type SubtitleContentMode, type Theme, type TiltTuning, type UrlBackgroundItem, type VisualizerBackgroundMode, type VisualizerFrameRate, type VisualizerMode } from '../types';
 import { DEFAULT_VISUALIZER_MODE, getVisualizerModeLabel, getVisualizerRegistryEntry, hasVisualizerMode } from '../components/visualizer/registry';
 import { DEFAULT_VISUALIZER_BACKGROUND_MODE, hasVisualizerBackgroundMode } from '../components/visualizer/backgrounds/registry';
@@ -50,6 +51,8 @@ export const CLOSE_MAIN_PANEL_ACTION_STORAGE_KEY = 'close_main_panel_action';
 export const LAUNCH_AT_LOGIN_STORAGE_KEY = 'launch_at_login';
 export const LAUNCH_AT_LOGIN_MODE_STORAGE_KEY = 'launch_at_login_mode';
 export const PLAYLIST_ENTRY_BEHAVIOR_STORAGE_KEY = 'playlist_entry_behavior';
+export const AUDIO_FADE_ENABLED_STORAGE_KEY = 'audio_fade_enabled';
+export const AUDIO_FADE_DURATION_STORAGE_KEY = 'audio_fade_duration';
 export const AUTOPLAY_ON_LAUNCH_STORAGE_KEY = 'autoplay_on_launch';
 export const REMEMBER_PLAYBACK_POSITION_STORAGE_KEY = 'remember_playback_position';
 export const VOICE_INPUT_PAUSE_STORAGE_KEY = 'voice_input_pause_enabled';
@@ -1066,6 +1069,15 @@ const readStoredQueueAddBehavior = (): QueueAddBehavior => {
     return saved === 'next' ? 'next' : 'append';
 };
 
+const readStoredAudioFadeDuration = (): AudioFadeDuration => {
+    if (typeof window === 'undefined') {
+        return 'standard';
+    }
+
+    const saved = localStorage.getItem(AUDIO_FADE_DURATION_STORAGE_KEY);
+    return isAudioFadeDuration(saved) ? saved : 'standard';
+};
+
 const readStoredPlaylistEntryBehavior = (): PlaylistEntryBehavior => {
     if (typeof window === 'undefined') {
         return 'replaceQueue';
@@ -1255,6 +1267,8 @@ export type SettingsUiState = {
     webObsThemeMode: 'static' | 'builtin' | 'ai';
     queueAddBehavior: QueueAddBehavior;
     playlistEntryBehavior: PlaylistEntryBehavior;
+    audioFadeEnabled: boolean;
+    audioFadeDuration: AudioFadeDuration;
     audioOutputDeviceId: string;
     volume: number;
     isMuted: boolean;
@@ -1404,6 +1418,8 @@ export type SettingsUiState = {
     setWebObsThemeMode: (mode: 'static' | 'builtin' | 'ai') => void;
     handleSetQueueAddBehavior: (behavior: QueueAddBehavior) => void;
     handleSetPlaylistEntryBehavior: (behavior: PlaylistEntryBehavior) => void;
+    handleToggleAudioFade: (enable: boolean) => void;
+    handleSetAudioFadeDuration: (duration: AudioFadeDuration) => void;
     handleSetAudioOutputDeviceId: (deviceId: string) => void;
     handleSetVolume: (val: number) => void;
     handleToggleMute: () => void;
@@ -1528,6 +1544,8 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
     webObsThemeMode: readStoredWebObsThemeMode(),
     queueAddBehavior: readStoredQueueAddBehavior(),
     playlistEntryBehavior: readStoredPlaylistEntryBehavior(),
+    audioFadeEnabled: getStoredBoolean(AUDIO_FADE_ENABLED_STORAGE_KEY, false),
+    audioFadeDuration: readStoredAudioFadeDuration(),
     audioOutputDeviceId: readStoredAudioOutputDeviceId(),
     volume: readStoredVolume(),
     isMuted: getStoredBoolean('player_is_muted', false),
@@ -2768,6 +2786,24 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
             text: i18n.t('notifications.' + (behavior === 'next' ? 'queueInsertNext' : 'queueAppend')),
         });
     },
+    handleToggleAudioFade: (enable) => {
+        setStoredBoolean(AUDIO_FADE_ENABLED_STORAGE_KEY, enable);
+        set({ audioFadeEnabled: enable });
+        notify(get, {
+            type: 'info',
+            text: i18n.t('notifications.' + (enable ? 'audioFadeOn' : 'audioFadeOff')),
+        });
+    },
+    handleSetAudioFadeDuration: (duration) => {
+        if (typeof window !== 'undefined') {
+            localStorage.setItem(AUDIO_FADE_DURATION_STORAGE_KEY, duration);
+        }
+        set({ audioFadeDuration: duration });
+        notify(get, {
+            type: 'info',
+            text: i18n.t(`options.audioFadeDuration${duration.charAt(0).toUpperCase()}${duration.slice(1)}`),
+        });
+    },
     handleSetPlaylistEntryBehavior: (behavior) => {
         if (typeof window !== 'undefined') {
             localStorage.setItem(PLAYLIST_ENTRY_BEHAVIOR_STORAGE_KEY, behavior);
@@ -2966,6 +3002,8 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     webObsThemeMode: state.webObsThemeMode,
     queueAddBehavior: state.queueAddBehavior,
     playlistEntryBehavior: state.playlistEntryBehavior,
+    audioFadeEnabled: state.audioFadeEnabled,
+    audioFadeDuration: state.audioFadeDuration,
     audioOutputDeviceId: state.audioOutputDeviceId,
     loopMode: state.loopMode,
     handleToggleCoverColorBg: state.handleToggleCoverColorBg,
@@ -3073,6 +3111,8 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     handleToggleNowPlayingStage: state.handleToggleNowPlayingStage,
     handleSetQueueAddBehavior: state.handleSetQueueAddBehavior,
     handleSetPlaylistEntryBehavior: state.handleSetPlaylistEntryBehavior,
+    handleToggleAudioFade: state.handleToggleAudioFade,
+    handleSetAudioFadeDuration: state.handleSetAudioFadeDuration,
     handleSetAudioOutputDeviceId: state.handleSetAudioOutputDeviceId,
     volume: state.volume,
     isMuted: state.isMuted,

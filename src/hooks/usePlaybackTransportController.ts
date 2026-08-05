@@ -24,6 +24,12 @@ type UsePlaybackTransportControllerParams = {
     setupAudioAnalyzer: () => void;
     syncOutputGain: (targetVolume: number, smoothing?: number) => void;
     getTargetPlaybackVolume: () => number;
+    /** 淡出后再 pause；返回 false 表示未启用淡变，按原路径立即暂停。 */
+    fadeOutAndPause: () => boolean;
+    /** 起播前把增益压到 0；返回 false 表示未启用淡变。 */
+    primeFadeIn: (scene: 'resume' | 'trackStart' | 'seek') => boolean;
+    fadeIn: (scene: 'resume' | 'trackStart' | 'seek') => void;
+    cancelPendingPause: () => void;
     shouldRefreshCurrentOnlineAudioSource: () => boolean;
     recoverOnlinePlaybackSource: (options: {
         failedSrc?: string | null;
@@ -51,6 +57,10 @@ export function usePlaybackTransportController({
     setupAudioAnalyzer,
     syncOutputGain,
     getTargetPlaybackVolume,
+    fadeOutAndPause,
+    primeFadeIn,
+    fadeIn,
+    cancelPendingPause,
     shouldRefreshCurrentOnlineAudioSource,
     recoverOnlinePlaybackSource,
     getSyntheticStageLyricsTime,
@@ -79,7 +89,12 @@ export function usePlaybackTransportController({
             await audioContextRef.current.resume();
         }
 
-        syncOutputGain(getTargetPlaybackVolume(), 0);
+        // 上一次淡出可能还挂着 pause 定时器，先撤掉，否则刚起播就会被它按停。
+        cancelPendingPause();
+        const shouldFadeIn = primeFadeIn('resume');
+        if (!shouldFadeIn) {
+            syncOutputGain(getTargetPlaybackVolume(), 0);
+        }
         if (shouldRefreshCurrentOnlineAudioSource()) {
             const refreshed = await recoverOnlinePlaybackSource({
                 failedSrc: audioRef.current.currentSrc || audioSrc,
@@ -94,6 +109,9 @@ export function usePlaybackTransportController({
 
         try {
             await audioRef.current.play();
+            if (shouldFadeIn) {
+                fadeIn('resume');
+            }
             setPlayerState(PlayerState.PLAYING);
         } catch (error) {
             const recovered = await recoverOnlinePlaybackSource({
@@ -107,8 +125,16 @@ export function usePlaybackTransportController({
             }
 
             if (!audioRef.current.paused && !audioRef.current.ended) {
+                if (shouldFadeIn) {
+                    fadeIn('resume');
+                }
                 setPlayerState(PlayerState.PLAYING);
                 return;
+            }
+
+            // 播放没起来就把压到 0 的增益还原，否则下次成功起播前会一直是静音。
+            if (shouldFadeIn) {
+                syncOutputGain(getTargetPlaybackVolume(), 0);
             }
 
             if (error instanceof DOMException && error.name === 'NotAllowedError') {
@@ -121,7 +147,7 @@ export function usePlaybackTransportController({
             setPlayerState(PlayerState.PAUSED);
             throw error;
         }
-    }, [activePlaybackContext, audioContextRef, audioRef, audioSrc, currentTime, duration, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isNowPlayingStageActive, recoverOnlinePlaybackSource, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldRefreshCurrentOnlineAudioSource, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock, t]);
+    }, [activePlaybackContext, audioContextRef, audioRef, audioSrc, cancelPendingPause, currentTime, duration, fadeIn, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isNowPlayingStageActive, primeFadeIn, recoverOnlinePlaybackSource, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldRefreshCurrentOnlineAudioSource, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock, t]);
 
     const pausePlayback = useCallback(() => {
         if (isNowPlayingStageActive) {
@@ -140,10 +166,12 @@ export function usePlaybackTransportController({
             return;
         }
 
-        audioRef.current.pause();
-        syncOutputGain(getTargetPlaybackVolume(), 0);
+        if (!fadeOutAndPause()) {
+            audioRef.current.pause();
+            syncOutputGain(getTargetPlaybackVolume(), 0);
+        }
         setPlayerState(PlayerState.PAUSED);
-    }, [activePlaybackContext, audioRef, audioSrc, currentTime, duration, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isNowPlayingStageActive, setPlayerState, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock]);
+    }, [activePlaybackContext, audioRef, audioSrc, currentTime, duration, fadeOutAndPause, getSyntheticStageLyricsTime, getTargetPlaybackVolume, isNowPlayingStageActive, setPlayerState, stageActiveEntryKind, stageLyricsClockRef, syncOutputGain, syncStageLyricsClock]);
 
     return {
         resumePlayback,

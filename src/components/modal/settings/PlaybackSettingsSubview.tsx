@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { AudioLines, History, Monitor, Play, PlayCircle, RefreshCw, Rocket, Settings2 } from 'lucide-react';
+import { AudioLines, AudioWaveform, History, Monitor, Play, PlayCircle, RefreshCw, Rocket, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import type { LocalLyricsPriority, PlaylistEntryBehavior, QueueAddBehavior, ReplayGainMode, Theme } from '../../../types';
+import type { AudioFadeDuration } from '../../../utils/audioFade';
 import { useSettingsUiStore } from '../../../stores/useSettingsUiStore';
 import { CustomSelect } from '../../shared/CustomSelect';
 import { LYRIC_MATCH_SOURCES } from '../../../utils/lyrics/lyricMatchSources';
@@ -53,11 +54,15 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         localLyricsPriority,
         queueAddBehavior,
         playlistEntryBehavior,
+        audioFadeEnabled,
+        audioFadeDuration,
         onToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange,
         onLocalLyricsPriorityChange,
         onQueueAddBehaviorChange,
         onPlaylistEntryBehaviorChange,
+        onToggleAudioFade,
+        onAudioFadeDurationChange,
         autoplayOnLaunch,
         rememberPlaybackPosition,
         onToggleAutoplayOnLaunch,
@@ -69,11 +74,15 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         localLyricsPriority: state.localLyricsPriority,
         queueAddBehavior: state.queueAddBehavior,
         playlistEntryBehavior: state.playlistEntryBehavior,
+        audioFadeEnabled: state.audioFadeEnabled,
+        audioFadeDuration: state.audioFadeDuration,
         onToggleAutoUseBestLyric: state.handleToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange: state.handleSetPreferredAlternativeLyricSource,
         onLocalLyricsPriorityChange: state.handleSetLocalLyricsPriority,
         onQueueAddBehaviorChange: state.handleSetQueueAddBehavior,
         onPlaylistEntryBehaviorChange: state.handleSetPlaylistEntryBehavior,
+        onToggleAudioFade: state.handleToggleAudioFade,
+        onAudioFadeDurationChange: state.handleSetAudioFadeDuration,
         autoplayOnLaunch: state.autoplayOnLaunch,
         rememberPlaybackPosition: state.rememberPlaybackPosition,
         onToggleAutoplayOnLaunch: state.handleToggleAutoplayOnLaunch,
@@ -316,9 +325,10 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                             {t('options.replayGainModeDesc')}
                         </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                         {([
                             { value: 'off', label: t('localMusic.replayGainOff') },
+                            { value: 'auto', label: t('localMusic.replayGainAuto') },
                             { value: 'track', label: t('localMusic.replayGainTrack') },
                             { value: 'album', label: t('localMusic.replayGainAlbum') },
                         ] as Array<{ value: ReplayGainMode; label: string }>).map((option) => (
@@ -332,6 +342,49 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                                 {option.label}
                             </button>
                         ))}
+                    </div>
+                    <div className="text-[11px] opacity-40 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                        {t('options.replayGainAutoHint')}
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h3 className="text-sm font-bold uppercase tracking-wider opacity-50 mb-4 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+                    <AudioWaveform size={14} /> {t('options.audioFadeSettings')}
+                </h3>
+                <div className={`p-4 rounded-xl border space-y-4 ${settingsCardClass}`}>
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                            <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                                {t('options.audioFade')}
+                            </div>
+                            <div className="text-[11px] opacity-50 max-w-[420px]" style={{ color: 'var(--text-secondary)' }}>
+                                {t('options.audioFadeDesc')}
+                            </div>
+                        </div>
+                        {renderToggle(audioFadeEnabled, () => onToggleAudioFade(!audioFadeEnabled))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                        {([
+                            { value: 'fast', label: t('options.audioFadeDurationFast') },
+                            { value: 'standard', label: t('options.audioFadeDurationStandard') },
+                            { value: 'smooth', label: t('options.audioFadeDurationSmooth') },
+                        ] as Array<{ value: AudioFadeDuration; label: string }>).map((option) => (
+                            <button
+                                key={option.value}
+                                type="button"
+                                disabled={!audioFadeEnabled}
+                                onClick={() => onAudioFadeDurationChange(option.value)}
+                                className="rounded-xl border px-3 py-2.5 text-center text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                                style={getAccentOptionStyle(audioFadeDuration === option.value)}
+                            >
+                                {option.label}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="text-[11px] opacity-40 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                        {t('options.audioFadeScopeHint')}
                     </div>
                 </div>
             </section>

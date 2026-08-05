@@ -62,6 +62,7 @@ import { usePlaybackUiEffects } from './hooks/usePlaybackUiEffects';
 import { useLibraryPlaybackController } from './hooks/useLibraryPlaybackController';
 import { useNavidromeScrobbleReporter } from './hooks/useNavidromeScrobbleReporter';
 import { usePlaybackQueueController } from './hooks/usePlaybackQueueController';
+import { usePlaybackLoudnessController } from './hooks/usePlaybackLoudnessController';
 import { usePlaybackTransportController } from './hooks/usePlaybackTransportController';
 import { useLocalLibraryCatalog } from './hooks/useLocalLibraryCatalog';
 import { usePlaybackVisualizerBridge } from './hooks/usePlaybackVisualizerBridge';
@@ -81,7 +82,7 @@ import { useSettingsUiStore } from './stores/useSettingsUiStore';
 import { useOnlineProviderAccountStore } from './stores/useOnlineProviderAccountStore';
 import { useShallow } from 'zustand/react/shallow';
 import { clampMediaVolume } from './utils/appPlaybackHelpers';
-import { getOnlineProviderIdForSong, isLocalPlaybackSong, isNavidromePlaybackSong, isStagePlaybackSong, resolveNavidromePlaybackCarrier } from './utils/appPlaybackGuards';
+import { getOnlineProviderIdForSong, getPlaybackSongKey, isLocalPlaybackSong, isNavidromePlaybackSong, isStagePlaybackSong, resolveNavidromePlaybackCarrier } from './utils/appPlaybackGuards';
 import { readLyricOffset, writeLyricOffset } from './utils/lyrics/lyricOffsetMemory';
 import { FALLBACK_AI_DUAL_THEME } from './services/themeSanitizer';
 import { BASE_DUAL_THEME, DAYLIGHT_THEME, DEFAULT_THEME } from './services/baseThemes';
@@ -238,6 +239,9 @@ export default function App() {
     const analyserRef = useRef<AnalyserNode | null>(null);
     const gainNodeRef = useRef<GainNode | null>(null);
     const replayGainLinearRef = useRef(1);
+    // auto 模式下实时测出的均衡增益，与标签增益相乘；无测量结果时恒为 1。
+    const measuredGainLinearRef = useRef(1);
+    const needsLoudnessMeasurementRef = useRef(false);
     const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
     const blobUrlRef = useRef<string | null>(null);
     const queueScrollRef = useRef<HTMLDivElement>(null);
@@ -265,7 +269,7 @@ export default function App() {
 
     const [replayGainMode, setReplayGainMode] = useState<ReplayGainMode>(() => {
         const saved = localStorage.getItem('local_replaygain_mode');
-        return saved === 'track' || saved === 'album' ? saved : 'off';
+        return saved === 'track' || saved === 'album' || saved === 'auto' ? saved : 'off';
     });
     const localFileBlobsRef = useRef<Map<string, string>>(new Map()); // id -> blob URL
 
@@ -367,6 +371,8 @@ export default function App() {
         playerCapTimeBasis,
         playerCapSticky,
         queueAddBehavior,
+        audioFadeEnabled,
+        audioFadeDuration,
         audioOutputDeviceId,
         loopMode,
         handleToggleCoverColorBg,
@@ -505,14 +511,16 @@ export default function App() {
         const clampedVolume = clampMediaVolume(targetVolume);
 
         if (gainNodeRef.current && audioContextRef.current) {
+            // 标签增益与实时测量增益相乘：auto 模式下只会有一路非 1，两者不会叠加放大。
+            const normalizedVolume = replayGainLinearRef.current * measuredGainLinearRef.current * clampedVolume;
             if (smoothing <= 0) {
                 gainNodeRef.current.gain.setValueAtTime(
-                    replayGainLinearRef.current * clampedVolume,
+                    normalizedVolume,
                     audioContextRef.current.currentTime
                 );
             } else {
                 gainNodeRef.current.gain.setTargetAtTime(
-                    replayGainLinearRef.current * clampedVolume,
+                    normalizedVolume,
                     audioContextRef.current.currentTime,
                     smoothing
                 );
@@ -1411,14 +1419,38 @@ export default function App() {
         analyserRef,
         gainNodeRef,
         replayGainLinearRef,
+        needsLoudnessMeasurementRef,
         sourceRef,
         setPlayerState,
         setStatusMsg,
         syncOutputGain,
         getTargetPlaybackVolume,
+        primeTrackFadeIn: () => primeFadeIn('trackStart'),
+        runTrackFadeIn: () => fadeIn('trackStart'),
         getCoverUrl,
         updateCacheSize,
         t: key => t(key),
+    });
+
+    const currentPlaybackSongKey = useMemo(
+        () => (currentSong ? getPlaybackSongKey(currentSong) : null),
+        [currentSong],
+    );
+
+    const { fadeOutAndPause, primeFadeIn, fadeIn, cancelPendingPause } = usePlaybackLoudnessController({
+        audioRef,
+        audioContextRef,
+        gainNodeRef,
+        analyserRef,
+        replayGainLinearRef,
+        measuredGainLinearRef,
+        needsLoudnessMeasurementRef,
+        currentSongKey: currentPlaybackSongKey,
+        playerState,
+        audioFadeEnabled,
+        audioFadeDuration,
+        syncOutputGain,
+        getTargetPlaybackVolume,
     });
 
     const { resumePlayback, pausePlayback } = usePlaybackTransportController({
@@ -1436,6 +1468,10 @@ export default function App() {
         setupAudioAnalyzer,
         syncOutputGain,
         getTargetPlaybackVolume,
+        fadeOutAndPause,
+        primeFadeIn,
+        fadeIn,
+        cancelPendingPause,
         shouldRefreshCurrentOnlineAudioSource,
         recoverOnlinePlaybackSource,
         getSyntheticStageLyricsTime,

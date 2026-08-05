@@ -266,11 +266,20 @@ export const neteaseProvider: OnlineMusicProvider = {
             const rawUrl = raw?.url;
             if (!rawUrl) return null;
             const trackGain = toFiniteNumber(raw?.gain);
+            // peak 与 gain 是 /song/url 成对下发的（网易云 native 层日志
+            // `Loudness: ... gain %f, peak %f` 用的就是这两个），缺了它正增益就没有削波保护。
+            const trackPeak = toFiniteNumber(raw?.peak);
+            const replayGain = trackGain === undefined && trackPeak === undefined
+                ? undefined
+                : {
+                    ...(trackGain === undefined ? {} : { trackGain }),
+                    ...(trackPeak === undefined ? {} : { trackPeak }),
+                };
             return {
                 url: String(rawUrl).replace(/^http:/, 'https:'),
                 fetchedAt: Date.now(),
                 quality,
-                ...(trackGain === undefined ? {} : { replayGain: { trackGain } }),
+                ...(replayGain === undefined ? {} : { replayGain }),
             };
         },
         getAvailability(song): ProviderSongAvailability {
