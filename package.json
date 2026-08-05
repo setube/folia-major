@@ -1,13 +1,13 @@
 {
-  "name": "folia-major-setube",
-  "productName": "Folia Major (setube)",
-  "description": "Lyrics Reimagine —— 基于 Folia Major 的二次开发版本",
+  "name": "folia-major",
+  "productName": "Folia",
+  "description": "Lyrics Reimagine",
   "author": {
     "name": "chthollyphile",
     "email": "chthollyphile@users.noreply.github.com"
   },
   "private": true,
-  "version": "0.6.12",
+  "version": "0.6.13",
   "license": "AGPL-3.0",
   "type": "module",
   "main": "electron/main.cjs",
@@ -40,8 +40,8 @@
     "contributors:generate": "npx all-contributors-cli generate"
   },
   "build": {
-    "appId": "top.setube.foliamajor",
-    "productName": "Folia Major (setube)",
+    "appId": "top.izuna.foliamajor",
+    "productName": "Folia",
     "generateUpdatesFilesForAllChannels": true,
     "directories": {
       "output": "release"
@@ -49,8 +49,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "setube",
-        "repo": "folia-major-setube"
+        "owner": "chthollyphile",
+        "repo": "folia-major"
       }
     ],
     "files": [
