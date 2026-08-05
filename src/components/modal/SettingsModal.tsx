@@ -296,8 +296,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     };
     const [activeSettingsSection, setActiveSettingsSection] = useState<string>('appearance');
 
+    // 各分区共用同一个滚动容器，切换后必须归零，否则会停在上一个分区的偏移量上。
+    // 用 effect 而不是挂在按钮点击上：分区也可能由命令面板等外部入口切换。
+    useEffect(() => {
+        settingsContentRef.current?.scrollTo({ top: 0 });
+    }, [activeSettingsSection]);
+
     // Drag to scroll logic for mobile pill tabs
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const settingsContentRef = useRef<HTMLDivElement>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [startX, setStartX] = useState(0);
     const [scrollLeft, setScrollLeft] = useState(0);
@@ -1465,7 +1472,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                         );
                                     })}
                                 </div>
-                                <div className="flex-1 overflow-y-auto custom-scrollbar pl-1 md:pl-2 pr-2 md:pr-4 relative pb-4">
+                                <div ref={settingsContentRef} className="flex-1 overflow-y-auto custom-scrollbar pl-1 md:pl-2 pr-2 md:pr-4 relative pb-4">
                                     <div className="mb-4 md:mb-6 border-b border-white/10 pb-3 md:pb-4">
                                         <div className="flex items-start justify-between gap-4">
                                             <div>
