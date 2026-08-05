@@ -43,7 +43,7 @@ describe('release update channels', () => {
     });
 
     it('opens rolling prereleases instead of manufacturing a semver tag', () => {
-        const releasesUrl = 'https://github.com/chthollyphile/folia-major/releases';
+        const releasesUrl = 'https://github.com/setube/folia-major/releases';
 
         expect(getReleaseUrl('limo', '0.7.0-beta.123', releasesUrl)).toBe(`${releasesUrl}/tag/limo`);
         expect(getReleaseUrl('cielo', '0.7.0-alpha.123', releasesUrl)).toBe(`${releasesUrl}/tag/cielo`);
@@ -51,17 +51,17 @@ describe('release update channels', () => {
     });
 
     it('reads rolling prerelease metadata directly instead of using the GitHub release feed', () => {
-        const github = { owner: 'chthollyphile', repo: 'folia-major' };
+        const github = { owner: 'setube', repo: 'folia-major' };
 
         expect(getUpdateProviderConfig(resolveReleaseChannel('0.7.0-beta.123', 'limo'), github)).toEqual({
             provider: 'generic',
-            url: 'https://github.com/chthollyphile/folia-major/releases/download/limo/',
+            url: 'https://github.com/setube/folia-major/releases/download/limo/',
             channel: 'beta',
             useMultipleRangeRequest: false,
         });
         expect(getUpdateProviderConfig(resolveReleaseChannel('0.7.0-alpha.123', 'cielo'), github)).toEqual({
             provider: 'generic',
-            url: 'https://github.com/chthollyphile/folia-major/releases/download/cielo/',
+            url: 'https://github.com/setube/folia-major/releases/download/cielo/',
             channel: 'alpha',
             useMultipleRangeRequest: false,
         });
@@ -70,10 +70,10 @@ describe('release update channels', () => {
     it('restores the GitHub provider after switching back to Realeco', () => {
         expect(getUpdateProviderConfig(
             resolveReleaseChannel('0.7.0', 'realeco'),
-            { owner: 'chthollyphile', repo: 'folia-major' },
+            { owner: 'setube', repo: 'folia-major' },
         )).toEqual({
             provider: 'github',
-            owner: 'chthollyphile',
+            owner: 'setube',
             repo: 'folia-major',
             channel: 'latest',
         });

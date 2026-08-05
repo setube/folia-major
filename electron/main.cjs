@@ -199,7 +199,8 @@ const FOLIA_GITHUB_REPOSITORY = {
   owner: 'setube',
   repo: 'folia-major',
 };
-const WINDOWS_APP_USER_MODEL_ID = 'top.izuna.foliamajor';
+// 必须与 package.json 的 build.appId 一致，否则任务栏固定与通知会归到两个不同的应用上。
+const WINDOWS_APP_USER_MODEL_ID = 'io.github.setube.foliamajor';
 const REMOTE_CONTROL_WINDOW_TITLE = 'Folia Remote';
 const WINDOW_PLAYBACK_HANDOFF_REQUEST_TIMEOUT_MS = 800;
 const bundledAppIconPath = path.join(__dirname, '../build/icon.png');

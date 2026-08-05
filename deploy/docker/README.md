@@ -11,10 +11,10 @@ mkdir folia-docker
 cd folia-docker
 
 curl -fL \
-  https://raw.githubusercontent.com/chthollyphile/folia-major/main/deploy/docker/compose.yaml \
+  https://raw.githubusercontent.com/setube/folia-major/main/deploy/docker/compose.yaml \
   -o compose.yaml
 curl -fL \
-  https://raw.githubusercontent.com/chthollyphile/folia-major/main/deploy/docker/.env.example \
+  https://raw.githubusercontent.com/setube/folia-major/main/deploy/docker/.env.example \
   -o .env
 ```
 

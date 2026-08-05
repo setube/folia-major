@@ -3,8 +3,8 @@
   "productName": "Folia",
   "description": "Lyrics Reimagine",
   "author": {
-    "name": "chthollyphile",
-    "email": "chthollyphile@users.noreply.github.com"
+    "name": "setube",
+    "email": "setube@users.noreply.github.com"
   },
   "private": true,
   "version": "0.6.13",
@@ -40,7 +40,7 @@
     "contributors:generate": "npx all-contributors-cli generate"
   },
   "build": {
-    "appId": "top.izuna.foliamajor",
+    "appId": "io.github.setube.foliamajor",
     "productName": "Folia",
     "generateUpdatesFilesForAllChannels": true,
     "directories": {
