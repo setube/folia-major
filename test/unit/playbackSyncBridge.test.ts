@@ -87,6 +87,8 @@ describe('playbackSyncBridge', () => {
             canGoPrevious: true,
             canGoNext: true,
             isPlaying: true,
+            title: 'Current Song',
+            artist: 'Artist 2',
         });
         expect(buildDiscordPresenceSnapshotFromPlaybackSyncBridge(model)).toEqual({
             hasTrack: true,
@@ -138,6 +140,8 @@ describe('playbackSyncBridge', () => {
             canGoPrevious: false,
             canGoNext: false,
             isPlaying: false,
+            title: null,
+            artist: null,
         });
     });
 

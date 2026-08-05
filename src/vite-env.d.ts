@@ -58,9 +58,28 @@ declare global {
     canGoPrevious: boolean;
     canGoNext: boolean;
     isPlaying: boolean;
+    /** 托盘菜单顶部展示用；无活动曲目时为 null。 */
+    title: string | null;
+    artist: string | null;
   }
 
   type ElectronTaskbarControlAction = 'previous' | 'play-pause' | 'next';
+
+  interface ElectronTrayMenuState {
+    playback: ElectronTaskbarControlState;
+    clickThroughEnabled: boolean;
+    skipTaskbarEnabled: boolean;
+    mainWindowVisible: boolean;
+    canToggleWindow: boolean;
+  }
+
+  type ElectronTrayMenuAction =
+    | ElectronTaskbarControlAction
+    | 'toggle-window'
+    | 'open-remote'
+    | 'toggle-click-through'
+    | 'toggle-skip-taskbar'
+    | 'quit';
 
   type ElectronRemoteControlCommand =
     | { type: 'play-pause' }
@@ -542,6 +561,11 @@ declare global {
       onObsBrowserSourceStatusChanged: (callback: (status: ElectronObsBrowserSourceStatus) => void) => () => void;
       updateTaskbarControls: (state: ElectronTaskbarControlState) => Promise<boolean>;
       onTaskbarControl: (callback: (action: ElectronTaskbarControlAction) => void) => () => void;
+      getTrayMenuState: () => Promise<ElectronTrayMenuState>;
+      invokeTrayMenuAction: (action: ElectronTrayMenuAction) => Promise<boolean>;
+      closeTrayMenu: () => Promise<boolean>;
+      resizeTrayMenu: (height: number) => Promise<boolean>;
+      onTrayMenuState: (callback: (state: ElectronTrayMenuState) => void) => () => void;
       openRemoteControl: () => Promise<boolean>;
       toggleRemoteControl: () => Promise<boolean>;
       closeRemoteControl: () => Promise<boolean>;

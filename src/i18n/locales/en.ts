@@ -1354,6 +1354,26 @@ export default {
   "player": {
     "unknownArtist": "Unknown Artist",
     "unknownAlbum": "Unknown Album",
+    "controls": {
+      "play": "Play",
+      "pause": "Pause",
+      "previous": "Previous track",
+      "next": "Next track",
+      "queue": "Play queue",
+      "loopOff": "Loop off",
+      "loopAll": "Loop all",
+      "loopOne": "Repeat one",
+      "shuffle": "Shuffle",
+      "lyricsTimeline": "View lyrics timeline",
+    },
+  },
+  "tray": {
+    "noTrack": "Nothing playing",
+    "showHide": "Show / Hide Main Window",
+    "openRemote": "Open Remote Window",
+    "clickThrough": "Click-Through",
+    "hideTaskbar": "Hide Taskbar Icon",
+    "quit": "Quit",
   },
   "localMusic": {
     "foldersAndPlaylists": "Folders & Playlists",
@@ -1628,8 +1648,7 @@ export default {
     "midnightDefault": "Midnight Default",
     "daylightDefault": "Daylight Default"
   },
-  "timeline": {
-    "title": "Timeline",
+  "timeline": {    "title": "Timeline",
     "noLyrics": "No lyrics"
   },
   "userGuide": {

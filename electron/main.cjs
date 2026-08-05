@@ -82,6 +82,11 @@ const mainLocale = {
   'zh-CN': {
     trayShowHide: '显示/隐藏主窗口',
     trayOpenRemote: '打开 遥控窗口',
+    trayPrevious: '上一首',
+    trayPlay: '播放',
+    trayPause: '暂停',
+    trayNext: '下一首',
+    trayNoTrack: '暂无播放',
     trayToggleClickThrough: '切换点击穿透',
     trayHideTaskbar: '隐藏任务栏图标',
     trayQuit: '退出',
@@ -93,6 +98,11 @@ const mainLocale = {
   en: {
     trayShowHide: 'Show/Hide Main Window',
     trayOpenRemote: 'Open Remote Window',
+    trayPrevious: 'Previous Track',
+    trayPlay: 'Play',
+    trayPause: 'Pause',
+    trayNext: 'Next Track',
+    trayNoTrack: 'Nothing Playing',
     trayToggleClickThrough: 'Toggle Click-Through',
     trayHideTaskbar: 'Hide Taskbar Icon',
     trayQuit: 'Quit',
@@ -104,6 +114,11 @@ const mainLocale = {
   in: {
     trayShowHide: 'Tampilkan/Sembunyikan Jendela Utama',
     trayOpenRemote: 'Buka Jendela Remote',
+    trayPrevious: 'Lagu Sebelumnya',
+    trayPlay: 'Putar',
+    trayPause: 'Jeda',
+    trayNext: 'Lagu Berikutnya',
+    trayNoTrack: 'Tidak Ada Pemutaran',
     trayToggleClickThrough: 'Alihkan Click-Through',
     trayHideTaskbar: 'Sembunyikan Ikon Taskbar',
     trayQuit: 'Keluar',
@@ -507,6 +522,31 @@ function isWindowsThumbarSupported() {
   return process.platform === 'win32';
 }
 
+// 托盘菜单与任务栏缩略图共用的播放状态快照，由渲染进程经 thumbar-update-buttons 推送。
+let playbackControlState = {
+  hasActiveTrack: false,
+  canGoPrevious: false,
+  canGoNext: false,
+  isPlaying: false,
+  title: null,
+  artist: null,
+};
+
+// 托盘菜单项过长会把菜单撑得很宽，这里按显示宽度截断。
+const TRAY_TRACK_LABEL_MAX = 42;
+
+function formatTrayTrackLabel(locale) {
+  const { hasActiveTrack, title, artist } = playbackControlState;
+  if (!hasActiveTrack || !title) {
+    return locale.trayNoTrack;
+  }
+
+  const text = artist ? `${title} — ${artist}` : title;
+  return text.length > TRAY_TRACK_LABEL_MAX
+    ? `${text.slice(0, TRAY_TRACK_LABEL_MAX - 1)}…`
+    : text;
+}
+
 function sendThumbarAction(action) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -772,6 +812,33 @@ function refreshTrayMenu() {
   const locale = getMainLocale();
   const menu = Menu.buildFromTemplate([
     {
+      label: formatTrayTrackLabel(locale),
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: locale.trayPrevious,
+      enabled: playbackControlState.canGoPrevious,
+      click: () => {
+        sendThumbarAction('previous');
+      },
+    },
+    {
+      label: playbackControlState.isPlaying ? locale.trayPause : locale.trayPlay,
+      enabled: playbackControlState.hasActiveTrack,
+      click: () => {
+        sendThumbarAction('play-pause');
+      },
+    },
+    {
+      label: locale.trayNext,
+      enabled: playbackControlState.canGoNext,
+      click: () => {
+        sendThumbarAction('next');
+      },
+    },
+    { type: 'separator' },
+    {
       label: locale.trayShowHide,
       click: () => {
         toggleMainWindowVisibility();
@@ -810,8 +877,127 @@ function refreshTrayMenu() {
     },
   ]);
 
-  appTray.setContextMenu(menu);
+  appTray.setContextMenu(trayMenuUsesCustomWindow ? null : menu);
   appTray.setToolTip('Folia');
+  // 自绘菜单正开着时同步刷新，让播放状态实时反映在按钮上。
+  sendTrayMenuState();
+}
+
+// --- 自绘托盘菜单窗口 ---
+// 原生 Menu 无法在菜单项里内嵌横向图标按钮行，这里用无边框透明窗自绘，
+// 复用遥控窗那套 loadAppEntry + preload 桥。创建失败时回退到原生菜单。
+const TRAY_MENU_WINDOW_WIDTH = 272;
+const TRAY_MENU_WINDOW_INITIAL_HEIGHT = 240;
+let trayMenuWindow = null;
+let trayMenuUsesCustomWindow = true;
+
+function buildTrayMenuState() {
+  return {
+    playback: { ...playbackControlState },
+    clickThroughEnabled: mainWindowClickThroughEnabled,
+    skipTaskbarEnabled: mainWindowSkipTaskbarEnabled,
+    mainWindowVisible: isMainWindowVisible(),
+    canToggleWindow: Boolean(mainWindow && !mainWindow.isDestroyed()),
+  };
+}
+
+function sendTrayMenuState() {
+  if (!trayMenuWindow || trayMenuWindow.isDestroyed()) {
+    return;
+  }
+  trayMenuWindow.webContents.send('tray-menu-state', buildTrayMenuState());
+}
+
+function hideTrayMenuWindow() {
+  if (trayMenuWindow && !trayMenuWindow.isDestroyed() && trayMenuWindow.isVisible()) {
+    trayMenuWindow.hide();
+  }
+}
+
+function createTrayMenuWindow() {
+  if (trayMenuWindow && !trayMenuWindow.isDestroyed()) {
+    return trayMenuWindow;
+  }
+
+  const win = new BrowserWindow({
+    width: TRAY_MENU_WINDOW_WIDTH,
+    height: TRAY_MENU_WINDOW_INITIAL_HEIGHT,
+    show: false,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    acceptFirstMouse: true,
+    title: 'Folia Tray Menu',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      backgroundThrottling: false,
+    },
+  });
+
+  // pop-up-menu 层级保证它压在其他置顶窗之上，和原生菜单一致。
+  win.setAlwaysOnTop(true, 'pop-up-menu');
+  win.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+  win.on('blur', () => {
+    hideTrayMenuWindow();
+  });
+  win.on('closed', () => {
+    if (trayMenuWindow === win) {
+      trayMenuWindow = null;
+    }
+  });
+
+  loadAppEntry(win, { trayMenu: '1' });
+  trayMenuWindow = win;
+  return win;
+}
+
+function showTrayMenuWindow() {
+  let win = null;
+  try {
+    win = createTrayMenuWindow();
+  } catch (error) {
+    console.warn('[Electron] Failed to create custom tray menu window', error);
+    return false;
+  }
+
+  if (!win || win.isDestroyed()) {
+    return false;
+  }
+
+  sendTrayMenuState();
+
+  const cursor = screen.getCursorScreenPoint();
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+  const [width, height] = win.getSize();
+
+  // 默认从光标处向上弹（任务栏通常在底部）；夹回工作区后，
+  // 任务栏在顶部/侧边时会自动改为向下或贴边，不必显式判断任务栏方位。
+  const x = Math.min(
+    Math.max(cursor.x - Math.round(width / 2), workArea.x),
+    workArea.x + workArea.width - width
+  );
+  const y = Math.min(
+    Math.max(cursor.y - height, workArea.y),
+    workArea.y + workArea.height - height
+  );
+
+  win.setPosition(x, y, false);
+  win.show();
+  win.focus();
+  return true;
 }
 
 function ensureTray() {
@@ -830,6 +1016,18 @@ function ensureTray() {
   appTray.on('click', () => {
     if (!isMainWindowVisible()) {
       focusMainWindow();
+    }
+  });
+  appTray.on('right-click', () => {
+    if (!trayMenuUsesCustomWindow) {
+      return;
+    }
+
+    if (!showTrayMenuWindow()) {
+      // 自绘失败就永久退回原生菜单，避免右键之后什么都不弹。
+      trayMenuUsesCustomWindow = false;
+      refreshTrayMenu();
+      appTray.popUpContextMenu();
     }
   });
   refreshTrayMenu();
@@ -3585,14 +3783,107 @@ ipcMain.handle('thumbar-update-buttons', (event, state) => {
     throw new Error('Untrusted renderer attempted to update taskbar controls.');
   }
 
-  return updateWindowThumbarButtons({
+  const nextState = {
     hasActiveTrack: Boolean(state?.hasActiveTrack),
     canGoPrevious: Boolean(state?.canGoPrevious),
     canGoNext: Boolean(state?.canGoNext),
     isPlaying: Boolean(state?.isPlaying),
-  });
+    title: typeof state?.title === 'string' ? state.title : null,
+    artist: typeof state?.artist === 'string' ? state.artist : null,
+  };
+
+  // 托盘菜单每次都是整体重建，只在会改变菜单内容的字段变化时才刷新。
+  const trayNeedsRefresh = Object.keys(nextState)
+    .some((key) => nextState[key] !== playbackControlState[key]);
+
+  playbackControlState = nextState;
+
+  if (trayNeedsRefresh && appTray) {
+    refreshTrayMenu();
+  }
+
+  return updateWindowThumbarButtons(nextState);
 });
 
+function isTrayMenuContents(sender) {
+  return Boolean(trayMenuWindow && !trayMenuWindow.isDestroyed() && sender === trayMenuWindow.webContents);
+}
+
+const TRAY_MENU_ACTIONS = {
+  previous: () => sendThumbarAction('previous'),
+  'play-pause': () => sendThumbarAction('play-pause'),
+  next: () => sendThumbarAction('next'),
+  'toggle-window': () => toggleMainWindowVisibility(),
+  'open-remote': () => createRemoteControlWindow(),
+  'toggle-click-through': () => setMainWindowClickThroughEnabled(!mainWindowClickThroughEnabled),
+  'toggle-skip-taskbar': () => persistMainWindowSkipTaskbarEnabled(!mainWindowSkipTaskbarEnabled),
+  quit: () => app.quit(),
+};
+
+ipcMain.handle('tray-menu-get-state', (event) => {
+  if (!isTrayMenuContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to read tray menu state.');
+  }
+
+  return buildTrayMenuState();
+});
+
+ipcMain.handle('tray-menu-action', (event, action) => {
+  if (!isTrayMenuContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to invoke a tray menu action.');
+  }
+
+  const handler = TRAY_MENU_ACTIONS[action];
+  if (!handler) {
+    return false;
+  }
+
+  handler();
+  // 播放类动作会改变按钮状态，立刻回推一份让菜单里的图标跟上。
+  sendTrayMenuState();
+  return true;
+});
+
+ipcMain.handle('tray-menu-close', (event) => {
+  if (!isTrayMenuContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to close the tray menu.');
+  }
+
+  hideTrayMenuWindow();
+  return true;
+});
+
+ipcMain.handle('tray-menu-resize', (event, height) => {
+  if (!isTrayMenuContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to resize the tray menu.');
+  }
+
+  const nextHeight = Math.round(Number(height));
+  if (!Number.isFinite(nextHeight) || nextHeight < 80 || nextHeight > 720) {
+    return false;
+  }
+
+  // 高度由内容测量得出；窗口已显示时要连同 y 一起调整，避免向下顶出工作区。
+  const win = trayMenuWindow;
+  if (!win || win.isDestroyed()) {
+    return false;
+  }
+
+  const [width] = win.getSize();
+  if (win.isVisible()) {
+    const bounds = win.getBounds();
+    const { workArea } = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+    const y = Math.min(
+      Math.max(bounds.y + bounds.height - nextHeight, workArea.y),
+      workArea.y + workArea.height - nextHeight
+    );
+    win.setBounds({ x: bounds.x, y, width, height: nextHeight }, false);
+  } else {
+    win.setSize(width, nextHeight, false);
+  }
+
+  return true;
+});
 ipcMain.handle('remote-control-open', (event) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     throw new Error('Untrusted renderer attempted to open the remote control window.');

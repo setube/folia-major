@@ -50,6 +50,9 @@ type BuildAppOverlaysModelParams = {
     setPlayerState: React.Dispatch<React.SetStateAction<PlayerState>>;
     togglePlay: FloatingControlsProps['onTogglePlay'];
     toggleLoop: FloatingControlsProps['onToggleLoop'];
+    handleNextTrack: FloatingControlsProps['onNextTrack'];
+    handlePrevTrack: FloatingControlsProps['onPrevTrack'];
+    toggleQueuePanel: FloatingControlsProps['onToggleQueue'];
     navigateToPlayer: () => void;
     isPlayerChromeHidden: boolean;
     shouldHidePlayerProgressBar: boolean;
@@ -91,6 +94,9 @@ export const buildAppOverlaysModel = ({
     setPlayerState,
     togglePlay,
     toggleLoop,
+    handleNextTrack,
+    handlePrevTrack,
+    toggleQueuePanel,
     navigateToPlayer,
     isPlayerChromeHidden,
     shouldHidePlayerProgressBar,
@@ -150,6 +156,9 @@ export const buildAppOverlaysModel = ({
             },
             onTogglePlay: togglePlay,
             onToggleLoop: toggleLoop,
+            onNextTrack: handleNextTrack,
+            onPrevTrack: handlePrevTrack,
+            onToggleQueue: toggleQueuePanel,
             onNavigateToPlayer: navigateToPlayer,
             noTrackText,
             primaryColor: 'var(--text-primary)',

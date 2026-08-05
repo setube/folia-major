@@ -2767,6 +2767,15 @@ export default function App() {
         handlePlayerPanelArtistSelect,
         navigateDirectHome,
     ]);
+    // 控制栏的"播放列表"按钮：已停在队列页则收起面板，否则打开并切到队列页
+    const toggleQueuePanel = useCallback(() => {
+        if (isPanelOpen && panelTab === 'queue') {
+            setIsPanelOpen(false);
+            return;
+        }
+        setPanelTab('queue');
+        setIsPanelOpen(true);
+    }, [isPanelOpen, panelTab]);
     const appOverlaysModel = useMemo(() => buildAppOverlaysModel({
         currentView,
         isSearchOpen,
@@ -2799,6 +2808,9 @@ export default function App() {
         setPlayerState,
         togglePlay,
         toggleLoop,
+        handleNextTrack,
+        handlePrevTrack,
+        toggleQueuePanel,
         navigateToPlayer,
         isPlayerChromeHidden,
         shouldHidePlayerProgressBar,
@@ -2816,6 +2828,8 @@ export default function App() {
         devDebugSnapshot,
         duration,
         effectiveLoopMode,
+        handleNextTrack,
+        handlePrevTrack,
         handleSearchResultAddToQueue,
         handleSearchResultAlbumOpen,
         handleSearchResultArtistOpen,
@@ -2830,6 +2844,7 @@ export default function App() {
         isPlayerChromeHidden,
         lyrics,
         navigateToPlayer,
+        toggleQueuePanel,
         playerState,
         publishStagePlayerPlaybackUpdate,
         seekMainAudio,

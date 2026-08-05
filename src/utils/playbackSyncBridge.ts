@@ -254,4 +254,8 @@ export const buildTaskbarControlsFromPlaybackSyncBridge = (model: PlaybackSyncBr
     canGoPrevious: model.canGoPrevious,
     canGoNext: model.canGoNext,
     isPlaying: model.hasTrack && model.playerState === PlayerState.PLAYING,
+    // 托盘菜单顶部展示当前曲目，与任务栏缩略图共用这条状态推送。
+    // 无活动曲目时一并清空，避免 Stage 接管后托盘还挂着上一首的信息。
+    title: model.hasTrack ? model.title : null,
+    artist: model.hasTrack ? model.artist : null,
 });

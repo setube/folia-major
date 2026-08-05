@@ -7,6 +7,7 @@ import RemoteControlApp from './components/remote/RemoteControlApp';
 import ObsBrowserSourceApp from './components/obs/ObsBrowserSourceApp';
 import ObsNowPlayingSourceApp from './components/obs/ObsNowPlayingSourceApp';
 import ObsPlayerCapSourceApp from './components/obs/ObsPlayerCapSourceApp';
+import TrayMenuApp from './components/tray/TrayMenuApp';
 
 // src/bootstrap.tsx
 // Mounts the React app after index.tsx installs runtime-level browser shims.
@@ -33,6 +34,8 @@ root.render(
           ? <ObsBrowserSourceApp />
           : searchParams.get('remote') === '1'
             ? <RemoteControlApp />
-            : <App />}
+            : searchParams.get('trayMenu') === '1'
+              ? <TrayMenuApp />
+              : <App />}
   </React.StrictMode>
 );

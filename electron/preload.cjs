@@ -96,11 +96,19 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.on('obs-browser-source-status-changed', listener);
         return () => ipcRenderer.removeListener('obs-browser-source-status-changed', listener);
     },
-    updateTaskbarControls: (state) => ipcRenderer.invoke('thumbar-update-buttons', state),
-    onTaskbarControl: (callback) => {
+    updateTaskbarControls: (state) => ipcRenderer.invoke('thumbar-update-buttons', state),    onTaskbarControl: (callback) => {
         const listener = (_event, action) => callback(action);
         ipcRenderer.on('thumbar-action', listener);
         return () => ipcRenderer.removeListener('thumbar-action', listener);
+    },
+    getTrayMenuState: () => ipcRenderer.invoke('tray-menu-get-state'),
+    invokeTrayMenuAction: (action) => ipcRenderer.invoke('tray-menu-action', action),
+    closeTrayMenu: () => ipcRenderer.invoke('tray-menu-close'),
+    resizeTrayMenu: (height) => ipcRenderer.invoke('tray-menu-resize', height),
+    onTrayMenuState: (callback) => {
+        const listener = (_event, state) => callback(state);
+        ipcRenderer.on('tray-menu-state', listener);
+        return () => ipcRenderer.removeListener('tray-menu-state', listener);
     },
     openRemoteControl: () => ipcRenderer.invoke('remote-control-open'),
     toggleRemoteControl: () => ipcRenderer.invoke('remote-control-toggle'),

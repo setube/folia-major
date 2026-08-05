@@ -1355,6 +1355,26 @@ export default {
   "player": {
     "unknownArtist": "未知歌手",
     "unknownAlbum": "未知专辑",
+    "controls": {
+      "play": "播放",
+      "pause": "暂停",
+      "previous": "上一首",
+      "next": "下一首",
+      "queue": "播放列表",
+      "loopOff": "不循环",
+      "loopAll": "列表循环",
+      "loopOne": "单曲循环",
+      "shuffle": "随机播放",
+      "lyricsTimeline": "查看歌词时间轴",
+    },
+  },
+  "tray": {
+    "noTrack": "暂无播放",
+    "showHide": "显示 / 隐藏主窗口",
+    "openRemote": "打开遥控窗口",
+    "clickThrough": "点击穿透",
+    "hideTaskbar": "隐藏任务栏图标",
+    "quit": "退出",
   },
   "localMusic": {
     "foldersAndPlaylists": "文件夹",
