@@ -105,6 +105,8 @@ export type CommandPaletteContext = {
     toggleAutoplayOnLaunch: () => void;
     rememberPlaybackPosition: boolean;
     toggleRememberPlaybackPosition: () => void;
+    preventDisplaySleepDuringPlayback: boolean;
+    togglePreventDisplaySleepDuringPlayback: () => void;
     setAppLanguagePreference: (preference: AppLanguagePreference) => Promise<void> | void;
     runAutoMatchBestLyric: () => Promise<boolean>;
     setIsUserGuideModalOpen: (isOpen: boolean) => void;

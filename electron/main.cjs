@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker } = require('electron');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -9,6 +9,7 @@ const { createWindowPlaybackHandoffStore } = require('./windowPlaybackHandoff.cj
 const { createKugouApiBridge } = require('./kugouApiBridge.cjs');
 const { DEFAULT_DISCORD_APPLICATION_ID, createDiscordPresenceController } = require('./discordPresence.cjs');
 const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
+const { createDisplaySleepBlocker } = require('./displaySleepBlocker.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
 const { LAUNCH_AT_LOGIN_MODES, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
@@ -189,6 +190,7 @@ const MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY = 'MAIN_WINDOW_ALWAYS_ON_TOP';
 const TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY = 'TRANSPARENT_PLAYER_BACKGROUND';
 const VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY = 'VOICE_INPUT_PAUSE_ENABLED';
 const AI_PROVIDER_CREDENTIALS_SETTING_KEY = 'AI_PROVIDER_CREDENTIALS';
+const PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY = 'PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK';
 
 const DEFAULT_STAGE_API_PORT = 32107;
 const DEFAULT_OBS_BROWSER_SOURCE_PORT = 32108;
@@ -308,6 +310,7 @@ function getPublicSettings() {
     [TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY]: readStoredBoolean(TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY, false),
     [DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY]: readStoredBoolean(DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY, false),
     [VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY]: readStoredBoolean(VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY, false),
+    [PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY]: readStoredBoolean(PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY, false),
     [UPDATE_CHANNEL_SETTING_KEY]: getCurrentReleaseChannel().id,
     'enable_player_page_native_blur': store.get('enable_player_page_native_blur') === true,
   };
@@ -398,6 +401,7 @@ const voiceInputPauseMonitor = createVoiceInputPauseMonitor({
   isEnabled: () => readStoredBoolean(VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY, false),
   getOwnExePath: () => process.execPath,
 });
+const displaySleepBlocker = createDisplaySleepBlocker(powerSaveBlocker);
 
 function buildPlaybackSyncBridgeStatus() {
   return {
@@ -3144,6 +3148,7 @@ function createWindow(options = {}) {
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
+      displaySleepBlocker.stop();
       if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
         remoteControlWindow.close();
       }
@@ -3266,6 +3271,7 @@ app.on('before-quit', () => {
   isQuittingApp = true;
   clearPendingWindowPlaybackHandoffRequests();
   voiceInputPauseMonitor.stop();
+  displaySleepBlocker.stop();
   void discordPresence.destroy();
 });
 
@@ -3276,6 +3282,13 @@ ipcMain.handle('window-set-native-theme', (event, themeSource) => {
 
 ipcMain.handle('get-settings', () => {
   return getPublicSettings();
+});
+
+ipcMain.handle('playback-display-sleep-set-active', (event, active) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return false;
+  }
+  return displaySleepBlocker.setActive(Boolean(active));
 });
 
 ipcMain.handle('set-app-locale', (event, localeKey) => {
@@ -3313,7 +3326,8 @@ ipcMain.handle('save-settings', (event, key, value) => {
     key === REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY ||
     key === TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY ||
     key === DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY ||
-    key === VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY
+    key === VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY ||
+    key === PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY
   ) {
     nextValue = Boolean(value);
   }

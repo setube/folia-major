@@ -48,6 +48,8 @@ export default {
     "rememberPlaybackPositionOff": "The last playback position will not be remembered",
     "voiceInputPauseOn": "Pause on voice input enabled",
     "voiceInputPauseOff": "Pause on voice input disabled",
+    "preventDisplaySleepOn": "Display will stay awake during playback",
+    "preventDisplaySleepOff": "Display sleep prevention disabled",
     "taskbarHidden": "Main window taskbar icon hidden",
     "taskbarRestored": "Main window taskbar icon restored",
     "openPlayerOnLaunch": "Launch directly to player page",
@@ -252,10 +254,11 @@ export default {
       "sync-now": { "title": "Sync now", "description": "Sync AI themes" },
       "settings-desktop": { "title": "Desktop settings", "description": "Open desktop app settings" },
       "desktop-toggle-voice-input-pause": { "title": "Voice input pause", "description": "Toggle pausing playback during voice input" },
-      "desktop-toggle-close-to-tray": { "title": "Close to tray", "description": "Toggle hiding to the tray instead of quitting on close" },
+      "desktop-toggle-close-main-panel": { "title": "Close to tray", "description": "Toggle hiding to the tray instead of quitting on close" },
       "desktop-toggle-launch-at-login": { "title": "Launch at login", "description": "Toggle starting Folia automatically after you sign in" },
       "playback-toggle-autoplay-on-launch": { "title": "Autoplay on launch", "description": "Toggle starting playback automatically when the app opens" },
       "playback-toggle-remember-position": { "title": "Remember playback position", "description": "Toggle resuming the last playback position on launch" },
+      "desktop-toggle-prevent-display-sleep": { "title": "Prevent display sleep during playback", "description": "Keep the display awake while music is playing" },
       "settings-lab": { "title": "Lab settings", "description": "Open experimental settings" },
       "visualizer-toggle-random-per-song": { "title": "Random visualizer for every song", "description": "Toggle a random lyric animation mode whenever the song changes" },
       "settings-visualizer": { "title": "Visualizer settings", "description": "Open lyrics animation workbench" },
@@ -750,6 +753,8 @@ export default {
     "voiceInputSettings": "Voice input",
     "voiceInputPause": "Pause playback during voice input",
     "voiceInputPauseDesc": "Automatically pause playback while system voice input (Win+H voice typing, IME speech-to-text) or another app uses the microphone, and resume afterwards. Windows desktop only.",
+    "preventDisplaySleepDuringPlayback": "Prevent display sleep during playback",
+    "preventDisplaySleepDuringPlaybackDesc": "Desktop only. Keep the display awake while music is playing; normal sleep behavior resumes when playback pauses or stops.",
     "showOpenPanelCloseButton": "Show panel close button",
     "showOpenPanelCloseButtonDesc": "Keep the floating close button visible after the song info card opens.",
     "showOpenPanelCloseButtonDescSub": "Turn this off for cleaner screen recordings. Mobile users may still prefer leaving it on.",
@@ -1313,7 +1318,7 @@ export default {
   },
   "releaseNotes": {
     "v0_6_12": {
-      "intro": "Here are the new features and improvements in version 0.6.12.",
+      "intro": "Here are the new features and improvements in version 0.6.13.",
       "sonnetLayout": {
         "title": "Rebuilt Sonnet Layout Engine",
         "description": "The Sonnet visualizer's layout engine has been rebuilt for more polished, balanced, and stable lyric typography."
