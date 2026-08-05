@@ -25,10 +25,10 @@ export interface PlaybackSyncBridgeModel {
     playerState: PlayerState;
     canGoPrevious: boolean;
     canGoNext: boolean;
+    effectiveLoopMode: PlayerLoopMode;
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
-    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;
@@ -57,7 +57,6 @@ export interface BuildPlaybackSyncBridgeModelArgs {
     isStageActive: boolean;
     controlsDisabled: boolean;
     transparentModeEnabled: boolean;
-    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop?: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;
@@ -130,7 +129,6 @@ export const buildPlaybackSyncBridgeModel = ({
     isStageActive,
     controlsDisabled,
     transparentModeEnabled,
-    mainWindowClickThroughEnabled,
     mainWindowAlwaysOnTop = false,
     mainWindowBorderVisible,
     playerChromeHidden,
@@ -173,10 +171,10 @@ export const buildPlaybackSyncBridgeModel = ({
         playerState,
         canGoPrevious,
         canGoNext,
+        effectiveLoopMode,
         controlsDisabled: controlsDisabled || !hasTrack,
         isStageActive,
         transparentModeEnabled,
-        mainWindowClickThroughEnabled,
         mainWindowAlwaysOnTop,
         mainWindowBorderVisible,
         playerChromeHidden,
@@ -206,7 +204,6 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     controlsDisabled: model.controlsDisabled,
     isStageActive: model.isStageActive,
     transparentModeEnabled: model.transparentModeEnabled,
-    mainWindowClickThroughEnabled: model.mainWindowClickThroughEnabled,
     mainWindowAlwaysOnTop: model.mainWindowAlwaysOnTop,
     mainWindowBorderVisible: model.mainWindowBorderVisible,
     playerChromeHidden: model.playerChromeHidden,
@@ -258,4 +255,8 @@ export const buildTaskbarControlsFromPlaybackSyncBridge = (model: PlaybackSyncBr
     // 无活动曲目时一并清空，避免 Stage 接管后托盘还挂着上一首的信息。
     title: model.hasTrack ? model.title : null,
     artist: model.hasTrack ? model.artist : null,
+    // 托盘模式二级菜单要回显当前选中项。
+    loopMode: model.effectiveLoopMode,
+    // 托盘菜单的喜欢按钮要回显选中态。
+    isLiked: model.hasTrack && model.isLiked,
 });

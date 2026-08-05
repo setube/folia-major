@@ -34,6 +34,11 @@ interface FloatingPlayerControlsProps {
     onNextTrack?: () => void;
     onPrevTrack?: () => void;
     onToggleQueue?: () => void;
+    onOpenArtist?: (artistIndex: number) => void;
+    isLiked?: boolean;
+    onToggleLike?: () => void;
+    volume?: number;
+    onVolumeChange?: (volume: number) => void;
     onNavigateToPlayer: () => void;
     noTrackText?: string;
     primaryColor?: string;
@@ -61,6 +66,11 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
     onNextTrack,
     onPrevTrack,
     onToggleQueue,
+    onOpenArtist,
+    isLiked,
+    onToggleLike,
+    volume,
+    onVolumeChange,
     onNavigateToPlayer,
     noTrackText = 'No Track',
     primaryColor = 'var(--text-primary)',
@@ -143,6 +153,11 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
                                     onNextTrack={onNextTrack}
                                     onPrevTrack={onPrevTrack}
                                     onToggleQueue={onToggleQueue}
+                                    onOpenArtist={onOpenArtist}
+                                    isLiked={isLiked}
+                                    onToggleLike={onToggleLike}
+                                    volume={volume}
+                                    onVolumeChange={onVolumeChange}
                                     noTrackText={noTrackText}
                                     primaryColor={primaryColor}
                                     secondaryColor={secondaryColor}

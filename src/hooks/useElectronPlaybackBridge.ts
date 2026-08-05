@@ -3,6 +3,7 @@ import type React from 'react';
 import type { RefObject } from 'react';
 import type { MotionValue } from 'framer-motion';
 import { PlayerState } from '../types';
+import { useSettingsUiStore } from '../stores/useSettingsUiStore';
 import type { SongResult, LyricData, PlayerLoopMode } from '../types';
 import type { PlayerChromeVisibilityMode, RemoteControlCommand, RemoteControlSnapshot } from '../types/remoteControl';
 import type { VideoExportState } from '../types/videoExport';
@@ -30,7 +31,6 @@ type UseElectronPlaybackBridgeOptions = {
     transparentPlayerBackground: boolean;
     activePlaybackContext: 'main' | 'stage';
     isStagePlayerSnapshotEnabled: boolean;
-    mainWindowClickThroughEnabled: boolean;
     isNowPlayingControlDisabledRef: RefObject<boolean>;
     audioRef: RefObject<HTMLAudioElement | null>;
     audioSrc: string | null;
@@ -60,6 +60,8 @@ type UseElectronPlaybackBridgeOptions = {
     onExternalPlayRequest?: (request: any) => Promise<void>;
     isLiked: boolean;
     onLike?: () => void;
+    onOpenPlayer?: () => void;
+    onOpenSettings?: () => void;
 };
 
 const emptyPlaybackSyncBridgeStatus = (): ElectronPlaybackSyncBridgeStatus => ({
@@ -79,7 +81,6 @@ export const useElectronPlaybackBridge = ({
     transparentPlayerBackground,
     activePlaybackContext,
     isStagePlayerSnapshotEnabled,
-    mainWindowClickThroughEnabled,
     isNowPlayingControlDisabledRef,
     audioRef,
     audioSrc,
@@ -109,6 +110,8 @@ export const useElectronPlaybackBridge = ({
     onExternalPlayRequest,
     isLiked,
     onLike,
+    onOpenPlayer,
+    onOpenSettings,
 }: UseElectronPlaybackBridgeOptions) => {
     const [playbackSyncBridgeStatus, setPlaybackSyncBridgeStatus] = useState<ElectronPlaybackSyncBridgeStatus>(() => emptyPlaybackSyncBridgeStatus());
     const pausedByVoiceInputRef = useRef(false);
@@ -180,7 +183,6 @@ export const useElectronPlaybackBridge = ({
             isStageActive: isNowPlayingStageActive,
             controlsDisabled: isNowPlayingControlDisabledRef.current,
             transparentModeEnabled: transparentPlayerBackground,
-            mainWindowClickThroughEnabled,
             mainWindowBorderVisible: showTransparentWindowBorder,
             playerChromeHidden: isPlayerChromeHidden,
             exportState,
@@ -299,12 +301,54 @@ export const useElectronPlaybackBridge = ({
         };
     }, [isElectronWindow, setIsTitlebarRevealed]);
 
+    // 托盘动作监听只在挂载时注册一次（依赖全是稳定 ref），直接闭包捕获会拿到首帧的旧回调，
+    // 那时 currentSong 还是 null，喜欢/跳转都会静默失效。用 ref 取最新值，与 mediaSession*Ref 同一套路。
+    const onLikeRef = useRef(onLike);
+    const onOpenPlayerRef = useRef(onOpenPlayer);
+    const onOpenSettingsRef = useRef(onOpenSettings);
+
+    useEffect(() => {
+        onLikeRef.current = onLike;
+    }, [onLike]);
+
+    useEffect(() => {
+        onOpenPlayerRef.current = onOpenPlayer;
+    }, [onOpenPlayer]);
+
+    useEffect(() => {
+        onOpenSettingsRef.current = onOpenSettings;
+    }, [onOpenSettings]);
+
     useEffect(() => {
         if (!window.electron?.onTaskbarControl) {
             return;
         }
 
         return window.electron.onTaskbarControl((action) => {
+            // 循环模式与"当前是否有可控曲目"无关，放在播放控制的可用性判断之前。
+            if (action.startsWith('loop-')) {
+                const mode = action.slice('loop-'.length) as PlayerLoopMode;
+                useSettingsUiStore.getState().handleSetLoopMode(mode);
+                return;
+            }
+
+            // 托盘点顶部曲目信息：主进程已亮出主窗，这里负责切到播放页。
+            if (action === 'open-player') {
+                onOpenPlayerRef.current?.();
+                return;
+            }
+
+            // 托盘「设置」：主进程已亮出主窗，这里负责打开设置弹窗。
+            if (action === 'open-settings') {
+                onOpenSettingsRef.current?.();
+                return;
+            }
+
+            if (action === 'like') {
+                onLikeRef.current?.();
+                return;
+            }
+
             if (isNowPlayingControlDisabledRef.current || !audioRef.current || !taskbarHasTrackRef.current) {
                 return;
             }
@@ -338,7 +382,7 @@ export const useElectronPlaybackBridge = ({
             console.warn('[Electron] Failed to update Windows taskbar controls', error);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentSong, effectiveLoopMode, isFmMode, isNowPlayingStageActive, playQueue, playerState]);
+    }, [currentSong, effectiveLoopMode, isFmMode, isLiked, isNowPlayingStageActive, playQueue, playerState]);
 
     // System/IME voice input pauses playback and resumes it afterwards. Resume only
     // fires when this bridge caused the pause and the track is still paused, so a
@@ -416,7 +460,7 @@ export const useElectronPlaybackBridge = ({
             window.removeEventListener('resize', handleResize);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cachedCoverUrl, coverUrl, currentSong, duration, effectiveLoopMode, exportState, isDaylight, isFmMode, isNowPlayingStageActive, isPlayerChromeHidden, playerChromeVisibilityMode, lyrics, lyricTimelineOffsetMs, mainWindowClickThroughEnabled, playbackSyncBridgeStatus, playQueue, playerState, showTransparentWindowBorder, transparentPlayerBackground, isLiked]);
+    }, [cachedCoverUrl, coverUrl, currentSong, duration, effectiveLoopMode, exportState, isDaylight, isFmMode, isNowPlayingStageActive, isPlayerChromeHidden, playerChromeVisibilityMode, lyrics, lyricTimelineOffsetMs, playbackSyncBridgeStatus, playQueue, playerState, showTransparentWindowBorder, transparentPlayerBackground, isLiked]);
 
     useEffect(() => {
         if (!playbackSyncBridgeStatus.discordPresenceEnabled || !window.electron?.publishDiscordPresenceSnapshot) {

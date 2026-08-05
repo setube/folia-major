@@ -320,13 +320,13 @@ export const COMMAND_PALETTE_COMMANDS: CommandPaletteCommand[] = [
         },
     },
     {
-        id: 'desktop-toggle-close-to-tray',
+        id: 'desktop-toggle-close-main-panel',
         group: 'settings',
-        title: 'Close to tray',
-        description: 'Toggle hiding the window to the tray instead of quitting when closing',
-        keywords: ['close to tray', 'minimize to tray', 'hide to tray', 'tray', '关闭到托盘', '最小化到托盘', '隐藏到托盘', '托盘', 'guanbidaotuopan', 'zuixiaohuadaotuopan', 'yincangdaotuopan', 'tuopan', 'gbdtp', 'zxhdtp', 'tp'],
+        title: 'Close main panel behavior',
+        description: 'Toggle the custom action taken when the main panel is closed',
+        keywords: ['close main panel', 'close to tray', 'hide to tray', 'tray', '关闭主面板', '关闭到托盘', '隐藏到托盘', '托盘', 'guanbizhumianban', 'guanbidaotuopan', 'yincangdaotuopan', 'tuopan', 'gbzmb', 'gbdtp', 'tp'],
         execute: (_input, context) => {
-            context.toggleCloseToTray();
+            context.toggleCloseMainPanel();
             return true;
         },
     },

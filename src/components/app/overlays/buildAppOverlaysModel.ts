@@ -53,6 +53,11 @@ type BuildAppOverlaysModelParams = {
     handleNextTrack: FloatingControlsProps['onNextTrack'];
     handlePrevTrack: FloatingControlsProps['onPrevTrack'];
     toggleQueuePanel: FloatingControlsProps['onToggleQueue'];
+    openCurrentSongArtist: FloatingControlsProps['onOpenArtist'];
+    isCurrentSongLiked: FloatingControlsProps['isLiked'];
+    toggleCurrentSongLike: FloatingControlsProps['onToggleLike'];
+    playerVolume: FloatingControlsProps['volume'];
+    setPlayerVolume: FloatingControlsProps['onVolumeChange'];
     navigateToPlayer: () => void;
     isPlayerChromeHidden: boolean;
     shouldHidePlayerProgressBar: boolean;
@@ -97,6 +102,11 @@ export const buildAppOverlaysModel = ({
     handleNextTrack,
     handlePrevTrack,
     toggleQueuePanel,
+    openCurrentSongArtist,
+    isCurrentSongLiked,
+    toggleCurrentSongLike,
+    playerVolume,
+    setPlayerVolume,
     navigateToPlayer,
     isPlayerChromeHidden,
     shouldHidePlayerProgressBar,
@@ -159,6 +169,11 @@ export const buildAppOverlaysModel = ({
             onNextTrack: handleNextTrack,
             onPrevTrack: handlePrevTrack,
             onToggleQueue: toggleQueuePanel,
+            onOpenArtist: openCurrentSongArtist,
+            isLiked: isCurrentSongLiked,
+            onToggleLike: toggleCurrentSongLike,
+            volume: playerVolume,
+            onVolumeChange: setPlayerVolume,
             onNavigateToPlayer: navigateToPlayer,
             noTrackText,
             primaryColor: 'var(--text-primary)',

@@ -3,10 +3,15 @@
 
 /**
  * 判断点击关闭按钮时是否应该把主窗口隐藏到托盘而不是退出应用。
- * 托盘缺失时必须放行关闭，否则窗口会被隐藏且用户无法找回。
+ * 「关闭主面板」开关关闭、或选项选了「退出软件」时都放行关闭。
+ * 托盘缺失时同样必须放行，否则窗口会被隐藏且用户无法找回。
  */
-function shouldHideMainWindowOnClose({ hasTray, isQuitting, closeToTrayEnabled }) {
-  if (!closeToTrayEnabled) {
+function shouldHideMainWindowOnClose({ hasTray, isQuitting, closeMainPanelEnabled, closeMainPanelAction }) {
+  if (!closeMainPanelEnabled) {
+    return false;
+  }
+
+  if (closeMainPanelAction === 'quit') {
     return false;
   }
 

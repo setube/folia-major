@@ -11,7 +11,7 @@ const { DEFAULT_DISCORD_APPLICATION_ID, createDiscordPresenceController } = requ
 const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
-const { isLaunchAtLoginSupported, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
+const { LAUNCH_AT_LOGIN_MODES, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
 const useLinuxGraphicsDebugMode = process.env.ELECTRON_LINUX_PACKAGED_GRAPHICS === 'true';
 const isAppImageRuntime =
@@ -87,7 +87,6 @@ const mainLocale = {
     trayPause: '暂停',
     trayNext: '下一首',
     trayNoTrack: '暂无播放',
-    trayToggleClickThrough: '切换点击穿透',
     trayHideTaskbar: '隐藏任务栏图标',
     trayQuit: '退出',
     dialogImportTitle: '无法导入此文件夹',
@@ -103,7 +102,6 @@ const mainLocale = {
     trayPause: 'Pause',
     trayNext: 'Next Track',
     trayNoTrack: 'Nothing Playing',
-    trayToggleClickThrough: 'Toggle Click-Through',
     trayHideTaskbar: 'Hide Taskbar Icon',
     trayQuit: 'Quit',
     dialogImportTitle: 'Cannot import this folder',
@@ -119,7 +117,6 @@ const mainLocale = {
     trayPause: 'Jeda',
     trayNext: 'Lagu Berikutnya',
     trayNoTrack: 'Tidak Ada Pemutaran',
-    trayToggleClickThrough: 'Alihkan Click-Through',
     trayHideTaskbar: 'Sembunyikan Ikon Taskbar',
     trayQuit: 'Keluar',
     dialogImportTitle: 'Tidak dapat mengimpor folder ini',
@@ -143,6 +140,8 @@ let remoteControlWindow = null;
 let appTray = null;
 // 标记应用正在真正退出，用于区分"关闭到托盘"应拦截的窗口 close 和退出流程中的 close。
 let isQuittingApp = false;
+// 本次进程是否由开机登录项以静默模式拉起；只对第一扇主窗生效，创建后即清零。
+let pendingSilentLaunch = isSilentLaunch(process.argv);
 let latestRemoteControlSnapshot = null;
 let obsBrowserSourceServer = null;
 let latestObsBrowserSourceConfig = null;
@@ -152,9 +151,6 @@ const obsBrowserSourceClients = new Set();
 let remoteControlAlwaysOnTop = false;
 let remoteControlSkipTaskbarEnabled = false;
 let mainWindowAlwaysOnTop = false;
-let mainWindowClickThroughEnabled = false;
-let mainWindowClickThroughUnlockHover = false;
-let mainWindowClickThroughUnlockHoverTimer = null;
 let mainWindowSkipTaskbarEnabled = false;
 let videoExportWindowRestoreState = null;
 let autoUpdater = null;
@@ -162,13 +158,6 @@ const windowPlaybackHandoffStore = createWindowPlaybackHandoffStore();
 const pendingWindowPlaybackHandoffRequests = new Map();
 let pendingWindowStateSave = null;
 let windowStateSaveTimer = null;
-const MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT = {
-  width: 48,
-  height: 40,
-  rightInset: 176,
-  topInset: 4,
-};
-const MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOVER_INTERVAL_MS = 150;
 const DEFAULT_WINDOW_BOUNDS = {
   width: 1200,
   height: 800,
@@ -187,9 +176,10 @@ const OBS_BROWSER_SOURCE_ENABLED_SETTING_KEY = 'OBS_BROWSER_SOURCE_ENABLED';
 const OBS_BROWSER_SOURCE_TOKEN_SETTING_KEY = 'OBS_BROWSER_SOURCE_TOKEN';
 const OBS_BROWSER_SOURCE_PORT_SETTING_KEY = 'OBS_BROWSER_SOURCE_PORT';
 const DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY = 'DISCORD_RICH_PRESENCE_ENABLED';
-const MINIMIZE_TO_TRAY_SETTING_KEY = 'MINIMIZE_TO_TRAY';
 const CLOSE_TO_TRAY_SETTING_KEY = 'CLOSE_TO_TRAY';
+const CLOSE_MAIN_PANEL_ACTION_SETTING_KEY = 'CLOSE_MAIN_PANEL_ACTION';
 const LAUNCH_AT_LOGIN_SETTING_KEY = 'LAUNCH_AT_LOGIN';
+const LAUNCH_AT_LOGIN_MODE_SETTING_KEY = 'LAUNCH_AT_LOGIN_MODE';
 const LAUNCH_AT_LOGIN_SUPPORTED_SETTING_KEY = 'LAUNCH_AT_LOGIN_SUPPORTED';
 const HIDE_TASKBAR_ICON_SETTING_KEY = 'HIDE_TASKBAR_ICON';
 const REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY = 'REMOTE_CONTROL_ALWAYS_ON_TOP';
@@ -304,9 +294,10 @@ function readStoredBoolean(settingKey, fallback = false) {
 function getPublicSettings() {
   return {
     ...store.store,
-    [MINIMIZE_TO_TRAY_SETTING_KEY]: readStoredBoolean(MINIMIZE_TO_TRAY_SETTING_KEY, false),
     [CLOSE_TO_TRAY_SETTING_KEY]: readStoredBoolean(CLOSE_TO_TRAY_SETTING_KEY, false),
+    [CLOSE_MAIN_PANEL_ACTION_SETTING_KEY]: getCloseMainPanelAction(),
     [LAUNCH_AT_LOGIN_SETTING_KEY]: getLaunchAtLoginEnabled(),
+    [LAUNCH_AT_LOGIN_MODE_SETTING_KEY]: getLaunchAtLoginMode(),
     [LAUNCH_AT_LOGIN_SUPPORTED_SETTING_KEY]: isLaunchAtLoginSupported(process.platform),
     [HIDE_TASKBAR_ICON_SETTING_KEY]: readStoredBoolean(HIDE_TASKBAR_ICON_SETTING_KEY, false),
     [REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY, true),
@@ -530,6 +521,8 @@ let playbackControlState = {
   isPlaying: false,
   title: null,
   artist: null,
+  loopMode: 'off',
+  isLiked: false,
 };
 
 // 托盘菜单项过长会把菜单撑得很宽，这里按显示宽度截断。
@@ -541,7 +534,7 @@ function formatTrayTrackLabel(locale) {
     return locale.trayNoTrack;
   }
 
-  const text = artist ? `${title} — ${artist}` : title;
+  const text = artist ? `${title} - ${artist}` : title;
   return text.length > TRAY_TRACK_LABEL_MAX
     ? `${text.slice(0, TRAY_TRACK_LABEL_MAX - 1)}…`
     : text;
@@ -657,7 +650,21 @@ function focusMainWindow() {
   }
 
   mainWindow.show();
-  mainWindow.focus();
+
+  // Windows 禁止非前台进程直接抢焦点：窗口只最小化到任务栏（而非隐藏到托盘）时，
+  // 单纯 focus() 只会闪任务栏图标。临时置顶再恢复原设置是通用且可靠的提权手法。
+  if (process.platform === 'win32' && !mainWindowAlwaysOnTop) {
+    mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    mainWindow.focus();
+    mainWindow.setAlwaysOnTop(false);
+  } else {
+    mainWindow.focus();
+  }
+
+  if (typeof mainWindow.moveTop === 'function') {
+    mainWindow.moveTop();
+  }
+
   refreshTrayMenu();
 }
 
@@ -688,12 +695,16 @@ function toggleMainWindowVisibility() {
   return true;
 }
 
-function isMinimizeToTrayEnabled() {
-  return readStoredBoolean(MINIMIZE_TO_TRAY_SETTING_KEY, false);
+function getCloseMainPanelAction() {
+  return store.get(CLOSE_MAIN_PANEL_ACTION_SETTING_KEY) === 'quit' ? 'quit' : 'tray';
 }
 
 function isCloseToTrayEnabled() {
   return readStoredBoolean(CLOSE_TO_TRAY_SETTING_KEY, false);
+}
+
+function getLaunchAtLoginMode() {
+  return store.get(LAUNCH_AT_LOGIN_MODE_SETTING_KEY) === 'foreground' ? 'foreground' : 'silent';
 }
 
 // 开机自启以系统登录项为真源，用户可能直接在系统设置里改动。
@@ -712,7 +723,11 @@ function getLaunchAtLoginEnabled() {
 
   try {
     // 查询参数必须与写入时一致，否则 Windows 上匹配不到注册项。
-    return Boolean(app.getLoginItemSettings(buildLoginItemQuery(getLaunchAtLoginContext())).openAtLogin);
+    // 两种启动模式写入的 args 不同，任一命中都算已开启 —— 否则刚切换模式的瞬间会误报关闭。
+    const context = getLaunchAtLoginContext();
+    return LAUNCH_AT_LOGIN_MODES.some(mode => Boolean(
+      app.getLoginItemSettings(buildLoginItemQuery({ ...context, mode })).openAtLogin
+    ));
   } catch (error) {
     console.error('[Electron] Failed to read login item settings', error);
     return readStoredBoolean(LAUNCH_AT_LOGIN_SETTING_KEY, false);
@@ -728,6 +743,7 @@ function setLaunchAtLoginEnabled(enabled) {
   try {
     app.setLoginItemSettings(buildLoginItemSettings({
       enabled: nextEnabled,
+      mode: getLaunchAtLoginMode(),
       ...getLaunchAtLoginContext(),
     }));
   } catch (error) {
@@ -743,7 +759,8 @@ function shouldHideMainWindowOnClose() {
   return resolveHideMainWindowOnClose({
     hasTray: Boolean(appTray),
     isQuitting: isQuittingApp,
-    closeToTrayEnabled: isCloseToTrayEnabled(),
+    closeMainPanelEnabled: isCloseToTrayEnabled(),
+    closeMainPanelAction: getCloseMainPanelAction(),
   });
 }
 
@@ -851,15 +868,6 @@ function refreshTrayMenu() {
       },
     },
     {
-      label: locale.trayToggleClickThrough,
-      type: 'checkbox',
-      checked: mainWindowClickThroughEnabled,
-      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
-      click: () => {
-        setMainWindowClickThroughEnabled(!mainWindowClickThroughEnabled);
-      },
-    },
-    {
       label: locale.trayHideTaskbar,
       type: 'checkbox',
       checked: mainWindowSkipTaskbarEnabled,
@@ -886,18 +894,114 @@ function refreshTrayMenu() {
 // --- 自绘托盘菜单窗口 ---
 // 原生 Menu 无法在菜单项里内嵌横向图标按钮行，这里用无边框透明窗自绘，
 // 复用遥控窗那套 loadAppEntry + preload 桥。创建失败时回退到原生菜单。
-const TRAY_MENU_WINDOW_WIDTH = 272;
-const TRAY_MENU_WINDOW_INITIAL_HEIGHT = 240;
+// 窗口尺寸固定，菜单内容贴窗口右下角，多出的部分保持透明。
+// 不做「渲染后测量再 resize 窗口」：那条回路会让 setBounds 改变视口、视口又影响下一次测量，
+// 表现为菜单上下抖动和滚动条进出导致的宽度跳变。网易云同样是按菜单数据一次定尺寸，不回灌。
+const TRAY_MENU_BODY_WIDTH = 200;
+const TRAY_MENU_SUBMENU_WIDTH = 152;
+const TRAY_MENU_WINDOW_WIDTH = TRAY_MENU_BODY_WIDTH + TRAY_MENU_SUBMENU_WIDTH;
+const TRAY_MENU_WINDOW_HEIGHT = 320;
+// 托盘菜单几何诊断：以 FOLIA_TRAY_DEBUG=1 启动即可看到每次弹出的完整定位链路。
+const TRAY_MENU_DEBUG = process.env.FOLIA_TRAY_DEBUG === '1';
+// 菜单底边抬到光标上方，避开托盘图标本身（光标落在图标中心，图标半高约 12px）。
+const TRAY_MENU_CURSOR_GAP = 20;
+// 网易云的辅助窗（MiniPlayer/DesktopLyrics）都是常驻隐藏窗口，弹出只改位置不走 show()，
+// 因此没有系统的窗口显示动画。这里照搬：窗口创建后一直处于 shown 状态，
+// 「隐藏」是把它挪到屏幕外，「显示」是挪回锚点。
+const TRAY_MENU_OFFSCREEN_X = -20000;
+const TRAY_MENU_OFFSCREEN_Y = -20000;
+// show() 到窗口真正拿到焦点之间，Windows 可能先派发一次 blur，
+// 不抑制的话菜单会"闪一下就没了"再被重新显示。
+const TRAY_MENU_BLUR_GRACE_MS = 250;
 let trayMenuWindow = null;
 let trayMenuUsesCustomWindow = true;
+let trayMenuBlurSuppressedUntil = 0;
+let trayMenuVisible = false;
+// 弹出时记下的锚点（菜单右下角贴这里），此后所有尺寸变化都基于它重算，
+// 而不是在上一次的窗口坐标上做增量 —— 否则 DPI 舍入会让菜单逐次漂移。
+// 弹出时记下的锚点：菜单内容右下角贴这里。窗口尺寸恒定，因此位置一次算准即可。
+let trayMenuAnchor = null;
+
+// 复刻网易云的算法：光标位置代表托盘图标所在，菜单只出现在图标的右上或左上。
+// 默认菜单左缘对齐图标、向右展开（右上）；右侧放不下就翻转成右缘对齐图标、向左展开（左上）。
+// 它并没有查询托盘图标矩形的能力（dll 未导入 Shell_NotifyIconGetRect / SHAppBarMessage），
+// 只有 GetCursorPos + MonitorFromPoint + GetMonitorInfo，够用是因为右键时光标必在图标上。
+// 按托盘图标矩形定位，与网易云观感一致：菜单只出现在图标的右上或左上。
+// tray.getBounds() 实测可靠，图标折叠进溢出面板后返回的也是面板内的真实位置。
+// 水平：默认菜单左缘对齐图标左缘、向右展开（右上）；右侧放不下则右缘对齐图标右缘、向左展开（左上）。
+// 垂直：菜单底边贴图标顶边，图标在任务栏内时正好压在任务栏上沿，且永远不遮挡图标。
+function resolveTrayMenuAnchor(cursor) {
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+
+  let trayBounds = null;
+  try {
+    trayBounds = appTray && typeof appTray.getBounds === 'function' ? appTray.getBounds() : null;
+  } catch (error) {
+    trayBounds = null;
+  }
+
+  if (!trayBounds || trayBounds.width <= 0 || trayBounds.height <= 0) {
+    // 兜底：拿不到图标矩形时退回光标，右键时光标必在图标上。
+    return { x: cursor.x, y: cursor.y - TRAY_MENU_CURSOR_GAP };
+  }
+
+  const canExpandRight = trayBounds.x + TRAY_MENU_BODY_WIDTH <= workArea.x + workArea.width;
+
+  return {
+    // anchor 是菜单本体的右下角（窗口右下角）。
+    x: canExpandRight ? trayBounds.x + TRAY_MENU_BODY_WIDTH : trayBounds.x + trayBounds.width,
+    y: trayBounds.y,
+  };
+}
+
+function applyTrayMenuBounds() {
+  const win = trayMenuWindow;
+  if (!win || win.isDestroyed() || !trayMenuAnchor) {
+    return;
+  }
+
+  const { workArea } = screen.getDisplayNearestPoint(trayMenuAnchor);
+  const rawX = trayMenuAnchor.x - TRAY_MENU_WINDOW_WIDTH;
+  const rawY = trayMenuAnchor.y - TRAY_MENU_WINDOW_HEIGHT;
+  const x = Math.min(Math.max(rawX, workArea.x), workArea.x + workArea.width - TRAY_MENU_WINDOW_WIDTH);
+  const y = Math.min(Math.max(rawY, workArea.y), workArea.y + workArea.height - TRAY_MENU_WINDOW_HEIGHT);
+
+  // 必须每次带上完整宽高：transparent 窗口在非整数缩放下，只调 setPosition 会让
+  // Electron 的 DIP↔物理像素往返舍入逐次累积，窗口宽度会一路膨胀（实测每次 +2px）。
+  win.setBounds({
+    x: Math.round(x),
+    y: Math.round(y),
+    width: TRAY_MENU_WINDOW_WIDTH,
+    height: TRAY_MENU_WINDOW_HEIGHT,
+  }, false);
+
+  if (TRAY_MENU_DEBUG) {
+    // 菜单本体贴窗口右下角：左缘 = 窗口左缘 + 二级菜单预留宽，右/下缘即窗口右/下缘。
+    const actual = win.getBounds();
+    console.log('[TrayMenu]', JSON.stringify({
+      anchor: trayMenuAnchor,
+      raw: { x: rawX, y: rawY },
+      clamped: { x: Math.round(x), y: Math.round(y) },
+      window: actual,
+      bodyLeft: actual.x + TRAY_MENU_SUBMENU_WIDTH,
+      bodyRight: actual.x + actual.width,
+      bodyBottom: actual.y + actual.height,
+      workArea,
+    }));
+  }
+}
 
 function buildTrayMenuState() {
+  const remoteOpen = Boolean(remoteControlWindow && !remoteControlWindow.isDestroyed());
+  const mainAlive = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const mainShown = mainAlive && isMainWindowVisible() && !mainWindow.isMinimized();
   return {
     playback: { ...playbackControlState },
-    clickThroughEnabled: mainWindowClickThroughEnabled,
     skipTaskbarEnabled: mainWindowSkipTaskbarEnabled,
     mainWindowVisible: isMainWindowVisible(),
-    canToggleWindow: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    canToggleWindow: mainAlive,
+    // 完整模式与 mini 模式互斥：遥控窗开着即视为 mini。
+    displayMode: remoteOpen ? 'mini' : (mainShown ? 'full' : 'minimized'),
   };
 }
 
@@ -909,8 +1013,18 @@ function sendTrayMenuState() {
 }
 
 function hideTrayMenuWindow() {
-  if (trayMenuWindow && !trayMenuWindow.isDestroyed() && trayMenuWindow.isVisible()) {
-    trayMenuWindow.hide();
+  if (!trayMenuVisible) {
+    return;
+  }
+  trayMenuVisible = false;
+  if (trayMenuWindow && !trayMenuWindow.isDestroyed()) {
+    // 移出屏幕而不是 hide()，下次弹出就没有窗口显示动画。
+    trayMenuWindow.setBounds({
+      x: TRAY_MENU_OFFSCREEN_X,
+      y: TRAY_MENU_OFFSCREEN_Y,
+      width: TRAY_MENU_WINDOW_WIDTH,
+      height: TRAY_MENU_WINDOW_HEIGHT,
+    }, false);
   }
 }
 
@@ -921,7 +1035,7 @@ function createTrayMenuWindow() {
 
   const win = new BrowserWindow({
     width: TRAY_MENU_WINDOW_WIDTH,
-    height: TRAY_MENU_WINDOW_INITIAL_HEIGHT,
+    height: TRAY_MENU_WINDOW_HEIGHT,
     show: false,
     frame: false,
     transparent: true,
@@ -951,6 +1065,9 @@ function createTrayMenuWindow() {
     event.preventDefault();
   });
   win.on('blur', () => {
+    if (Date.now() < trayMenuBlurSuppressedUntil) {
+      return;
+    }
     hideTrayMenuWindow();
   });
   win.on('closed', () => {
@@ -960,8 +1077,41 @@ function createTrayMenuWindow() {
   });
 
   loadAppEntry(win, { trayMenu: '1' });
+  // 立刻在屏幕外亮出窗口：此后它一直处于 shown，弹出/收起只改坐标。
+  win.once('ready-to-show', () => {
+    if (win.isDestroyed()) {
+      return;
+    }
+    win.setBounds({
+      x: TRAY_MENU_OFFSCREEN_X,
+      y: TRAY_MENU_OFFSCREEN_Y,
+      width: TRAY_MENU_WINDOW_WIDTH,
+      height: TRAY_MENU_WINDOW_HEIGHT,
+    }, false);
+    win.showInactive();
+  });
   trayMenuWindow = win;
   return win;
+}
+
+// 按光标定位：菜单右下角贴住光标，因此弹在托盘图标的左上方。
+// 依据是 cloudmusic.dll 导入了 GetCursorPos 而非 TrackPopupMenu —— 网易云同样按光标算，
+// 托盘图标位置固定，观感就是"每次都在同一处"。
+// 注意不能用 tray.getBounds()：图标被折叠进溢出区时它返回的矩形不可靠。
+function positionAndShowTrayMenuWindow() {
+  const win = trayMenuWindow;
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  const cursor = screen.getCursorScreenPoint();
+  // 菜单右下角贴住锚点。
+  trayMenuAnchor = resolveTrayMenuAnchor(cursor);
+  applyTrayMenuBounds();
+
+  trayMenuBlurSuppressedUntil = Date.now() + TRAY_MENU_BLUR_GRACE_MS;
+  trayMenuVisible = true;
+  win.focus();
 }
 
 function showTrayMenuWindow() {
@@ -977,26 +1127,14 @@ function showTrayMenuWindow() {
     return false;
   }
 
+  // 菜单还开着时再次右键，焦点会在「菜单」和「任务栏」之间竞争，
+  // 右键消息可能被任务栏抢走弹出系统菜单。先主动收起、交还焦点，再重新弹出。
+  if (trayMenuVisible) {
+    hideTrayMenuWindow();
+  }
+
   sendTrayMenuState();
-
-  const cursor = screen.getCursorScreenPoint();
-  const { workArea } = screen.getDisplayNearestPoint(cursor);
-  const [width, height] = win.getSize();
-
-  // 默认从光标处向上弹（任务栏通常在底部）；夹回工作区后，
-  // 任务栏在顶部/侧边时会自动改为向下或贴边，不必显式判断任务栏方位。
-  const x = Math.min(
-    Math.max(cursor.x - Math.round(width / 2), workArea.x),
-    workArea.x + workArea.width - width
-  );
-  const y = Math.min(
-    Math.max(cursor.y - height, workArea.y),
-    workArea.y + workArea.height - height
-  );
-
-  win.setPosition(x, y, false);
-  win.show();
-  win.focus();
+  positionAndShowTrayMenuWindow();
   return true;
 }
 
@@ -1014,9 +1152,10 @@ function ensureTray() {
   }
 
   appTray.on('click', () => {
-    if (!isMainWindowVisible()) {
-      focusMainWindow();
-    }
+    focusMainWindow();
+  });
+  appTray.on('double-click', () => {
+    focusMainWindow();
   });
   appTray.on('right-click', () => {
     if (!trayMenuUsesCustomWindow) {
@@ -1031,6 +1170,16 @@ function ensureTray() {
     }
   });
   refreshTrayMenu();
+  // 预热：提前挂载自绘菜单的渲染进程，避免首次右键时等 React 首帧。
+  if (trayMenuUsesCustomWindow) {
+    try {
+      createTrayMenuWindow();
+    } catch (error) {
+      console.warn('[Electron] Failed to prewarm tray menu window', error);
+      trayMenuUsesCustomWindow = false;
+      refreshTrayMenu();
+    }
+  }
   return appTray;
 }
 
@@ -2800,108 +2949,6 @@ function patchRemoteControlSnapshot(patch) {
   sendRemoteControlSnapshot(latestRemoteControlSnapshot);
 }
 
-function publishMainWindowClickThroughState() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return false;
-  }
-
-  mainWindow.webContents.send('main-window-click-through-changed', {
-    enabled: mainWindowClickThroughEnabled,
-    unlockHoverActive: mainWindowClickThroughUnlockHover,
-  });
-  refreshTrayMenu();
-  return true;
-}
-
-function isCursorInsideMainWindowClickThroughUnlockHotspot() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return false;
-  }
-
-  const bounds = mainWindow.getBounds();
-  const cursor = screen.getCursorScreenPoint();
-  const hotspotRight = bounds.x + bounds.width - MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.rightInset;
-  const hotspotLeft = hotspotRight - MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.width;
-  const hotspotTop = bounds.y + MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.topInset;
-  const hotspotBottom = hotspotTop + MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.height;
-
-  return cursor.x >= hotspotLeft
-    && cursor.x <= hotspotRight
-    && cursor.y >= hotspotTop
-    && cursor.y <= hotspotBottom;
-}
-
-function syncMainWindowClickThroughUnlockHoverFromCursor() {
-  if (!mainWindowClickThroughEnabled) {
-    return false;
-  }
-
-  return setMainWindowClickThroughUnlockHover(isCursorInsideMainWindowClickThroughUnlockHotspot());
-}
-
-function startMainWindowClickThroughUnlockHoverMonitor() {
-  if (mainWindowClickThroughUnlockHoverTimer) {
-    return;
-  }
-
-  syncMainWindowClickThroughUnlockHoverFromCursor();
-  mainWindowClickThroughUnlockHoverTimer = setInterval(
-    syncMainWindowClickThroughUnlockHoverFromCursor,
-    MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOVER_INTERVAL_MS
-  );
-}
-
-function stopMainWindowClickThroughUnlockHoverMonitor() {
-  if (!mainWindowClickThroughUnlockHoverTimer) {
-    return;
-  }
-
-  clearInterval(mainWindowClickThroughUnlockHoverTimer);
-  mainWindowClickThroughUnlockHoverTimer = null;
-}
-
-function applyMainWindowMouseIgnoreState() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return false;
-  }
-
-  mainWindow.setIgnoreMouseEvents(
-    mainWindowClickThroughEnabled && !mainWindowClickThroughUnlockHover,
-    { forward: true }
-  );
-  publishMainWindowClickThroughState();
-  return true;
-}
-
-function setMainWindowClickThroughEnabled(enabled) {
-  mainWindowClickThroughEnabled = Boolean(enabled);
-  if (!mainWindowClickThroughEnabled) {
-    mainWindowClickThroughUnlockHover = false;
-    stopMainWindowClickThroughUnlockHoverMonitor();
-  }
-
-  applyMainWindowMouseIgnoreState();
-  if (mainWindowClickThroughEnabled) {
-    startMainWindowClickThroughUnlockHoverMonitor();
-  }
-  refreshTrayMenu();
-  patchRemoteControlSnapshot({
-    mainWindowClickThroughEnabled,
-  });
-  return mainWindowClickThroughEnabled;
-}
-
-function setMainWindowClickThroughUnlockHover(active) {
-  const nextActive = Boolean(active) && mainWindowClickThroughEnabled;
-  if (mainWindowClickThroughUnlockHover === nextActive) {
-    return mainWindowClickThroughUnlockHover;
-  }
-
-  mainWindowClickThroughUnlockHover = nextActive;
-  applyMainWindowMouseIgnoreState();
-  return mainWindowClickThroughUnlockHover;
-}
-
 function sendRemoteControlSnapshot(snapshot) {
   if (!remoteControlWindow || remoteControlWindow.isDestroyed()) {
     return false;
@@ -3018,6 +3065,9 @@ async function getMainWindowCaptureSource() {
 
 function createWindow(options = {}) {
   const { showImmediately = true } = options;
+  // 静默启动只对开机后的第一扇主窗生效，之后手动重建窗口（例如切换透明模式）要正常显示。
+  const startMinimized = pendingSilentLaunch;
+  pendingSilentLaunch = false;
   const { bounds: storedBounds, isMaximized } = getStoredWindowState();
   const windowBounds = ensureWindowBoundsVisible(storedBounds);
   const useTransparentWindow = isTransparentPlayerBackgroundEnabled();
@@ -3037,7 +3087,7 @@ function createWindow(options = {}) {
     icon: APP_ICON_PATH,
     skipTaskbar: mainWindowSkipTaskbarEnabled,
     alwaysOnTop: mainWindowAlwaysOnTop,
-    show: showImmediately,
+    show: showImmediately && !startMinimized,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -3057,9 +3107,17 @@ function createWindow(options = {}) {
   }
 
   mainWindow = win;
+  if (startMinimized) {
+    // 开机静默启动：窗口以 show:false 创建，这里直接最小化，
+    // Windows 上 minimize() 会让它以最小化状态出现在任务栏而不是弹到前台。
+    win.once('ready-to-show', () => {
+      if (!win.isDestroyed()) {
+        win.minimize();
+      }
+    });
+  }
   ensureTray();
   setMainWindowSkipTaskbarEnabled(mainWindowSkipTaskbarEnabled);
-  applyMainWindowMouseIgnoreState();
   updateWindowThumbarButtons();
   win.on('resize', () => {
     saveWindowState(win, { deferred: true });
@@ -3084,8 +3142,6 @@ function createWindow(options = {}) {
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
-      mainWindowClickThroughUnlockHover = false;
-      stopMainWindowClickThroughUnlockHoverMonitor();
       if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
         remoteControlWindow.close();
       }
@@ -3130,11 +3186,7 @@ async function setMainWindowTransparentMode(enabled, handoff = null) {
   const nextEnabled = Boolean(enabled);
   patchRemoteControlSnapshot({
     transparentModeEnabled: nextEnabled,
-    mainWindowClickThroughEnabled: false,
   });
-  mainWindowClickThroughEnabled = false;
-  mainWindowClickThroughUnlockHover = false;
-  stopMainWindowClickThroughUnlockHoverMonitor();
   recreateMainWindowWithTransparencyMode(nextEnabled, handoff);
   return true;
 }
@@ -3245,8 +3297,13 @@ ipcMain.handle('save-settings', (event, key, value) => {
     }
     nextValue = channel;
   }
+  if (key === CLOSE_MAIN_PANEL_ACTION_SETTING_KEY) {
+    nextValue = value === 'quit' ? 'quit' : 'tray';
+  }
+  if (key === LAUNCH_AT_LOGIN_MODE_SETTING_KEY) {
+    nextValue = value === 'foreground' ? 'foreground' : 'silent';
+  }
   if (
-    key === MINIMIZE_TO_TRAY_SETTING_KEY ||
     key === CLOSE_TO_TRAY_SETTING_KEY ||
     key === LAUNCH_AT_LOGIN_SETTING_KEY ||
     key === HIDE_TASKBAR_ICON_SETTING_KEY ||
@@ -3330,6 +3387,11 @@ ipcMain.handle('save-settings', (event, key, value) => {
 
   if (key === LAUNCH_AT_LOGIN_SETTING_KEY) {
     setLaunchAtLoginEnabled(nextValue);
+  }
+
+  // 切换启动模式要重写登录项参数，否则 --hidden 标记不会更新，下次开机仍走旧模式。
+  if (key === LAUNCH_AT_LOGIN_MODE_SETTING_KEY && getLaunchAtLoginEnabled()) {
+    setLaunchAtLoginEnabled(true);
   }
 
   if (key === REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY) {
@@ -3508,10 +3570,7 @@ ipcMain.handle('window-minimize', () => {
     return false;
   }
 
-  if (isMinimizeToTrayEnabled()) {
-    return hideMainWindow();
-  }
-
+  // 最小化固定收进任务栏；想常驻托盘请用「关闭主面板」或托盘菜单的显示模式。
   mainWindow.minimize();
   refreshTrayMenu();
   return true;
@@ -3592,30 +3651,6 @@ ipcMain.handle('window-playback-handoff-submit', (event, requestId, handoff) => 
   }
 
   return resolvePendingWindowPlaybackHandoffRequest(requestId, handoff);
-});
-
-ipcMain.handle('window-get-click-through', (event) => {
-  if (!isTrustedMainWindowContents(event.sender)) {
-    return false;
-  }
-
-  return mainWindowClickThroughEnabled;
-});
-
-ipcMain.handle('window-set-click-through', (event, enabled) => {
-  if (!isTrustedMainWindowContents(event.sender)) {
-    return false;
-  }
-
-  return setMainWindowClickThroughEnabled(enabled);
-});
-
-ipcMain.handle('window-set-click-through-unlock-hover', (event, active) => {
-  if (!isTrustedMainWindowContents(event.sender)) {
-    return false;
-  }
-
-  return setMainWindowClickThroughUnlockHover(active);
 });
 
 ipcMain.handle('window-get-always-on-top', (event) => {
@@ -3790,6 +3825,8 @@ ipcMain.handle('thumbar-update-buttons', (event, state) => {
     isPlaying: Boolean(state?.isPlaying),
     title: typeof state?.title === 'string' ? state.title : null,
     artist: typeof state?.artist === 'string' ? state.artist : null,
+    loopMode: typeof state?.loopMode === 'string' ? state.loopMode : 'off',
+    isLiked: Boolean(state?.isLiked),
   };
 
   // 托盘菜单每次都是整体重建，只在会改变菜单内容的字段变化时才刷新。
@@ -3813,10 +3850,45 @@ const TRAY_MENU_ACTIONS = {
   previous: () => sendThumbarAction('previous'),
   'play-pause': () => sendThumbarAction('play-pause'),
   next: () => sendThumbarAction('next'),
+  'loop-off': () => sendThumbarAction('loop-off'),
+  'loop-all': () => sendThumbarAction('loop-all'),
+  'loop-one': () => sendThumbarAction('loop-one'),
+  'loop-shuffle': () => sendThumbarAction('loop-shuffle'),
+  like: () => sendThumbarAction('like'),
+  // 点顶部曲目信息：亮出主窗并切到播放页
+  'open-player': () => {
+    focusMainWindow();
+    sendThumbarAction('open-player');
+  },
+  // 托盘「设置」：亮出主窗后让渲染层打开设置弹窗
+  'open-settings': () => {
+    focusMainWindow();
+    sendThumbarAction('open-settings');
+  },
   'toggle-window': () => toggleMainWindowVisibility(),
   'open-remote': () => createRemoteControlWindow(),
-  'toggle-click-through': () => setMainWindowClickThroughEnabled(!mainWindowClickThroughEnabled),
   'toggle-skip-taskbar': () => persistMainWindowSkipTaskbarEnabled(!mainWindowSkipTaskbarEnabled),
+  // 完整模式与 mini 模式互斥：切到任一侧都会收掉另一侧。
+  'display-full': () => {
+    if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
+      remoteControlWindow.close();
+    }
+    focusMainWindow();
+  },
+  'display-mini': () => {
+    createRemoteControlWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide();
+    }
+  },
+  'display-minimize': () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.minimize();
+    }
+    if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
+      remoteControlWindow.minimize();
+    }
+  },
   quit: () => app.quit(),
 };
 
@@ -3853,37 +3925,19 @@ ipcMain.handle('tray-menu-close', (event) => {
   return true;
 });
 
-ipcMain.handle('tray-menu-resize', (event, height) => {
-  if (!isTrayMenuContents(event.sender)) {
-    throw new Error('Untrusted renderer attempted to resize the tray menu.');
-  }
-
-  const nextHeight = Math.round(Number(height));
-  if (!Number.isFinite(nextHeight) || nextHeight < 80 || nextHeight > 720) {
+ipcMain.handle('window-enter-mini-mode', (event) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
     return false;
   }
 
-  // 高度由内容测量得出；窗口已显示时要连同 y 一起调整，避免向下顶出工作区。
-  const win = trayMenuWindow;
-  if (!win || win.isDestroyed()) {
-    return false;
+  // 与托盘的「显示模式 → mini 模式」同一套语义：开遥控窗、收主窗，两者互斥。
+  createRemoteControlWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
   }
-
-  const [width] = win.getSize();
-  if (win.isVisible()) {
-    const bounds = win.getBounds();
-    const { workArea } = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
-    const y = Math.min(
-      Math.max(bounds.y + bounds.height - nextHeight, workArea.y),
-      workArea.y + workArea.height - nextHeight
-    );
-    win.setBounds({ x: bounds.x, y, width, height: nextHeight }, false);
-  } else {
-    win.setSize(width, nextHeight, false);
-  }
-
   return true;
 });
+
 ipcMain.handle('remote-control-open', (event) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     throw new Error('Untrusted renderer attempted to open the remote control window.');
@@ -3904,6 +3958,19 @@ ipcMain.handle('remote-control-toggle', (event) => {
   }
 
   createRemoteControlWindow();
+  return true;
+});
+
+ipcMain.handle('window-enter-full-mode', (event) => {
+  if (!isTrustedRemoteControlContents(event.sender) && !isTrustedMainWindowContents(event.sender)) {
+    return false;
+  }
+
+  // 与托盘的「显示模式 → 完整模式」同一套语义：关遥控窗、亮主窗，两者互斥。
+  if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
+    remoteControlWindow.close();
+  }
+  focusMainWindow();
   return true;
 });
 
@@ -3956,7 +4023,6 @@ ipcMain.handle('remote-control-publish-snapshot', (event, snapshot) => {
         ? { lyrics: latestRemoteControlSnapshot.lyrics }
         : {}),
       ...snapshot,
-      mainWindowClickThroughEnabled,
       mainWindowAlwaysOnTop,
     }
     : null;
@@ -3977,10 +4043,6 @@ ipcMain.handle('remote-control-get-snapshot', (event) => {
 ipcMain.handle('remote-control-send-command', (event, command) => {
   if (!isTrustedRemoteControlContents(event.sender)) {
     throw new Error('Untrusted renderer attempted to send a remote control command.');
-  }
-
-  if (command?.type === 'set-main-window-click-through') {
-    return setMainWindowClickThroughEnabled(Boolean(command.enabled));
   }
 
   if (command?.type === 'set-main-window-always-on-top') {

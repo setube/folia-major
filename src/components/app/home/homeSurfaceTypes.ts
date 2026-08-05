@@ -29,6 +29,8 @@ export type HomeLocalMusicState = {
 
 export interface HomeSurfaceProps {
     onPlaySong: (song: SongResult, playlistCtx?: SongResult[], isFmCall?: boolean) => void;
+    /** 只把这一首加进现有播放列表再播放，不用所在列表整体替换队列。 */
+    onPlaySongWithoutQueueReplace?: (song: SongResult) => void;
     onBackToPlayer: () => void;
     onRefreshUser: () => void;
     user: ProviderUser | null;

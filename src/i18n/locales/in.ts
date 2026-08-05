@@ -1384,14 +1384,6 @@ export default {
       "customDesc": "Buka Theme Park dari pengaturan visual atau palette perintah untuk mengedit dan menyimpan warna terang dan gelap kustom.",
       "aiDesc": "Saat pengaturan tema AI dikonfigurasi, Folia bisa membuat warna yang sesuai lagu dan opsional menerapkan tema lagu yang di-cache secara otomatis."
     },
-    "clickThrough": {
-      "title": "Pemulihan klik-tembus",
-      "desc": "Saat klik-tembus diaktifkan, Anda bisa menggunakan ikon tray sistem untuk mengalihkannya jika kontrol jendela disembunyikan atau sulit dijangkau.",
-      "trayTitle": "Gunakan ikon tray",
-      "trayDesc": "Klik kanan ikon tray sistem Folia, lalu pilih opsi klik-tembus untuk mengaktifkan atau menonaktifkannya.",
-      "lockTitle": "Gunakan tombol kunci",
-      "lockDesc": "Anda juga bisa pindah ke hotspot bilah judul atas untuk menampilkan tombol kunci, lalu klik untuk mematikan klik-tembus."
-    },
     "gotIt": "Mengerti",
     "showGuide": "Tampilkan Panduan Pengguna",
     "tips": "Tips penggunaan",
@@ -1424,8 +1416,6 @@ export default {
     "hideUI": "Sembunyikan UI",
     "showBorder": "Tampilkan Batas",
     "hideBorder": "Sembunyikan Batas",
-    "disableClickThrough": "Nonaktifkan Klik-Tembus",
-    "enableClickThrough": "Klik-Tembus",
     "through": "Tembus",
     "unpinMainWindow": "Lepaskan Jendela Utama",
     "pinMainWindow": "Sematkan Jendela Utama",

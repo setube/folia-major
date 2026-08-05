@@ -105,8 +105,6 @@ export default function App() {
     const isElectronWindow = Boolean((window as typeof window & { electron?: unknown; }).electron);
     const [isTitlebarRevealed, setIsTitlebarRevealed] = useState(false);
     const [showTransparentWindowBorder, setShowTransparentWindowBorder] = useState(false);
-    const [isMainWindowClickThroughEnabled, setIsMainWindowClickThroughEnabled] = useState(false);
-    const [isClickThroughToggleHotspotActive, setIsClickThroughToggleHotspotActive] = useState(false);
 
     // Player Data
     const [audioSrc, setAudioSrc] = useState<string | null>(null);
@@ -303,9 +301,10 @@ export default function App() {
         handleToggleAutoHidePlayerChrome,
         disableVisualizerVignette,
         disableVisualizerGeometricBackground,
-        minimizeToTray,
-        closeToTray,
+        closeMainPanelEnabled,
+        closeMainPanelAction,
         launchAtLogin,
+        launchAtLoginMode,
         launchAtLoginSupported,
         autoplayOnLaunch,
         rememberPlaybackPosition,
@@ -382,9 +381,10 @@ export default function App() {
         handleToggleTransparentPlayerBackground,
         handleToggleDisableVisualizerVignette,
         handleToggleDisableVisualizerGeometricBackground,
-        handleToggleMinimizeToTray,
-        handleToggleCloseToTray,
+        handleToggleCloseMainPanel,
+        handleSetCloseMainPanelAction,
         handleToggleLaunchAtLogin,
+        handleSetLaunchAtLoginMode,
         handleToggleAutoplayOnLaunch,
         handleToggleRememberPlaybackPosition,
         handleToggleHideTaskbarIcon,
@@ -1509,6 +1509,18 @@ export default function App() {
         resumePlayback,
     });
 
+    // 当前曲目是否已喜欢：控制栏、播放面板、Electron 桥接共用同一份判定
+    const isCurrentSongLiked = useMemo(() => {
+        if (!currentSong) return false;
+        if (isLocalPlaybackSong(currentSong)) {
+            return isLocalSongLiked(currentSong);
+        }
+        if (isNavidromePlaybackSong(currentSong)) {
+            const navidromeSong = resolveNavidromePlaybackCarrier(currentSong);
+            return navidromeSong ? starredNavidromeSongIds.has(navidromeSong.navidromeData.id) : false;
+        }
+        return omni.isSongLiked(currentSong, likedSongIds);
+    }, [currentSong, isLocalSongLiked, likedSongIds, starredNavidromeSongIds]);
     const {
         publishStagePlayerPlaybackUpdate,
     } = useElectronPlaybackBridge({
@@ -1523,7 +1535,6 @@ export default function App() {
         transparentPlayerBackground,
         activePlaybackContext,
         isStagePlayerSnapshotEnabled: stageStatus?.enabled === true,
-        mainWindowClickThroughEnabled: isMainWindowClickThroughEnabled,
         isNowPlayingControlDisabledRef,
         audioRef,
         audioSrc,
@@ -1551,18 +1562,10 @@ export default function App() {
         lyricTimelineOffsetMs,
         onRemoteExportCommand: handleExportCommand,
         onExternalPlayRequest: handleStageExternalPlayRequest,
-        isLiked: (() => {
-            if (!currentSong) return false;
-            if (isLocalPlaybackSong(currentSong)) {
-                return isLocalSongLiked(currentSong);
-            }
-            if (isNavidromePlaybackSong(currentSong)) {
-                const navidromeSong = resolveNavidromePlaybackCarrier(currentSong);
-                return navidromeSong ? starredNavidromeSongIds.has(navidromeSong.navidromeData.id) : false;
-            }
-            return omni.isSongLiked(currentSong, likedSongIds);
-        })(),
+        isLiked: isCurrentSongLiked,
         onLike: handleLike,
+        onOpenPlayer: navigateToPlayer,
+        onOpenSettings: openSettings,
     });
 
     usePlaybackVisualizerBridge({
@@ -1695,85 +1698,6 @@ export default function App() {
         };
     }, [isElectronWindow, isPlayerPageTransparent]);
 
-    useEffect(() => {
-        if (!isElectronWindow || !window.electron?.getMainWindowClickThroughEnabled || !window.electron?.onMainWindowClickThroughChanged) {
-            setIsMainWindowClickThroughEnabled(false);
-            return;
-        }
-
-        let mounted = true;
-
-        void window.electron.getMainWindowClickThroughEnabled().then((enabled) => {
-            if (mounted) {
-                setIsMainWindowClickThroughEnabled(Boolean(enabled));
-            }
-        }).catch(() => {
-            if (mounted) {
-                setIsMainWindowClickThroughEnabled(false);
-            }
-        });
-
-        const unsubscribe = window.electron.onMainWindowClickThroughChanged((state) => {
-            const enabled = Boolean(state?.enabled);
-            setIsMainWindowClickThroughEnabled(enabled);
-            setIsClickThroughToggleHotspotActive(enabled && Boolean(state?.unlockHoverActive));
-        });
-
-        return () => {
-            mounted = false;
-            unsubscribe?.();
-        };
-    }, [isElectronWindow]);
-
-    useEffect(() => {
-        if (!isElectronWindow || !isMainWindowClickThroughEnabled || !window.electron?.setMainWindowClickThroughUnlockHover) {
-            setIsClickThroughToggleHotspotActive(false);
-            void window.electron?.setMainWindowClickThroughUnlockHover?.(false);
-            return;
-        }
-
-        const toggleHotspotWidth = 48;
-        const toggleHotspotHeight = 40;
-        const toggleHotspotRightInset = 176;
-        const toggleHotspotTopInset = 4;
-
-        const syncToggleHotspot = (active: boolean) => {
-            setIsClickThroughToggleHotspotActive(prev => (prev === active ? prev : active));
-            void window.electron!.setMainWindowClickThroughUnlockHover(active);
-        };
-
-        const handleMouseMove = (event: MouseEvent) => {
-            const withinHorizontalBounds =
-                event.clientX >= window.innerWidth - toggleHotspotRightInset - toggleHotspotWidth
-                && event.clientX <= window.innerWidth - toggleHotspotRightInset;
-            const withinVerticalBounds =
-                event.clientY >= toggleHotspotTopInset
-                && event.clientY <= toggleHotspotTopInset + toggleHotspotHeight;
-            const withinHotspot = withinHorizontalBounds && withinVerticalBounds;
-
-            setIsClickThroughToggleHotspotActive(prev => {
-                if (prev === withinHotspot) {
-                    return prev;
-                }
-
-                void window.electron!.setMainWindowClickThroughUnlockHover(withinHotspot);
-                return withinHotspot;
-            });
-        };
-
-        const handleMouseLeave = () => {
-            syncToggleHotspot(false);
-        };
-
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseleave', handleMouseLeave);
-
-        return () => {
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseleave', handleMouseLeave);
-            syncToggleHotspot(false);
-        };
-    }, [isElectronWindow, isMainWindowClickThroughEnabled]);
     const {
         isPlayerView,
         shouldPauseVisualizerBackground,
@@ -1993,9 +1917,9 @@ export default function App() {
         toggleVoiceInputPause: () => {
             handleToggleVoiceInputPause(!voiceInputPauseEnabled);
         },
-        closeToTray,
-        toggleCloseToTray: () => {
-            handleToggleCloseToTray(!closeToTray);
+        closeMainPanelEnabled,
+        toggleCloseMainPanel: () => {
+            handleToggleCloseMainPanel(!closeMainPanelEnabled);
         },
         launchAtLogin,
         launchAtLoginSupported,
@@ -2057,8 +1981,8 @@ export default function App() {
         toggleDaylightMode,
         voiceInputPauseEnabled,
         handleToggleVoiceInputPause,
-        closeToTray,
-        handleToggleCloseToTray,
+        closeMainPanelEnabled,
+        handleToggleCloseMainPanel,
         launchAtLogin,
         launchAtLoginSupported,
         handleToggleLaunchAtLogin,
@@ -2327,6 +2251,7 @@ export default function App() {
         playAll: playOnlineQueueFromStart,
         addAllToQueue: addOnlineSongsToQueue,
         addSongToQueue: addOnlineSongToQueue,
+        queueAddAndPlay: handleQueueAddAndPlay,
         onStatusMessage: setStatusMsg,
         onOpenCollection: collection => navigateToCollection(collection, 'home'),
         onPushCollection: pushCollection,
@@ -2386,7 +2311,6 @@ export default function App() {
         handleToggleTransparentPlayerBackground,
         handleToggleDisableVisualizerVignette,
         handleToggleDisableVisualizerGeometricBackground,
-        handleToggleMinimizeToTray,
         handleToggleHideTaskbarIcon,
         handleToggleOpenPlayerOnLaunch,
         handleToggleMediaCache,
@@ -2397,7 +2321,6 @@ export default function App() {
         hidePlayerProgressBar,
         hidePlayerRightPanelButton,
         hidePlayerTranslationSubtitle,
-        minimizeToTray,
         hideTaskbarIcon,
         openPlayerOnLaunch,
         isPlayerPageTransparent,
@@ -2458,7 +2381,6 @@ export default function App() {
         visualizerMode,
         handleAudioOutputDeviceChange,
         navidromeEnabled,
-        minimizeToTray,
         hideTaskbarIcon,
         openPlayerOnLaunch,
     ]);
@@ -2492,17 +2414,7 @@ export default function App() {
         effectiveLoopMode,
         toggleLoop,
         handleLike,
-        isLiked: (() => {
-            if (!currentSong) return false;
-            if (isLocalPlaybackSong(currentSong)) {
-                return isLocalSongLiked(currentSong);
-            }
-            if (isNavidromePlaybackSong(currentSong)) {
-                const navidromeSong = resolveNavidromePlaybackCarrier(currentSong);
-                return navidromeSong ? starredNavidromeSongIds.has(navidromeSong.navidromeData.id) : false;
-            }
-            return omni.isSongLiked(currentSong, likedSongIds);
-        })(),
+        isLiked: isCurrentSongLiked,
         generateAITheme: generateCurrentSongTheme,
         isGeneratingTheme,
         hasLyrics: !!lyrics,
@@ -2776,6 +2688,14 @@ export default function App() {
         setPanelTab('queue');
         setIsPanelOpen(true);
     }, [isPanelOpen, panelTab]);
+    // 控制栏点击歌手名：解析成在线艺术家详情并跳转
+    const openCurrentSongArtist = useCallback((artistIndex: number) => {
+        const artist = currentSong?.artists?.[artistIndex];
+        if (!currentSong || !artist) {
+            return;
+        }
+        void handlePlayerPanelArtistSelect(currentSong, artist);
+    }, [currentSong, handlePlayerPanelArtistSelect]);
     const appOverlaysModel = useMemo(() => buildAppOverlaysModel({
         currentView,
         isSearchOpen,
@@ -2811,6 +2731,11 @@ export default function App() {
         handleNextTrack,
         handlePrevTrack,
         toggleQueuePanel,
+        openCurrentSongArtist,
+        isCurrentSongLiked,
+        toggleCurrentSongLike: handleLike,
+        playerVolume: volume,
+        setPlayerVolume: handleSetVolume,
         navigateToPlayer,
         isPlayerChromeHidden,
         shouldHidePlayerProgressBar,
@@ -2843,8 +2768,13 @@ export default function App() {
         isSearchOpen,
         isPlayerChromeHidden,
         lyrics,
+        handleLike,
+        handleSetVolume,
+        isCurrentSongLiked,
         navigateToPlayer,
+        openCurrentSongArtist,
         toggleQueuePanel,
+        volume,
         playerState,
         publishStagePlayerPlaybackUpdate,
         seekMainAudio,
@@ -2997,19 +2927,7 @@ export default function App() {
             isPlayerView={isPlayerView}
             isTitlebarRevealed={isTitlebarRevealed}
             alwaysShowMainWindowTitlebar={alwaysShowMainWindowTitlebar}
-            isMainWindowClickThroughEnabled={isMainWindowClickThroughEnabled}
-            showMainWindowClickThroughToggle={isMainWindowClickThroughEnabled ? isClickThroughToggleHotspotActive : isTitlebarRevealed}
             isDaylight={isDaylight}
-            onToggleMainWindowClickThrough={() => {
-                const nextEnabled = !isMainWindowClickThroughEnabled;
-                if (!nextEnabled) {
-                    setIsClickThroughToggleHotspotActive(false);
-                }
-                void window.electron?.setMainWindowClickThroughEnabled?.(nextEnabled);
-                if (!nextEnabled) {
-                    void window.electron?.setMainWindowClickThroughUnlockHover?.(false);
-                }
-            }}
             audioElement={<audio
                 ref={audioRef}
                 src={audioSrc || undefined}

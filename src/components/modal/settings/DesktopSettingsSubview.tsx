@@ -11,7 +11,6 @@ import {
     Globe,
     KeyRound,
     Loader2,
-    Minimize2,
     Monitor,
     RefreshCw,
     ShieldAlert,
@@ -19,7 +18,7 @@ import {
     Power,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Theme } from '../../../types';
+import type { CloseMainPanelAction, LaunchAtLoginMode, Theme } from '../../../types';
 import { CustomSelect } from '../../shared/CustomSelect';
 
 // src/components/modal/settings/DesktopSettingsSubview.tsx
@@ -54,15 +53,17 @@ export type DesktopSettingsChrome = {
 export type DesktopSettingsPreferences = {
     hideTaskbarIcon: boolean;
     hideRemoteControlTaskbarIcon: boolean;
-    minimizeToTray: boolean;
-    closeToTray: boolean;
+    closeMainPanelEnabled: boolean;
+    closeMainPanelAction: CloseMainPanelAction;
     launchAtLogin: boolean;
+    launchAtLoginMode: LaunchAtLoginMode;
     launchAtLoginSupported: boolean;
     onToggleHideTaskbarIcon: (enabled: boolean) => void;
     onToggleHideRemoteControlTaskbarIcon: (enabled: boolean) => void;
-    onToggleMinimizeToTray: (enabled: boolean) => void;
-    onToggleCloseToTray: (enabled: boolean) => void;
+    onToggleCloseMainPanel: (enabled: boolean) => void;
+    onCloseMainPanelActionChange: (action: CloseMainPanelAction) => void;
     onToggleLaunchAtLogin: (enabled: boolean) => void;
+    onLaunchAtLoginModeChange: (mode: LaunchAtLoginMode) => void;
     onToggleOpenPlayerOnLaunch: (enabled: boolean) => void;
     openPlayerOnLaunch: boolean;
 };
@@ -110,15 +111,17 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
     const {
         hideTaskbarIcon,
         hideRemoteControlTaskbarIcon,
-        minimizeToTray,
-        closeToTray,
+        closeMainPanelEnabled,
+        closeMainPanelAction,
         launchAtLogin,
+        launchAtLoginMode,
         launchAtLoginSupported,
         onToggleHideTaskbarIcon,
         onToggleHideRemoteControlTaskbarIcon,
-        onToggleMinimizeToTray,
-        onToggleCloseToTray,
+        onToggleCloseMainPanel,
+        onCloseMainPanelActionChange,
         onToggleLaunchAtLogin,
+        onLaunchAtLoginModeChange,
         onToggleOpenPlayerOnLaunch,
         openPlayerOnLaunch,
     } = preferences;
@@ -171,57 +174,73 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                         </p>
                     </div>
 
-                    <div className={`flex items-center justify-between p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
-                        <div className="flex items-start gap-3 min-w-0">
-                            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
-                                <Power size={16} />
+                    <div className={`p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-start gap-3 min-w-0">
+                                <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
+                                    <Power size={16} />
+                                </div>
+                                <div className="space-y-0.5 text-left">
+                                    <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
+                                        {t('options.launchAtLogin')}
+                                    </h4>
+                                    <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                        {launchAtLoginSupported
+                                            ? t('options.launchAtLoginDesc')
+                                            : t('options.launchAtLoginUnsupported')}
+                                    </p>
+                                </div>
                             </div>
-                            <div className="space-y-0.5 text-left">
-                                <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
-                                    {t('options.launchAtLogin')}
-                                </h4>
-                                <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                                    {launchAtLoginSupported
-                                        ? t('options.launchAtLoginDesc')
-                                        : t('options.launchAtLoginUnsupported')}
-                                </p>
-                            </div>
+                            {renderToggle(launchAtLogin, () => onToggleLaunchAtLogin(!launchAtLogin), !launchAtLoginSupported)}
                         </div>
-                        {renderToggle(launchAtLogin, () => onToggleLaunchAtLogin(!launchAtLogin), !launchAtLoginSupported)}
+                        {/* 开关未打开时选项不可用：没开自启，启动方式无从谈起。 */}
+                        <div className="mt-3 pl-12">
+                            <CustomSelect
+                                value={launchAtLoginMode}
+                                onChange={(value) => onLaunchAtLoginModeChange(value as LaunchAtLoginMode)}
+                                disabled={!launchAtLoginSupported || !launchAtLogin}
+                                isDaylight={isDaylight}
+                                theme={theme}
+                                ariaLabel={t('options.launchAtLoginMode')}
+                                options={[
+                                    { value: 'silent', label: t('options.launchAtLoginModeSilent') },
+                                    { value: 'foreground', label: t('options.launchAtLoginModeForeground') },
+                                ]}
+                            />
+                        </div>
                     </div>
 
-                    <div className={`flex items-center justify-between p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
-                        <div className="flex items-start gap-3 min-w-0">
-                            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
-                                <Minimize2 size={16} />
+                    <div className={`p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-start gap-3 min-w-0">
+                                <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
+                                    <SquareX size={16} />
+                                </div>
+                                <div className="space-y-0.5 text-left">
+                                    <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
+                                        {t('options.closeMainPanel')}
+                                    </h4>
+                                    <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                        {t('options.closeMainPanelDesc')}
+                                    </p>
+                                </div>
                             </div>
-                            <div className="space-y-0.5 text-left">
-                                <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
-                                    {t('options.minimizeToTray')}
-                                </h4>
-                                <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                                    {t('options.minimizeToTrayDesc')}
-                                </p>
-                            </div>
+                            {renderToggle(closeMainPanelEnabled, () => onToggleCloseMainPanel(!closeMainPanelEnabled))}
                         </div>
-                        {renderToggle(minimizeToTray, () => onToggleMinimizeToTray(!minimizeToTray))}
-                    </div>
-
-                    <div className={`flex items-center justify-between p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
-                        <div className="flex items-start gap-3 min-w-0">
-                            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
-                                <SquareX size={16} />
-                            </div>
-                            <div className="space-y-0.5 text-left">
-                                <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
-                                    {t('options.closeToTray')}
-                                </h4>
-                                <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                                    {t('options.closeToTrayDesc')}
-                                </p>
-                            </div>
+                        <div className="mt-3 pl-12">
+                            <CustomSelect
+                                value={closeMainPanelAction}
+                                onChange={(value) => onCloseMainPanelActionChange(value as CloseMainPanelAction)}
+                                disabled={!closeMainPanelEnabled}
+                                isDaylight={isDaylight}
+                                theme={theme}
+                                ariaLabel={t('options.closeMainPanel')}
+                                options={[
+                                    { value: 'tray', label: t('options.closeMainPanelTray') },
+                                    { value: 'quit', label: t('options.closeMainPanelQuit') },
+                                ]}
+                            />
                         </div>
-                        {renderToggle(closeToTray, () => onToggleCloseToTray(!closeToTray))}
                     </div>
 
                     <div className={`flex items-center justify-between p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
@@ -288,7 +307,7 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                         <ShieldAlert size={16} className="shrink-0 mt-0.5" />
                         <div className="space-y-0.5 text-left">
                             <span className="font-semibold">重要提示：</span>
-                            <span>隐藏任务栏图标后，应用只会在系统托盘显示。如需找回主窗口，请双击或右键点击托盘中的 Folia 图标。建议同时配合启用“最小化到托盘”。</span>
+                            <span>隐藏任务栏图标后，应用只会在系统托盘显示。如需找回主窗口，请双击或右键点击托盘中的 Folia 图标。建议同时把“关闭主面板”设为最小化到系统托盘。</span>
                         </div>
                     </motion.div>
                 )}

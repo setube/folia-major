@@ -61,24 +61,41 @@ declare global {
     /** 托盘菜单顶部展示用；无活动曲目时为 null。 */
     title: string | null;
     artist: string | null;
+    /** 托盘模式二级菜单的当前选中项。 */
+    loopMode: PlayerLoopMode;
+    /** 托盘菜单喜欢按钮的选中态。 */
+    isLiked: boolean;
   }
 
-  type ElectronTaskbarControlAction = 'previous' | 'play-pause' | 'next';
+  type ElectronTaskbarControlAction =
+    | 'previous'
+    | 'play-pause'
+    | 'next'
+    | 'loop-off'
+    | 'loop-all'
+    | 'loop-one'
+    | 'loop-shuffle'
+    | 'like'
+    | 'open-player'
+    | 'open-settings';
 
   interface ElectronTrayMenuState {
     playback: ElectronTaskbarControlState;
-    clickThroughEnabled: boolean;
     skipTaskbarEnabled: boolean;
     mainWindowVisible: boolean;
     canToggleWindow: boolean;
+    /** 完整模式与 mini 模式互斥，最小化是第三态。 */
+    displayMode: 'full' | 'mini' | 'minimized';
   }
 
   type ElectronTrayMenuAction =
     | ElectronTaskbarControlAction
     | 'toggle-window'
     | 'open-remote'
-    | 'toggle-click-through'
     | 'toggle-skip-taskbar'
+    | 'display-full'
+    | 'display-mini'
+    | 'display-minimize'
     | 'quit';
 
   type ElectronRemoteControlCommand =
@@ -90,7 +107,6 @@ declare global {
     | { type: 'seek'; time: number }
     | { type: 'resize-main-window'; width: number; height: number }
     | { type: 'set-main-window-border-visible'; visible: boolean }
-    | { type: 'set-main-window-click-through'; enabled: boolean }
     | { type: 'set-main-window-always-on-top'; enabled: boolean }
     | { type: 'set-transparent-mode-enabled'; enabled: boolean }
     | { type: 'disable-transparent-mode' }
@@ -154,7 +170,6 @@ declare global {
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
-    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;
@@ -188,11 +203,6 @@ declare global {
     duration: number;
     playerState: string;
     updatedAt: number;
-  }
-
-  interface ElectronMainWindowClickThroughState {
-    enabled: boolean;
-    unlockHoverActive?: boolean;
   }
 
   type ElectronObsBrowserSourceStatus = import('./types/obsBrowserSource').ObsBrowserSourceStatus;
@@ -539,12 +549,8 @@ declare global {
         callback: (payload: { requestId: string }) => void,
       ) => () => void;
       setNativeTheme: (themeSource: 'system' | 'light' | 'dark') => Promise<void>;
-      getMainWindowClickThroughEnabled: () => Promise<boolean>;
-      setMainWindowClickThroughEnabled: (enabled: boolean) => Promise<boolean>;
-      setMainWindowClickThroughUnlockHover: (active: boolean) => Promise<boolean>;
       getMainWindowAlwaysOnTop: () => Promise<boolean>;
       setMainWindowAlwaysOnTop: (enabled: boolean) => Promise<boolean>;
-      onMainWindowClickThroughChanged: (callback: (state: ElectronMainWindowClickThroughState) => void) => () => void;
       getObsBrowserSourceStatus: () => Promise<ElectronObsBrowserSourceStatus>;
       setObsBrowserSourceEnabled: (enabled: boolean) => Promise<ElectronObsBrowserSourceStatus>;
       regenerateObsBrowserSourceToken: () => Promise<ElectronObsBrowserSourceStatus>;
@@ -564,8 +570,9 @@ declare global {
       getTrayMenuState: () => Promise<ElectronTrayMenuState>;
       invokeTrayMenuAction: (action: ElectronTrayMenuAction) => Promise<boolean>;
       closeTrayMenu: () => Promise<boolean>;
-      resizeTrayMenu: (height: number) => Promise<boolean>;
       onTrayMenuState: (callback: (state: ElectronTrayMenuState) => void) => () => void;
+      enterMiniMode: () => Promise<boolean>;
+      enterFullMode: () => Promise<boolean>;
       openRemoteControl: () => Promise<boolean>;
       toggleRemoteControl: () => Promise<boolean>;
       closeRemoteControl: () => Promise<boolean>;

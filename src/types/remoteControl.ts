@@ -14,7 +14,6 @@ export type RemoteControlCommand =
     | { type: 'seek'; time: number }
     | { type: 'resize-main-window'; width: number; height: number }
     | { type: 'set-main-window-border-visible'; visible: boolean }
-    | { type: 'set-main-window-click-through'; enabled: boolean }
     | { type: 'set-main-window-always-on-top'; enabled: boolean }
     | { type: 'set-transparent-mode-enabled'; enabled: boolean }
     | { type: 'disable-transparent-mode' }
@@ -38,7 +37,6 @@ export interface RemoteControlSnapshot {
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
-    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;

@@ -1,10 +1,12 @@
 // src/components/player-controls/ExpandedView.tsx
 // 展开态按网易云客户端的排布：左(歌名/歌手) — 中(模式·上一首·播放·下一首·列表) — 右(歌词时间轴)，进度条通栏压在最后一行。
 // 中间列取 auto、两侧取等宽 1fr，因此主控件组始终位于胶囊正中，不随两侧内容长度漂移。
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-    Play, Pause, Repeat, Repeat1, RepeatOff, Shuffle,
-    SkipBack, SkipForward, ListMusic, ChartBar, type LucideIcon,
+    Play, Pause, Repeat, Repeat1, ListOrdered, Shuffle,
+    SkipBack, SkipForward, ListMusic, ChartBar, Heart,
+    Volume2, Volume1, VolumeX, type LucideIcon,
 } from 'lucide-react';
 import { MotionValue } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -13,7 +15,7 @@ import { PlayerState, type PlayerLoopMode } from '../../types';
 import type { ControlSurfaceTokens } from './controlSurface';
 
 const LOOP_ICONS: Partial<Record<PlayerLoopMode, LucideIcon>> = {
-    off: RepeatOff,
+    off: ListOrdered,
     one: Repeat1,
     shuffle: Shuffle,
 };
@@ -32,6 +34,9 @@ const withHoverVar = (color: string, rest?: React.CSSProperties): React.CSSPrope
 
 const ICON_BUTTON_CLASS = 'rounded-full p-2 transition-colors disabled:cursor-not-allowed';
 
+/** 滚轮调音量的单步幅度 */
+const VOLUME_WHEEL_STEP = 0.03;
+
 export interface ExpandedViewProps {
     currentSong: { name: string; artists?: { name: string }[] } | null;
     playerState: PlayerState;
@@ -46,6 +51,13 @@ export interface ExpandedViewProps {
     onNextTrack?: () => void;
     onPrevTrack?: () => void;
     onToggleQueue?: () => void;
+    /** 传歌手在 currentSong.artists 中的下标，由上层解析成具体的艺术家详情。 */
+    onOpenArtist?: (artistIndex: number) => void;
+    isLiked?: boolean;
+    onToggleLike?: () => void;
+    /** 0~1 */
+    volume?: number;
+    onVolumeChange?: (volume: number) => void;
     noTrackText: string;
     primaryColor: string;
     secondaryColor: string;
@@ -68,6 +80,11 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
     onNextTrack,
     onPrevTrack,
     onToggleQueue,
+    onOpenArtist,
+    isLiked = false,
+    onToggleLike,
+    volume,
+    onVolumeChange,
     noTrackText,
     primaryColor,
     secondaryColor,
@@ -76,12 +93,62 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
     controlsDisabled = false,
 }) => {
     const { t } = useTranslation();
+    const [isVolumeOpen, setIsVolumeOpen] = useState(false);
+    const [volumeAnchor, setVolumeAnchor] = useState<DOMRect | null>(null);
+    const volumeButtonRef = useRef<HTMLButtonElement>(null);
+    const volumeCloseTimerRef = useRef<number | null>(null);
+
+    const cancelVolumeClose = useCallback(() => {
+        if (volumeCloseTimerRef.current !== null) {
+            window.clearTimeout(volumeCloseTimerRef.current);
+            volumeCloseTimerRef.current = null;
+        }
+    }, []);
+
+    const closeVolume = useCallback(() => {
+        cancelVolumeClose();
+        setIsVolumeOpen(false);
+    }, [cancelVolumeClose]);
+
+    // 面板挂在 body 上，指针在按钮与面板之间移动时会短暂离开两者，延迟关闭避免闪断。
+    const scheduleVolumeClose = useCallback(() => {
+        cancelVolumeClose();
+        volumeCloseTimerRef.current = window.setTimeout(() => {
+            volumeCloseTimerRef.current = null;
+            setIsVolumeOpen(false);
+        }, 160);
+    }, [cancelVolumeClose]);
+
+    const openVolume = useCallback(() => {
+        cancelVolumeClose();
+        const rect = volumeButtonRef.current?.getBoundingClientRect();
+        if (rect) {
+            setVolumeAnchor(rect);
+        }
+        setIsVolumeOpen(true);
+    }, [cancelVolumeClose]);
+
+    // 向上滚提高音量。面板挂在 body 上且页面禁滚，无需 preventDefault
+    // （React 的 wheel 监听是 passive 的，调了也无效）。
+    const handleVolumeWheel = useCallback((event: React.WheelEvent) => {
+        if (!onVolumeChange) {
+            return;
+        }
+        const delta = event.deltaY < 0 ? VOLUME_WHEEL_STEP : -VOLUME_WHEEL_STEP;
+        const current = Math.min(1, Math.max(0, Number.isFinite(volume) ? (volume as number) : 1));
+        onVolumeChange(Math.min(1, Math.max(0, current + delta)));
+    }, [onVolumeChange, volume]);
+
+    useEffect(() => cancelVolumeClose, [cancelVolumeClose]);
+
+    const safeVolume = Math.min(1, Math.max(0, Number.isFinite(volume) ? (volume as number) : 1));
+    const VolumeIcon = safeVolume === 0 ? VolumeX : (safeVolume < 0.5 ? Volume1 : Volume2);
 
     const isPlaying = playerState === PlayerState.PLAYING;
     const LoopIcon = LOOP_ICONS[loopMode] ?? Repeat;
     const loopLabel = t(LOOP_LABEL_KEYS[loopMode] ?? 'player.controls.loopAll');
     const isLoopActive = loopMode !== 'off';
-    const artistText = currentSong?.artists?.map(artist => artist.name).filter(Boolean).join(' / ') ?? '';
+    const artists = (currentSong?.artists ?? []).filter(artist => Boolean(artist?.name));
 
     const stop = (handler?: () => void) => (event: React.MouseEvent) => {
         event.stopPropagation();
@@ -91,30 +158,60 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
     return (
         <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-x-3 gap-y-2">
             {/* 歌曲信息：移动端整行居中，桌面端退到左列 */}
-            <div className="col-span-3 row-start-1 min-w-0 px-2 text-center select-none sm:col-span-1 sm:col-start-1 sm:text-left">
-                <div className="truncate text-sm font-bold" style={{ color: primaryColor }}>
-                    {currentSong?.name || noTrackText}
-                </div>
-                {artistText && (
-                    <div className="truncate text-[11px] opacity-70" style={{ color: secondaryColor }}>
-                        {artistText}
+            <div className="col-span-3 row-start-1 min-w-0 px-2 select-none sm:col-span-1 sm:col-start-1">
+                <div className="min-w-0 text-center sm:text-left">
+                    <div className="truncate text-sm font-bold" style={{ color: primaryColor }}>
+                        {currentSong?.name || noTrackText}
                     </div>
-                )}
+                    {artists.length > 0 && (
+                        <div className="truncate text-[11px] opacity-70" style={{ color: secondaryColor }}>
+                            {artists.map((artist, index) => (
+                                <React.Fragment key={`${artist.name}-${index}`}>
+                                    {index > 0 && ' / '}
+                                    {onOpenArtist ? (
+                                        <button
+                                            type="button"
+                                            onClick={stop(() => onOpenArtist(index))}
+                                            title={artist.name}
+                                            className="cursor-pointer"
+                                            style={{ color: 'inherit' }}
+                                        >
+                                            {artist.name}
+                                        </button>
+                                    ) : artist.name}
+                                </React.Fragment>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
 
-            {/* 主控件组：模式 · 上一首 · 播放/暂停 · 下一首 · 列表 */}
+            {/* 主控件组：喜欢 · 模式 · 上一首 · 播放/暂停 · 下一首 · 列表 */}
             <div className="col-span-3 row-start-2 flex items-center justify-center gap-1 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                {onToggleLike && (
+                    <button
+                        onClick={stop(onToggleLike)}
+                        disabled={controlsDisabled}
+                        aria-label={t('player.controls.like')}
+                        aria-pressed={isLiked}
+                        title={t('player.controls.like')}
+                        className={`${ICON_BUTTON_CLASS} hover:bg-(--control-hover-bg) ${isLiked ? '' : 'opacity-50 hover:opacity-100'} ${controlsDisabled ? 'opacity-35' : ''}`}
+                        style={withHoverVar(tokens.hoverBackground, {
+                            color: isLiked ? 'var(--text-accent)' : primaryColor,
+                        })}
+                    >
+                        <Heart size={18} fill={isLiked ? 'currentColor' : 'none'} />
+                    </button>
+                )}
+
                 <button
                     onClick={stop(onToggleLoop)}
                     disabled={controlsDisabled}
                     aria-label={loopLabel}
                     aria-pressed={isLoopActive}
                     title={loopLabel}
-                    className={`${ICON_BUTTON_CLASS} ${isLoopActive ? '' : 'opacity-40 hover:opacity-100 hover:bg-(--control-hover-bg)'} ${controlsDisabled ? 'opacity-35' : ''}`}
-                    style={withHoverVar(tokens.hoverBackground, {
-                        color: primaryColor,
-                        backgroundColor: isLoopActive ? tokens.activeToggleBackground : undefined,
-                    })}
+                    className={`${ICON_BUTTON_CLASS} opacity-60 hover:opacity-100 hover:bg-(--control-hover-bg) ${controlsDisabled ? 'opacity-35' : ''}`}
+                    style={withHoverVar(tokens.hoverBackground, { color: primaryColor })}
                 >
                     <LoopIcon size={18} />
                 </button>
@@ -165,8 +262,68 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
                 </button>
             </div>
 
-            {/* 歌词时间轴：移动端空间不足，仅桌面端显示 */}
-            <div className="hidden sm:col-start-3 sm:row-start-1 sm:flex sm:justify-end">
+            {/* 音量 + 歌词时间轴：移动端空间不足，仅桌面端显示 */}
+            <div className="hidden sm:col-start-3 sm:row-start-1 sm:flex sm:items-center sm:justify-end sm:gap-1">
+                {onVolumeChange && (
+                    <div
+                        className="relative"
+                        onMouseEnter={openVolume}
+                        onMouseLeave={scheduleVolumeClose}
+                        onWheel={handleVolumeWheel}
+                    >
+                        <button
+                            ref={volumeButtonRef}
+                            onClick={stop(() => (isVolumeOpen ? closeVolume() : openVolume()))}
+                            aria-label={t('player.controls.volume')}
+                            title={t('player.controls.volume')}
+                            className={`${ICON_BUTTON_CLASS} opacity-40 hover:opacity-100 hover:bg-(--control-hover-bg)`}
+                            style={withHoverVar(tokens.hoverBackground, { color: primaryColor })}
+                        >
+                            <VolumeIcon size={18} />
+                        </button>
+
+                        {isVolumeOpen && volumeAnchor && createPortal(
+                            // 控制栏胶囊有 overflow-hidden（圆角裁剪进度条两端要靠它），
+                            // 面板留在里面会被切掉，所以挂到 body 上按按钮位置定位。
+                            <div
+                                className="fixed z-[70] flex w-12 flex-col items-center gap-1 rounded-2xl border py-2 shadow-lg backdrop-blur-2xl"
+                                style={{
+                                    left: volumeAnchor.left + volumeAnchor.width / 2,
+                                    top: volumeAnchor.top - 8,
+                                    transform: 'translate(-50%, -100%)',
+                                    backgroundColor: tokens.expandedBackground,
+                                    borderColor: tokens.borderColor,
+                                }}
+                                onMouseEnter={cancelVolumeClose}
+                                onMouseLeave={scheduleVolumeClose}
+                                onWheel={handleVolumeWheel}
+                                onClick={event => event.stopPropagation()}
+                            >
+                                <div className="flex h-24 w-9 items-center justify-center">
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={1}
+                                        step={0.01}
+                                        value={safeVolume}
+                                        onChange={event => onVolumeChange(Number(event.currentTarget.value))}
+                                        aria-label={t('player.controls.volume')}
+                                        className="h-1 w-24 -rotate-90 cursor-pointer appearance-none rounded-full [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow"
+                                        style={{ backgroundColor: tokens.trackColor }}
+                                    />
+                                </div>
+                                <span
+                                    className="text-[10px] font-mono tabular-nums opacity-70"
+                                    style={{ color: primaryColor }}
+                                >
+                                    {Math.round(safeVolume * 100)}%
+                                </span>
+                            </div>,
+                            document.body
+                        )}
+                    </div>
+                )}
+
                 <button
                     onClick={stop(onToggleTimeline)}
                     disabled={!hasLyrics}

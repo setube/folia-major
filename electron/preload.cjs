@@ -56,16 +56,8 @@ contextBridge.exposeInMainWorld('electron', {
         return () => ipcRenderer.removeListener('window-playback-handoff-requested', listener);
     },
     setNativeTheme: (themeSource) => ipcRenderer.invoke('window-set-native-theme', themeSource),
-    getMainWindowClickThroughEnabled: () => ipcRenderer.invoke('window-get-click-through'),
-    setMainWindowClickThroughEnabled: (enabled) => ipcRenderer.invoke('window-set-click-through', enabled),
-    setMainWindowClickThroughUnlockHover: (active) => ipcRenderer.invoke('window-set-click-through-unlock-hover', active),
     getMainWindowAlwaysOnTop: () => ipcRenderer.invoke('window-get-always-on-top'),
     setMainWindowAlwaysOnTop: (enabled) => ipcRenderer.invoke('window-set-always-on-top', enabled),
-    onMainWindowClickThroughChanged: (callback) => {
-        const listener = (_event, state) => callback(state);
-        ipcRenderer.on('main-window-click-through-changed', listener);
-        return () => ipcRenderer.removeListener('main-window-click-through-changed', listener);
-    },
     getObsBrowserSourceStatus: () => ipcRenderer.invoke('obs-browser-source-get-status'),
     setObsBrowserSourceEnabled: (enabled) => ipcRenderer.invoke('obs-browser-source-set-enabled', enabled),
     regenerateObsBrowserSourceToken: () => ipcRenderer.invoke('obs-browser-source-regenerate-token'),
@@ -96,7 +88,8 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.on('obs-browser-source-status-changed', listener);
         return () => ipcRenderer.removeListener('obs-browser-source-status-changed', listener);
     },
-    updateTaskbarControls: (state) => ipcRenderer.invoke('thumbar-update-buttons', state),    onTaskbarControl: (callback) => {
+    updateTaskbarControls: (state) => ipcRenderer.invoke('thumbar-update-buttons', state),
+    onTaskbarControl: (callback) => {
         const listener = (_event, action) => callback(action);
         ipcRenderer.on('thumbar-action', listener);
         return () => ipcRenderer.removeListener('thumbar-action', listener);
@@ -104,12 +97,13 @@ contextBridge.exposeInMainWorld('electron', {
     getTrayMenuState: () => ipcRenderer.invoke('tray-menu-get-state'),
     invokeTrayMenuAction: (action) => ipcRenderer.invoke('tray-menu-action', action),
     closeTrayMenu: () => ipcRenderer.invoke('tray-menu-close'),
-    resizeTrayMenu: (height) => ipcRenderer.invoke('tray-menu-resize', height),
     onTrayMenuState: (callback) => {
         const listener = (_event, state) => callback(state);
         ipcRenderer.on('tray-menu-state', listener);
         return () => ipcRenderer.removeListener('tray-menu-state', listener);
     },
+    enterMiniMode: () => ipcRenderer.invoke('window-enter-mini-mode'),
+    enterFullMode: () => ipcRenderer.invoke('window-enter-full-mode'),
     openRemoteControl: () => ipcRenderer.invoke('remote-control-open'),
     toggleRemoteControl: () => ipcRenderer.invoke('remote-control-toggle'),
     closeRemoteControl: () => ipcRenderer.invoke('remote-control-close'),

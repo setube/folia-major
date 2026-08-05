@@ -49,7 +49,6 @@ describe('playbackSyncBridge', () => {
             isStageActive: false,
             controlsDisabled: false,
             transparentModeEnabled: true,
-            mainWindowClickThroughEnabled: false,
             mainWindowBorderVisible: true,
             playerChromeHidden: false,
             exportState,
@@ -89,6 +88,8 @@ describe('playbackSyncBridge', () => {
             isPlaying: true,
             title: 'Current Song',
             artist: 'Artist 2',
+            loopMode: 'off',
+            isLiked: true,
         });
         expect(buildDiscordPresenceSnapshotFromPlaybackSyncBridge(model)).toEqual({
             hasTrack: true,
@@ -117,7 +118,6 @@ describe('playbackSyncBridge', () => {
             isStageActive: true,
             controlsDisabled: false,
             transparentModeEnabled: false,
-            mainWindowClickThroughEnabled: false,
             mainWindowBorderVisible: false,
             playerChromeHidden: true,
             exportState,
@@ -142,6 +142,8 @@ describe('playbackSyncBridge', () => {
             isPlaying: false,
             title: null,
             artist: null,
+            loopMode: 'all',
+            isLiked: false,
         });
     });
 
@@ -177,7 +179,6 @@ describe('playbackSyncBridge', () => {
             isStageActive: false,
             controlsDisabled: false,
             transparentModeEnabled: false,
-            mainWindowClickThroughEnabled: false,
             mainWindowBorderVisible: false,
             playerChromeHidden: false,
             exportState,

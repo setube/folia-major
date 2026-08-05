@@ -31,12 +31,12 @@ describe('buildControlSurface', () => {
         expect(teal.expandedBackground).toContain('11, 61, 59');
     });
 
-    it('轨道与激活态底色跟随主题 primaryColor 变化', () => {
+    it('轨道底色跟随主题 primaryColor 变化', () => {
         const light = buildControlSurface(makeTheme({ primaryColor: '#ffffff' }), false);
         const inked = buildControlSurface(makeTheme({ primaryColor: '#1a1a1a' }), false);
 
         expect(light.trackColor).not.toBe(inked.trackColor);
-        expect(inked.activeToggleBackground).toContain('26, 26, 26');
+        expect(inked.trackColor).toContain('26, 26, 26');
     });
 
     it('明亮模式下叠加更实，暗色模式下叠加更透', () => {

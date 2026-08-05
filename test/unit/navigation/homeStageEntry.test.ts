@@ -84,6 +84,7 @@ const createBaseParams = () => {
         playAll: vi.fn(),
         addAllToQueue: vi.fn(),
         addSongToQueue: vi.fn(),
+        queueAddAndPlay: vi.fn(),
         onOpenCollection: vi.fn(),
         onPushCollection: vi.fn(),
         onBackCollection: vi.fn(),

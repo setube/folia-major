@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Copy, Minus, Radio, Square, X } from 'lucide-react';
+import { Copy, Minus, PictureInPicture2, Square, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export default function WindowControls({
     revealed,
     isDaylight = false,
-    isMainWindowClickThroughEnabled = false,
 }: {
     revealed: boolean;
     isDaylight?: boolean;
-    isMainWindowClickThroughEnabled?: boolean;
 }) {
+    const { t } = useTranslation();
     const [isMaximized, setIsMaximized] = useState(false);
     const electron = (window as any).electron;
 
@@ -23,8 +23,8 @@ export default function WindowControls({
 
     if (!electron) return null;
 
-    const remoteControlVisible = revealed && !isMainWindowClickThroughEnabled;
-    const standardControlsVisible = revealed && !isMainWindowClickThroughEnabled;
+    const remoteControlVisible = revealed;
+    const standardControlsVisible = revealed;
     const remoteBtnClass = `flex items-center justify-center w-11 h-full transition-all duration-200 ${
         remoteControlVisible
             ? isDaylight
@@ -57,11 +57,12 @@ export default function WindowControls({
         >
             <button
                 className={remoteBtnClass}
-                title="Remote control"
+                title={t('tray.displayMini')}
+                aria-label={t('tray.displayMini')}
                 tabIndex={remoteControlVisible ? 0 : -1}
-                onClick={() => void electron.openRemoteControl?.()}
+                onClick={() => void electron.enterMiniMode?.()}
             >
-                <Radio size={15} />
+                <PictureInPicture2 size={15} />
             </button>
             <button
                 className={btnClass}

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type React from 'react';
 import { getNextLoopMode } from '../utils/appStageHelpers';
-import { DEFAULT_CADENZA_TUNING, DEFAULT_CAPPELLA_TUNING, DEFAULT_CLASSIC_TUNING, DEFAULT_CLADDAGH_TUNING, DEFAULT_DIORAMA_TUNING, DEFAULT_FUME_TUNING, DEFAULT_LATENT_BACKGROUND_TUNING, DEFAULT_MONET_BACKGROUND_TUNING, DEFAULT_MONET_TUNING, DEFAULT_NOMAND_BACKGROUND_TUNING, DEFAULT_PARTITA_TUNING, DEFAULT_PENDOLO_TUNING, DEFAULT_SONNET_TUNING, DEFAULT_TILT_TUNING, DIORAMA_PARTICLE_DENSITY_MAX, DIORAMA_PARTICLE_DENSITY_MIN, DIORAMA_PARTICLE_GLOW_INTENSITY_MAX, DIORAMA_PARTICLE_GLOW_INTENSITY_MIN, DIORAMA_PARTICLE_SIZE_MAX, DIORAMA_PARTICLE_SIZE_MIN, type CadenzaTuning, type CappellaAvatarImage, type CappellaAvatarSource, type CappellaEmojiImage, type CappellaTuning, type ClassicTuning, type CladdaghTuning, type DioramaTuning, type FumeTuning, type LatentBackgroundColorSource, type LatentBackgroundDisplayMode, type LatentBackgroundTuning, type LocalLyricsPriority, type LyricProviderSource, type MonetBackgroundImage, type MonetBackgroundLayout, type MonetBackgroundSource, type MonetBackgroundTuning, type MonetBackgroundWashColorMode, type MonetPortraitImage, type MonetPortraitSource, type MonetTuning, type NomandBackgroundDitheringType, type NomandBackgroundSource, type NomandBackgroundTuning, type PartitaTuning, type PendoloTuning, type PlayerLoopMode, type QueueAddBehavior, type SonnetTuning, type StatusMessage, type StoredCappellaAvatarImage, type StoredCappellaEmojiImage, type StoredCustomLyricsFont, type StoredMonetBackgroundImage, type StoredMonetPortraitImage, type SubtitleContentMode, type Theme, type TiltTuning, type UrlBackgroundItem, type VisualizerBackgroundMode, type VisualizerFrameRate, type VisualizerMode } from '../types';
+import { DEFAULT_CADENZA_TUNING, DEFAULT_CAPPELLA_TUNING, DEFAULT_CLASSIC_TUNING, DEFAULT_CLADDAGH_TUNING, DEFAULT_DIORAMA_TUNING, DEFAULT_FUME_TUNING, DEFAULT_LATENT_BACKGROUND_TUNING, DEFAULT_MONET_BACKGROUND_TUNING, DEFAULT_MONET_TUNING, DEFAULT_NOMAND_BACKGROUND_TUNING, DEFAULT_PARTITA_TUNING, DEFAULT_PENDOLO_TUNING, DEFAULT_SONNET_TUNING, DEFAULT_TILT_TUNING, DIORAMA_PARTICLE_DENSITY_MAX, DIORAMA_PARTICLE_DENSITY_MIN, DIORAMA_PARTICLE_GLOW_INTENSITY_MAX, DIORAMA_PARTICLE_GLOW_INTENSITY_MIN, DIORAMA_PARTICLE_SIZE_MAX, DIORAMA_PARTICLE_SIZE_MIN, type CadenzaTuning, type CappellaAvatarImage, type CappellaAvatarSource, type CappellaEmojiImage, type CappellaTuning, type ClassicTuning, type CladdaghTuning, type DioramaTuning, type FumeTuning, type LatentBackgroundColorSource, type LatentBackgroundDisplayMode, type LatentBackgroundTuning, type LocalLyricsPriority, type LyricProviderSource, type MonetBackgroundImage, type MonetBackgroundLayout, type MonetBackgroundSource, type MonetBackgroundTuning, type MonetBackgroundWashColorMode, type MonetPortraitImage, type MonetPortraitSource, type MonetTuning, type NomandBackgroundDitheringType, type NomandBackgroundSource, type NomandBackgroundTuning, type PartitaTuning, type PendoloTuning, type CloseMainPanelAction, type LaunchAtLoginMode, type PlayerLoopMode, type PlaylistEntryBehavior, type QueueAddBehavior, type SonnetTuning, type StatusMessage, type StoredCappellaAvatarImage, type StoredCappellaEmojiImage, type StoredCustomLyricsFont, type StoredMonetBackgroundImage, type StoredMonetPortraitImage, type SubtitleContentMode, type Theme, type TiltTuning, type UrlBackgroundItem, type VisualizerBackgroundMode, type VisualizerFrameRate, type VisualizerMode } from '../types';
 import { DEFAULT_VISUALIZER_MODE, getVisualizerModeLabel, getVisualizerRegistryEntry, hasVisualizerMode } from '../components/visualizer/registry';
 import { DEFAULT_VISUALIZER_BACKGROUND_MODE, hasVisualizerBackgroundMode } from '../components/visualizer/backgrounds/registry';
 import { resolveDioramaMoteCircumference, resolveDioramaMoteRadial } from '../components/visualizer/diorama/dioramaMoteField';
@@ -45,9 +45,11 @@ export type SettingsModalState = {
     initialVisualizerSection?: VisualizerSettingsSection | null;
 };
 
-export const MINIMIZE_TO_TRAY_STORAGE_KEY = 'minimize_to_tray';
 export const CLOSE_TO_TRAY_STORAGE_KEY = 'close_to_tray';
+export const CLOSE_MAIN_PANEL_ACTION_STORAGE_KEY = 'close_main_panel_action';
 export const LAUNCH_AT_LOGIN_STORAGE_KEY = 'launch_at_login';
+export const LAUNCH_AT_LOGIN_MODE_STORAGE_KEY = 'launch_at_login_mode';
+export const PLAYLIST_ENTRY_BEHAVIOR_STORAGE_KEY = 'playlist_entry_behavior';
 export const AUTOPLAY_ON_LAUNCH_STORAGE_KEY = 'autoplay_on_launch';
 export const REMEMBER_PLAYBACK_POSITION_STORAGE_KEY = 'remember_playback_position';
 export const VOICE_INPUT_PAUSE_STORAGE_KEY = 'voice_input_pause_enabled';
@@ -1064,6 +1066,31 @@ const readStoredQueueAddBehavior = (): QueueAddBehavior => {
     return saved === 'next' ? 'next' : 'append';
 };
 
+const readStoredPlaylistEntryBehavior = (): PlaylistEntryBehavior => {
+    if (typeof window === 'undefined') {
+        return 'replaceQueue';
+    }
+
+    const saved = localStorage.getItem(PLAYLIST_ENTRY_BEHAVIOR_STORAGE_KEY);
+    return saved === 'appendSingle' ? 'appendSingle' : 'replaceQueue';
+};
+
+const readStoredCloseMainPanelAction = (): CloseMainPanelAction => {
+    if (typeof window === 'undefined') {
+        return 'tray';
+    }
+
+    return localStorage.getItem(CLOSE_MAIN_PANEL_ACTION_STORAGE_KEY) === 'quit' ? 'quit' : 'tray';
+};
+
+const readStoredLaunchAtLoginMode = (): LaunchAtLoginMode => {
+    if (typeof window === 'undefined') {
+        return 'silent';
+    }
+
+    return localStorage.getItem(LAUNCH_AT_LOGIN_MODE_STORAGE_KEY) === 'foreground' ? 'foreground' : 'silent';
+};
+
 const readStoredAudioOutputDeviceId = (): string => {
     if (typeof window === 'undefined') {
         return '';
@@ -1147,9 +1174,10 @@ export type SettingsUiState = {
     autoHidePlayerChrome: boolean;
     disableVisualizerVignette: boolean;
     disableVisualizerGeometricBackground: boolean;
-    minimizeToTray: boolean;
-    closeToTray: boolean;
+    closeMainPanelEnabled: boolean;
+    closeMainPanelAction: CloseMainPanelAction;
     launchAtLogin: boolean;
+    launchAtLoginMode: LaunchAtLoginMode;
     launchAtLoginSupported: boolean;
     autoplayOnLaunch: boolean;
     rememberPlaybackPosition: boolean;
@@ -1226,6 +1254,7 @@ export type SettingsUiState = {
     // Theme mode baked into the copied web OBS URL (static burn-in vs per-song dynamic; see readStoredWebObsThemeMode).
     webObsThemeMode: 'static' | 'builtin' | 'ai';
     queueAddBehavior: QueueAddBehavior;
+    playlistEntryBehavior: PlaylistEntryBehavior;
     audioOutputDeviceId: string;
     volume: number;
     isMuted: boolean;
@@ -1247,7 +1276,7 @@ export type SettingsUiState = {
     setAudioQuality: (quality: AudioQuality) => void;
     setTransparentPlayerBackgroundFromSystem: (enabled: boolean) => void;
     handleTogglePlayerPageNativeBlur: (enable: boolean) => void;
-    setDesktopPreferenceSnapshot: (settings: { MINIMIZE_TO_TRAY?: unknown; CLOSE_TO_TRAY?: unknown; LAUNCH_AT_LOGIN?: unknown; LAUNCH_AT_LOGIN_SUPPORTED?: unknown; HIDE_TASKBAR_ICON?: unknown; REMOTE_CONTROL_SKIP_TASKBAR?: unknown; VOICE_INPUT_PAUSE_ENABLED?: unknown; }) => void;
+    setDesktopPreferenceSnapshot: (settings: { CLOSE_TO_TRAY?: unknown; CLOSE_MAIN_PANEL_ACTION?: unknown; LAUNCH_AT_LOGIN?: unknown; LAUNCH_AT_LOGIN_MODE?: unknown; LAUNCH_AT_LOGIN_SUPPORTED?: unknown; HIDE_TASKBAR_ICON?: unknown; REMOTE_CONTROL_SKIP_TASKBAR?: unknown; VOICE_INPUT_PAUSE_ENABLED?: unknown; }) => void;
     setStoredCappellaEmojiPack: (pack: StoredCappellaEmojiImage[]) => void;
     setCappellaCustomEmojiImages: (images: CappellaEmojiImage[]) => void;
     setIsLoadingCappellaCustomEmojiPack: (loading: boolean) => void;
@@ -1281,9 +1310,10 @@ export type SettingsUiState = {
     handleToggleAutoHidePlayerChrome: (enable: boolean) => void;
     handleToggleDisableVisualizerVignette: (disable: boolean) => void;
     handleToggleDisableVisualizerGeometricBackground: (disable: boolean) => void;
-    handleToggleMinimizeToTray: (enable: boolean) => void;
-    handleToggleCloseToTray: (enable: boolean) => void;
+    handleToggleCloseMainPanel: (enable: boolean) => void;
+    handleSetCloseMainPanelAction: (action: CloseMainPanelAction) => void;
     handleToggleLaunchAtLogin: (enable: boolean) => void;
+    handleSetLaunchAtLoginMode: (mode: LaunchAtLoginMode) => void;
     handleToggleAutoplayOnLaunch: (enable: boolean) => void;
     handleToggleRememberPlaybackPosition: (enable: boolean) => void;
     handleToggleVoiceInputPause: (enable: boolean) => void;
@@ -1373,10 +1403,12 @@ export type SettingsUiState = {
     setPlayerCapSticky: (sticky: boolean) => void;
     setWebObsThemeMode: (mode: 'static' | 'builtin' | 'ai') => void;
     handleSetQueueAddBehavior: (behavior: QueueAddBehavior) => void;
+    handleSetPlaylistEntryBehavior: (behavior: PlaylistEntryBehavior) => void;
     handleSetAudioOutputDeviceId: (deviceId: string) => void;
     handleSetVolume: (val: number) => void;
     handleToggleMute: () => void;
     handleToggleLoopMode: () => void;
+    handleSetLoopMode: (mode: PlayerLoopMode) => void;
     handleSetHomeLayoutStyle: (style: 'carousel' | 'grid') => void;
     handleSetGrid3dCardStyle: (style: 'image' | 'card') => void;
     handleToggleHomeTabPlaylist: (show: boolean) => void;
@@ -1417,9 +1449,10 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
     autoHidePlayerChrome: getStoredBoolean('auto_hide_player_chrome', false),
     disableVisualizerVignette: getStoredBoolean('disable_visualizer_vignette', false),
     disableVisualizerGeometricBackground: getStoredBoolean('disable_visualizer_geometric_background', false),
-    minimizeToTray: getStoredBoolean(MINIMIZE_TO_TRAY_STORAGE_KEY, false),
-    closeToTray: getStoredBoolean(CLOSE_TO_TRAY_STORAGE_KEY, false),
+    closeMainPanelEnabled: getStoredBoolean(CLOSE_TO_TRAY_STORAGE_KEY, false),
+    closeMainPanelAction: readStoredCloseMainPanelAction(),
     launchAtLogin: getStoredBoolean(LAUNCH_AT_LOGIN_STORAGE_KEY, false),
+    launchAtLoginMode: readStoredLaunchAtLoginMode(),
     launchAtLoginSupported: false,
     autoplayOnLaunch: getStoredBoolean(AUTOPLAY_ON_LAUNCH_STORAGE_KEY, false),
     rememberPlaybackPosition: getStoredBoolean(REMEMBER_PLAYBACK_POSITION_STORAGE_KEY, false),
@@ -1494,6 +1527,7 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
     playerCapSticky: getStoredBoolean('playercap_sticky', true),
     webObsThemeMode: readStoredWebObsThemeMode(),
     queueAddBehavior: readStoredQueueAddBehavior(),
+    playlistEntryBehavior: readStoredPlaylistEntryBehavior(),
     audioOutputDeviceId: readStoredAudioOutputDeviceId(),
     volume: readStoredVolume(),
     isMuted: getStoredBoolean('player_is_muted', false),
@@ -1545,18 +1579,22 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
     },
     setDesktopPreferenceSnapshot: (settings) => {
         const patch: Partial<SettingsUiState> = {};
-        if (typeof settings.MINIMIZE_TO_TRAY === 'boolean') {
-            patch.minimizeToTray = settings.MINIMIZE_TO_TRAY;
-            setStoredBoolean(MINIMIZE_TO_TRAY_STORAGE_KEY, settings.MINIMIZE_TO_TRAY);
-        }
         if (typeof settings.CLOSE_TO_TRAY === 'boolean') {
-            patch.closeToTray = settings.CLOSE_TO_TRAY;
+            patch.closeMainPanelEnabled = settings.CLOSE_TO_TRAY;
             setStoredBoolean(CLOSE_TO_TRAY_STORAGE_KEY, settings.CLOSE_TO_TRAY);
+        }
+        if (settings.CLOSE_MAIN_PANEL_ACTION === 'tray' || settings.CLOSE_MAIN_PANEL_ACTION === 'quit') {
+            patch.closeMainPanelAction = settings.CLOSE_MAIN_PANEL_ACTION;
+            localStorage.setItem(CLOSE_MAIN_PANEL_ACTION_STORAGE_KEY, settings.CLOSE_MAIN_PANEL_ACTION);
         }
         // 开机自启以系统登录项为真源，主进程回传的状态直接覆盖本地缓存。
         if (typeof settings.LAUNCH_AT_LOGIN === 'boolean') {
             patch.launchAtLogin = settings.LAUNCH_AT_LOGIN;
             setStoredBoolean(LAUNCH_AT_LOGIN_STORAGE_KEY, settings.LAUNCH_AT_LOGIN);
+        }
+        if (settings.LAUNCH_AT_LOGIN_MODE === 'silent' || settings.LAUNCH_AT_LOGIN_MODE === 'foreground') {
+            patch.launchAtLoginMode = settings.LAUNCH_AT_LOGIN_MODE;
+            localStorage.setItem(LAUNCH_AT_LOGIN_MODE_STORAGE_KEY, settings.LAUNCH_AT_LOGIN_MODE);
         }
         if (typeof settings.LAUNCH_AT_LOGIN_SUPPORTED === 'boolean') {
             patch.launchAtLoginSupported = settings.LAUNCH_AT_LOGIN_SUPPORTED;
@@ -1745,26 +1783,26 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
             text: i18n.t('notifications.' + (disable ? 'geometricBgHidden' : 'geometricBgShown')),
         });
     },
-    handleToggleMinimizeToTray: (enable) => {
-        setStoredBoolean(MINIMIZE_TO_TRAY_STORAGE_KEY, enable);
-        set({ minimizeToTray: enable });
-        if (window.electron?.saveSettings) {
-            void window.electron.saveSettings('MINIMIZE_TO_TRAY', enable);
-        }
-        notify(get, {
-            type: 'info',
-            text: i18n.t('notifications.' + (enable ? 'minimizeToTray' : 'minimizeToTaskbar')),
-        });
-    },
-    handleToggleCloseToTray: (enable) => {
+    handleToggleCloseMainPanel: (enable) => {
         setStoredBoolean(CLOSE_TO_TRAY_STORAGE_KEY, enable);
-        set({ closeToTray: enable });
+        set({ closeMainPanelEnabled: enable });
         if (window.electron?.saveSettings) {
             void window.electron.saveSettings('CLOSE_TO_TRAY', enable);
         }
         notify(get, {
             type: 'info',
-            text: i18n.t('notifications.' + (enable ? 'closeToTray' : 'closeToQuit')),
+            text: i18n.t('notifications.' + (enable ? 'closeMainPanelOn' : 'closeMainPanelOff')),
+        });
+    },
+    handleSetCloseMainPanelAction: (action) => {
+        localStorage.setItem(CLOSE_MAIN_PANEL_ACTION_STORAGE_KEY, action);
+        set({ closeMainPanelAction: action });
+        if (window.electron?.saveSettings) {
+            void window.electron.saveSettings('CLOSE_MAIN_PANEL_ACTION', action);
+        }
+        notify(get, {
+            type: 'info',
+            text: i18n.t('notifications.' + (action === 'quit' ? 'closeToQuit' : 'closeToTray')),
         });
     },
     handleToggleLaunchAtLogin: (enable) => {
@@ -1776,6 +1814,18 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
         notify(get, {
             type: 'info',
             text: i18n.t('notifications.' + (enable ? 'launchAtLoginOn' : 'launchAtLoginOff')),
+        });
+    },
+    handleSetLaunchAtLoginMode: (mode) => {
+        localStorage.setItem(LAUNCH_AT_LOGIN_MODE_STORAGE_KEY, mode);
+        set({ launchAtLoginMode: mode });
+        // 登录项参数随模式变化，必须让主进程重写注册项，否则下次开机仍按旧模式启动。
+        if (window.electron?.saveSettings) {
+            void window.electron.saveSettings('LAUNCH_AT_LOGIN_MODE', mode);
+        }
+        notify(get, {
+            type: 'info',
+            text: i18n.t('notifications.' + (mode === 'foreground' ? 'launchAtLoginForeground' : 'launchAtLoginSilent')),
         });
     },
     handleToggleAutoplayOnLaunch: (enable) => {
@@ -2718,6 +2768,16 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
             text: i18n.t('notifications.' + (behavior === 'next' ? 'queueInsertNext' : 'queueAppend')),
         });
     },
+    handleSetPlaylistEntryBehavior: (behavior) => {
+        if (typeof window !== 'undefined') {
+            localStorage.setItem(PLAYLIST_ENTRY_BEHAVIOR_STORAGE_KEY, behavior);
+        }
+        set({ playlistEntryBehavior: behavior });
+        notify(get, {
+            type: 'info',
+            text: i18n.t('notifications.' + (behavior === 'appendSingle' ? 'playlistEntryAppendSingle' : 'playlistEntryReplaceQueue')),
+        });
+    },
     handleSetAudioOutputDeviceId: (deviceId) => {
         set({ audioOutputDeviceId: deviceId });
         if (typeof window === 'undefined') {
@@ -2748,6 +2808,16 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
             localStorage.setItem('player_loop_mode', next);
         }
         set({ loopMode: next });
+    },
+    handleSetLoopMode: (mode: PlayerLoopMode) => {
+        // 托盘二级菜单直接指定模式，绕过 getNextLoopMode 的切换链，但持久化行为保持一致。
+        if (get().loopMode === mode) {
+            return;
+        }
+        if (typeof window !== 'undefined') {
+            localStorage.setItem('player_loop_mode', mode);
+        }
+        set({ loopMode: mode });
     },
     handleSetHomeLayoutStyle: () => {
         if (typeof window !== 'undefined') {
@@ -2815,9 +2885,10 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     autoHidePlayerChrome: state.autoHidePlayerChrome,
     disableVisualizerVignette: state.disableVisualizerVignette,
     disableVisualizerGeometricBackground: state.disableVisualizerGeometricBackground,
-    minimizeToTray: state.minimizeToTray,
-    closeToTray: state.closeToTray,
+    closeMainPanelEnabled: state.closeMainPanelEnabled,
+    closeMainPanelAction: state.closeMainPanelAction,
     launchAtLogin: state.launchAtLogin,
+    launchAtLoginMode: state.launchAtLoginMode,
     launchAtLoginSupported: state.launchAtLoginSupported,
     autoplayOnLaunch: state.autoplayOnLaunch,
     rememberPlaybackPosition: state.rememberPlaybackPosition,
@@ -2894,6 +2965,7 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     playerCapSticky: state.playerCapSticky,
     webObsThemeMode: state.webObsThemeMode,
     queueAddBehavior: state.queueAddBehavior,
+    playlistEntryBehavior: state.playlistEntryBehavior,
     audioOutputDeviceId: state.audioOutputDeviceId,
     loopMode: state.loopMode,
     handleToggleCoverColorBg: state.handleToggleCoverColorBg,
@@ -2912,9 +2984,10 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     handleToggleAutoHidePlayerChrome: state.handleToggleAutoHidePlayerChrome,
     handleToggleDisableVisualizerVignette: state.handleToggleDisableVisualizerVignette,
     handleToggleDisableVisualizerGeometricBackground: state.handleToggleDisableVisualizerGeometricBackground,
-    handleToggleMinimizeToTray: state.handleToggleMinimizeToTray,
-    handleToggleCloseToTray: state.handleToggleCloseToTray,
+    handleToggleCloseMainPanel: state.handleToggleCloseMainPanel,
+    handleSetCloseMainPanelAction: state.handleSetCloseMainPanelAction,
     handleToggleLaunchAtLogin: state.handleToggleLaunchAtLogin,
+    handleSetLaunchAtLoginMode: state.handleSetLaunchAtLoginMode,
     handleToggleAutoplayOnLaunch: state.handleToggleAutoplayOnLaunch,
     handleToggleRememberPlaybackPosition: state.handleToggleRememberPlaybackPosition,
     handleToggleVoiceInputPause: state.handleToggleVoiceInputPause,
@@ -2999,6 +3072,7 @@ export const selectSettingsUiSnapshot = (state: SettingsUiState) => ({
     handleToggleOpenPanelCloseButton: state.handleToggleOpenPanelCloseButton,
     handleToggleNowPlayingStage: state.handleToggleNowPlayingStage,
     handleSetQueueAddBehavior: state.handleSetQueueAddBehavior,
+    handleSetPlaylistEntryBehavior: state.handleSetPlaylistEntryBehavior,
     handleSetAudioOutputDeviceId: state.handleSetAudioOutputDeviceId,
     volume: state.volume,
     isMuted: state.isMuted,

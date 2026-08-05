@@ -562,7 +562,14 @@ const GridViewOverlayHost: React.FC<GridViewOverlayHostProps> = ({
         }
     }, [refreshNavidromePlaylists, selectedCollection]);
 
+    // 「播放列表」设置决定点选单曲的队列语义：
+    // replaceQueue —— 用该曲所在列表整体替换；appendSingle —— 保留现有队列，只把这首加进去。
     const handleSelectTrack = useCallback((track: SongResult, queue: SongResult[]) => {
+        const behavior = useSettingsUiStore.getState().playlistEntryBehavior;
+        if (behavior === 'appendSingle' && surfaceProps.onPlaySongWithoutQueueReplace) {
+            surfaceProps.onPlaySongWithoutQueueReplace(track);
+            return;
+        }
         surfaceProps.onPlaySong(track, queue);
     }, [surfaceProps]);
 

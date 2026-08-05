@@ -68,6 +68,7 @@ type BuildHomeModelParams = {
     playAll: (songs: SongResult[]) => void;
     addAllToQueue: (songs: SongResult[]) => void;
     addSongToQueue: (song: SongResult) => void;
+    queueAddAndPlay: (song: SongResult) => void;
     onStatusMessage?: HomeSurfaceProps['onStatusMessage'];
     onOpenCollection: (collection: GridViewCollectionDescriptor) => void;
     onPushCollection: (collection: GridViewCollectionDescriptor) => void;
@@ -128,6 +129,7 @@ export const buildHomeModel = ({
     playAll,
     addAllToQueue,
     addSongToQueue,
+    queueAddAndPlay,
     onStatusMessage,
     onOpenCollection,
     onPushCollection,
@@ -153,6 +155,7 @@ export const buildHomeModel = ({
             onPlayAll: playAll,
             onAddAllToQueue: addAllToQueue,
             onAddSongToQueue: addSongToQueue,
+            onPlaySongWithoutQueueReplace: queueAddAndPlay,
             onStatusMessage,
             focusedPlaylistIndex,
             setFocusedPlaylistIndex,

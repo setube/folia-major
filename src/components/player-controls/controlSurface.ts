@@ -14,8 +14,8 @@ const SURFACE_ALPHA = {
 } as const;
 
 const INK_ALPHA = {
-    daylight: { track: 0.08, activeToggle: 0.12, hover: 0.06 },
-    night: { track: 0.12, activeToggle: 0.2, hover: 0.1 },
+    daylight: { track: 0.08, hover: 0.06 },
+    night: { track: 0.12, hover: 0.1 },
 } as const;
 
 // 边框朝前景色偏移的比例：足够勾出玻璃边缘，又不至于变成实线描边。
@@ -32,8 +32,6 @@ export interface ControlSurfaceTokens {
     borderColor: string;
     /** 进度条底轨 */
     trackColor: string;
-    /** 循环/随机按钮的激活态底色 */
-    activeToggleBackground: string;
     /** 图标按钮悬停底色 */
     hoverBackground: string;
 }
@@ -54,7 +52,6 @@ export const buildControlSurface = (theme: Theme | undefined, isDaylight: boolea
         collapsedHoverBackground: colorWithAlpha(base, surface.collapsedHover),
         borderColor: mixColors(base, ink, BORDER_MIX_RATIO, surface.border),
         trackColor: colorWithAlpha(ink, inkAlpha.track),
-        activeToggleBackground: colorWithAlpha(ink, inkAlpha.activeToggle),
         hoverBackground: colorWithAlpha(ink, inkAlpha.hover),
     };
 };

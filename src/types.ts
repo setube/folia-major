@@ -126,6 +126,13 @@ export type PlayerLoopMode = 'off' | 'all' | 'one' | 'shuffle';
 // Stage 对外协议与内部播放模式保持一致，外部集成才能读到真实模式。
 export type StageLoopMode = PlayerLoopMode;
 export type QueueAddBehavior = 'append' | 'next';
+// 在歌曲列表里点选单曲时如何处理主播放列表。
+// replaceQueue：用该曲所在列表整体替换；appendSingle：保留现有队列，只把该曲加进去。
+export type PlaylistEntryBehavior = 'replaceQueue' | 'appendSingle';
+// 关闭主面板时的动作。开关关闭时不生效，直接退出。
+export type CloseMainPanelAction = 'tray' | 'quit';
+// 开机自启的呈现方式。silent：最小化到任务栏启动；foreground：正常前台显示。
+export type LaunchAtLoginMode = 'silent' | 'foreground';
 export type StageActiveEntryKind = 'lyrics' | 'media';
 
 export interface StageEmbeddedUsltTag {

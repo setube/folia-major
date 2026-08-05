@@ -96,8 +96,8 @@ export type CommandPaletteContext = {
     voiceInputPauseEnabled: boolean;
     voiceInputPauseSupported: boolean;
     toggleVoiceInputPause: () => void;
-    closeToTray: boolean;
-    toggleCloseToTray: () => void;
+    closeMainPanelEnabled: boolean;
+    toggleCloseMainPanel: () => void;
     launchAtLogin: boolean;
     launchAtLoginSupported: boolean;
     toggleLaunchAtLogin: () => void;

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AudioLines, History, Monitor, Play, PlayCircle, RefreshCw, Rocket, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
-import type { LocalLyricsPriority, QueueAddBehavior, ReplayGainMode, Theme } from '../../../types';
+import type { LocalLyricsPriority, PlaylistEntryBehavior, QueueAddBehavior, ReplayGainMode, Theme } from '../../../types';
 import { useSettingsUiStore } from '../../../stores/useSettingsUiStore';
 import { CustomSelect } from '../../shared/CustomSelect';
 import { LYRIC_MATCH_SOURCES } from '../../../utils/lyrics/lyricMatchSources';
@@ -52,10 +52,12 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         preferredAlternativeLyricSource,
         localLyricsPriority,
         queueAddBehavior,
+        playlistEntryBehavior,
         onToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange,
         onLocalLyricsPriorityChange,
         onQueueAddBehaviorChange,
+        onPlaylistEntryBehaviorChange,
         autoplayOnLaunch,
         rememberPlaybackPosition,
         onToggleAutoplayOnLaunch,
@@ -66,10 +68,12 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         preferredAlternativeLyricSource: state.preferredAlternativeLyricSource,
         localLyricsPriority: state.localLyricsPriority,
         queueAddBehavior: state.queueAddBehavior,
+        playlistEntryBehavior: state.playlistEntryBehavior,
         onToggleAutoUseBestLyric: state.handleToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange: state.handleSetPreferredAlternativeLyricSource,
         onLocalLyricsPriorityChange: state.handleSetLocalLyricsPriority,
         onQueueAddBehaviorChange: state.handleSetQueueAddBehavior,
+        onPlaylistEntryBehaviorChange: state.handleSetPlaylistEntryBehavior,
         autoplayOnLaunch: state.autoplayOnLaunch,
         rememberPlaybackPosition: state.rememberPlaybackPosition,
         onToggleAutoplayOnLaunch: state.handleToggleAutoplayOnLaunch,
@@ -232,6 +236,38 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
 
                 </h3>
                 <div className={`p-4 rounded-xl border space-y-4 ${settingsCardClass}`}>
+                    <div className="space-y-1">
+                        <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                            {t('options.playlistEntryBehavior')}
+                        </div>
+                        <div className="text-[11px] opacity-50 max-w-[360px]" style={{ color: 'var(--text-secondary)' }}>
+                            {t('options.playlistEntryBehaviorDesc')}
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                        {([
+                            { value: 'replaceQueue', label: t('options.playlistEntryReplaceLabel'), desc: t('options.playlistEntryReplaceDesc') },
+                            { value: 'appendSingle', label: t('options.playlistEntryAppendLabel'), desc: t('options.playlistEntryAppendDesc') },
+                        ] as Array<{ value: PlaylistEntryBehavior; label: string; desc: string }>).map((option) => (
+                            <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => onPlaylistEntryBehaviorChange(option.value)}
+                                className="rounded-xl border px-3 py-3 text-left transition-colors"
+                                style={getAccentOptionStyle(playlistEntryBehavior === option.value)}
+                            >
+                                <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                                    {option.label}
+                                </div>
+                                <div className="mt-1 text-[11px] opacity-50" style={{ color: 'var(--text-secondary)' }}>
+                                    {option.desc}
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className={`mt-3 p-4 rounded-xl border space-y-4 ${settingsCardClass}`}>
                     <div className="space-y-1">
                         <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                             {t('options.queueDefaultBehavior')}

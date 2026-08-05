@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
-import { ChevronLeft, Heart, Lock, LockOpen, Pause, Pin, PinOff, Play, SkipBack, SkipForward, Video, MirrorRectangular, X, Check, Sliders, Palette } from 'lucide-react';
+import { AppWindow, ChevronLeft, Heart, Pause, Pin, PinOff, Play, SkipBack, SkipForward, Video, MirrorRectangular, X, Check, Sliders, Palette } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlayerState } from '../../types';
 import RemoteVideoExportPanel from './RemoteVideoExportPanel';
@@ -75,7 +75,6 @@ const emptySnapshot: RemoteControlSnapshot = {
     controlsDisabled: true,
     isStageActive: false,
     transparentModeEnabled: false,
-    mainWindowClickThroughEnabled: false,
     mainWindowAlwaysOnTop: false,
     mainWindowBorderVisible: false,
     playerChromeHidden: false,
@@ -427,6 +426,19 @@ const RemoteControlApp: React.FC = () => {
                             setWindowControlsRevealed(true);
                         }}
                     >
+                        <button
+                            type="button"
+                            title={t('tray.displayFull')}
+                            aria-label={t('tray.displayFull')}
+                            tabIndex={windowControlsRevealed ? 0 : -1}
+                            onClick={() => void window.electron?.enterFullMode?.()}
+                            className={`flex h-6 w-6 items-center justify-center rounded-full transition ${isDaylight
+                                ? 'text-black/30 hover:bg-black/10 hover:text-black/80'
+                                : 'text-white/30 hover:bg-white/10 hover:text-white/80'
+                                }`}
+                        >
+                            <AppWindow size={13} />
+                        </button>
                         <button
                             type="button"
                             title={
@@ -794,22 +806,8 @@ const RemoteControlApp: React.FC = () => {
                                                     {snapshot.mainWindowBorderVisible ? t('remote.hideBorder') : t('remote.showBorder')}
                                                 </button>
 
-                                                <div className={`grid h-8 grid-cols-2 overflow-hidden rounded-xl border transition-colors ${isDaylight ? 'border-black/5 bg-black/5' : 'border-white/5 bg-white/5'
+                                                <div className={`grid h-8 grid-cols-1 overflow-hidden rounded-xl border transition-colors ${isDaylight ? 'border-black/5 bg-black/5' : 'border-white/5 bg-white/5'
                                                     }`}>
-                                                    <button
-                                                        type="button"
-                                                        disabled={!snapshot.transparentModeEnabled}
-                                                        title={snapshot.mainWindowClickThroughEnabled ? t('remote.disableClickThrough') : t('remote.enableClickThrough')}
-                                                        aria-pressed={snapshot.mainWindowClickThroughEnabled}
-                                                        onClick={() => sendCommand({ type: 'set-main-window-click-through', enabled: !snapshot.mainWindowClickThroughEnabled })}
-                                                        className={`flex h-full items-center justify-center gap-1 text-[10px] font-bold transition disabled:cursor-not-allowed disabled:opacity-35 ${snapshot.mainWindowClickThroughEnabled
-                                                            ? (isDaylight ? 'bg-zinc-900 text-white shadow-sm' : 'bg-white text-zinc-950 shadow-sm')
-                                                            : (isDaylight ? 'text-black/70 hover:bg-black/5 hover:text-black' : 'text-white/70 hover:bg-white/5 hover:text-white')
-                                                            }`}
-                                                    >
-                                                        {snapshot.mainWindowClickThroughEnabled ? <Lock size={12} /> : <LockOpen size={12} />}
-                                                        <span>{t('remote.through')}</span>
-                                                    </button>
                                                     <button
                                                         type="button"
                                                         title={snapshot.mainWindowAlwaysOnTop ? t('remote.unpinMainWindow') : t('remote.pinMainWindow')}
