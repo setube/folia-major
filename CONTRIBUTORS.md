@@ -1,6 +1,18 @@
 # 贡献者
 
-Thanks goes to these wonderful people. Issue reports, bug reports, ideas, docs, design, tests, and code are all counted through the [all-contributors](https://allcontributors.org/) spec.
+## 本仓库
+
+本仓库是 [chthollyphile/folia-major](https://github.com/chthollyphile/folia-major) 的二次开发版本，二开部分由以下人员维护：
+
+| 贡献者 | 内容 |
+| --- | --- |
+| [setube](https://github.com/setube) | 二次开发与维护 |
+
+## 上游 Folia Major 贡献者
+
+本项目的绝大部分代码来自上游项目。以下是上游 [Folia Major](https://github.com/chthollyphile/folia-major) 的贡献者名单，依据 [all-contributors](https://allcontributors.org/) 规范统计，涵盖 Issue 提交、Bug 报告、想法建议、文档、设计、测试与代码编写。
+
+> 保留此名单是 AGPL-3.0 对署名的要求，名单中的贡献者并未参与本仓库的二次开发，请勿就本仓库的问题联系他们。
 
 <!-- ALL-CONTRIBUTORS-LIST:START -->
 <!-- prettier-ignore-start -->
