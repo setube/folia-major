@@ -12,7 +12,8 @@ const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { createDisplaySleepBlocker } = require('./displaySleepBlocker.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
-const { LAUNCH_AT_LOGIN_MODES, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
+const { execFileSync } = require('child_process');
+const { LAUNCH_AT_LOGIN_MODES, LEGACY_APP_USER_MODEL_IDS, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
 const { getAiProviderAdapter, pickProviderCredentials, resolveAdapterEndpoint, resolveAdapterModel, stripJsonFence } = require('./aiProviderAdapters.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
 const useLinuxGraphicsDebugMode = process.env.ELECTRON_LINUX_PACKAGED_GRAPHICS === 'true';
@@ -180,6 +181,7 @@ const OBS_BROWSER_SOURCE_PORT_SETTING_KEY = 'OBS_BROWSER_SOURCE_PORT';
 const DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY = 'DISCORD_RICH_PRESENCE_ENABLED';
 const CLOSE_TO_TRAY_SETTING_KEY = 'CLOSE_TO_TRAY';
 const CLOSE_MAIN_PANEL_ACTION_SETTING_KEY = 'CLOSE_MAIN_PANEL_ACTION';
+const RUN_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const LAUNCH_AT_LOGIN_SETTING_KEY = 'LAUNCH_AT_LOGIN';
 const LAUNCH_AT_LOGIN_MODE_SETTING_KEY = 'LAUNCH_AT_LOGIN_MODE';
 const LAUNCH_AT_LOGIN_SUPPORTED_SETTING_KEY = 'LAUNCH_AT_LOGIN_SUPPORTED';
@@ -739,6 +741,78 @@ function getLaunchAtLoginEnabled() {
     console.error('[Electron] Failed to read login item settings', error);
     return readStoredBoolean(LAUNCH_AT_LOGIN_SETTING_KEY, false);
   }
+}
+
+/**
+ * 把系统里的自启项重新写一遍，让它与当前的启动模式一致。
+ *
+ * 必要性：登录项只在用户"改动"开关或模式时才会重写。已经开着自启的用户，
+ * 保持默认的静默模式不动手，就永远不会触发重写 —— 注册表里留着的还是旧版本
+ * （甚至是没有静默启动功能的版本）写下的命令行，于是静默启动看着像没生效。
+ * 每次启动对账一次，代价只是一次注册表读写。
+ */
+function reconcileLaunchAtLoginEntry() {
+  if (!isLaunchAtLoginSupported(process.platform)) {
+    return;
+  }
+
+  // 三个"曾经开启"的信号，任一成立就重写：
+  // 1. 当前 appId 名下已有登录项 —— 常规情况，重写只是让模式对上；
+  // 2. 旧 appId 名下有遗留项 —— 改名之前开着自启的证据，注册表值名跟着 appId 走；
+  // 3. 应用自己存的开关 —— 改 appId 后前两者都读不到时，只剩它记得用户的意图。
+  //    代价是"在注册表里手动删掉启动项"会被下次启动改回来；但用户在应用内关掉时
+  //    这个值会变 false，不会自己复活，这个取舍更划算。
+  const wasEnabled = getLaunchAtLoginEnabled()
+    || hasLegacyLaunchAtLoginEntry()
+    || readStoredBoolean(LAUNCH_AT_LOGIN_SETTING_KEY, false);
+
+  if (!wasEnabled) {
+    return;
+  }
+
+  setLaunchAtLoginEnabled(true);
+}
+
+function forEachLegacyLaunchAtLoginId(visit) {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  let found = false;
+  for (const legacyId of LEGACY_APP_USER_MODEL_IDS) {
+    if (legacyId === WINDOWS_APP_USER_MODEL_ID) {
+      continue;
+    }
+
+    try {
+      execFileSync('reg', ['query', RUN_REGISTRY_KEY, '/v', legacyId], { stdio: 'ignore' });
+    } catch {
+      // 查不到就说明没有遗留项，正常情况走这里。
+      continue;
+    }
+
+    found = true;
+    if (visit) {
+      visit(legacyId);
+    }
+  }
+  return found;
+}
+
+function hasLegacyLaunchAtLoginEntry() {
+  return forEachLegacyLaunchAtLoginId(null);
+}
+
+/** 清掉改 appId 之前留下的自启项，否则它会和新项一起重复拉起应用。 */
+function removeLegacyLaunchAtLoginEntries() {
+  forEachLegacyLaunchAtLoginId((legacyId) => {
+    try {
+      execFileSync('reg', ['delete', RUN_REGISTRY_KEY, '/v', legacyId, '/f'], { stdio: 'ignore' });
+      console.log(`[Electron] Removed legacy auto-launch entry: ${legacyId}`);
+    } catch (error) {
+      console.error('[Electron] Failed to remove legacy auto-launch entry', error);
+    }
+  });
 }
 
 function setLaunchAtLoginEnabled(enabled) {
@@ -3109,18 +3183,25 @@ function createWindow(options = {}) {
     win.webContents.openDevTools();
   }
 
-  if (isMaximized) {
+  // 静默启动时跳过恢复最大化：maximize() 会把隐藏窗口直接亮出来，
+  // 先弹出再收起会闪一下，违背"静默"的本意。从任务栏还原后用户可自行最大化。
+  if (isMaximized && !startMinimized) {
     win.maximize();
   }
 
   mainWindow = win;
   if (startMinimized) {
-    // 开机静默启动：窗口以 show:false 创建，这里直接最小化，
-    // Windows 上 minimize() 会让它以最小化状态出现在任务栏而不是弹到前台。
+    // 开机静默启动：收进任务栏而不是弹到前台。
+    //
+    // 必须先 showInactive() 再 minimize()：对一个从未显示过的窗口（show: false）
+    // 直接调 minimize() 在 Windows 上不生效，窗口最后会以普通状态出现在前台。
+    // 这套顺序与托盘菜单「最小化」用的是同一份，那条路径已验证可用。
     win.once('ready-to-show', () => {
-      if (!win.isDestroyed()) {
-        win.minimize();
+      if (win.isDestroyed()) {
+        return;
       }
+      win.showInactive();
+      win.minimize();
     });
   }
   ensureTray();
@@ -3209,6 +3290,11 @@ app.whenReady().then(async () => {
     app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
   }
 
+  // 顺序不能反：先据旧状态写好新登录项，再清理遗留项。
+  // 反过来会先抹掉"曾经开启"的证据，自启就被静默关掉了。
+  reconcileLaunchAtLoginEntry();
+  removeLegacyLaunchAtLoginEntries();
+
   setupFileSystemAccessPermissionHandlers();
   setupCorsBypassHandlers();
 
@@ -3247,8 +3333,14 @@ app.whenReady().then(async () => {
     console.error('[OBS] Failed to start browser source server during app startup', error);
   }
   ensureTray();
+  // createWindow() 会把 pendingSilentLaunch 消费掉，先取下来。
+  const isSilentStartup = pendingSilentLaunch;
   createWindow();
-  focusMainWindow();
+  // 静默启动不抢焦点：focusMainWindow() 会 restore + show + focus，
+  // 等于把刚收进任务栏的窗口又亮到前台，静默就白做了。
+  if (!isSilentStartup) {
+    focusMainWindow();
+  }
   scheduleStartupUpdateCheck();
   voiceInputPauseMonitor.syncState();
 

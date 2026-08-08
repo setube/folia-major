@@ -52,9 +52,16 @@ function isSilentLaunch(argv) {
   return Array.isArray(argv) && argv.includes(SILENT_LAUNCH_FLAG);
 }
 
+/**
+ * 改过 appId 之前写下的自启项。Electron 用 AppUserModelID 当注册表值名，
+ * 只管得到当前这个名字，旧名字下的那条会一直留着重复拉起老路径，必须显式清理。
+ */
+const LEGACY_APP_USER_MODEL_IDS = ['top.izuna.foliamajor'];
+
 module.exports = {
   SILENT_LAUNCH_FLAG,
   LAUNCH_AT_LOGIN_MODES,
+  LEGACY_APP_USER_MODEL_IDS,
   isLaunchAtLoginSupported,
   isSilentLaunch,
   buildLoginItemQuery,
