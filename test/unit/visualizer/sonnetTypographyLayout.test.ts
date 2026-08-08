@@ -613,6 +613,41 @@ describe('Sonnet shot-kind flow layouts', () => {
         expectNoOverlap(layout, FLOW_GAP * 0.9);
     });
 
+    // Regression: fragment-collage flattens rotated non-CJK blocks to rotation 0.
+    // The measured footprint must be un-swapped with it, or the frame decor wraps a
+    // tall vertical box around the horizontal text (the "encode/this" screenshot bug).
+    // The word list is long enough to force global-fit retries, which used to
+    // restore the tall pre-swap dimensions from the snapshot on the second rung.
+    it('un-swaps measured bounds when the collage flattens rotated non-CJK words', () => {
+        const layout = layoutOf([
+            'encode', 'あ', 'い', 'う', 'this', 'え', 'お', '英雄核心词汇句',
+            'か', 'き', 'く', 'け', 'こ', 'さ', 'し',
+        ], 'fragment-collage');
+        const items = byIndex(layout);
+
+        [0, 4].forEach(index => {
+            const flattened = items.get(index)!;
+            expect(flattened.role).not.toBe('hero');
+            expect(flattened.rotation).toBe(0);
+            expect(flattened.measuredWidth).toBeGreaterThan(flattened.measuredHeight);
+        });
+    });
+
+    // Regression: short cross columns used to stack tiny support words against the
+    // hero and leave the vertical band mostly empty. Column words now grow (capped
+    // below the hero) and justify across the available span.
+    it('grows short cross columns to fill their vertical band', () => {
+        const layout = layoutOf(['あ', 'い', '英雄主詞', 'う', 'え'], 'type-impact');
+        const items = byIndex(layout);
+        const hero = items.get(2)!;
+        const bottom = items.get(4)!;
+
+        expect(bottom.fontScale).toBeGreaterThan(1.8);
+        expect(bottom.fontScale).toBeLessThanOrEqual(hero.fontScale * 0.6 + 1e-6);
+        expectNoOverlap(layout, FLOW_GAP * 0.9);
+        expectHierarchy(layout);
+    });
+
     it('keeps the cross bands in scan order equal to timeline order', () => {
         const words = ['愛', 'を', '懐', 'い', 'て', '理想', 'を', '号', 'ん', 'だ'];
         const layout = layoutOf(words, 'type-impact');

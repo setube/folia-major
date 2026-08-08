@@ -1,5 +1,6 @@
 import type { SonnetTypographyPlacement } from './sonnetTypographyLayout';
 import type { SonnetParagraphKind, SonnetShot, SonnetShotKind } from './types';
+import { resolveSonnetFrameLocalDimensions } from './sonnetFrameDecor';
 import {
     SONNET_THEMED_GEO_VARIANT_START,
     SONNET_THEMED_GEO_VARIANTS,
@@ -37,12 +38,15 @@ export const buildSonnetMeasuredBoundsDebug = (
 
     placements.forEach(placement => {
         const color = ROLE_COLORS[placement.role] ?? 0xffffff;
+        // measuredWidth/Height are screen-space bounds; restore the local text
+        // dimensions first so the rotation below doesn't double-rotate the box.
+        const local = resolveSonnetFrameLocalDimensions(placement);
         const box = new pixi.Graphics()
             .rect(
-                -placement.measuredWidth / 2,
-                -placement.measuredHeight / 2,
-                placement.measuredWidth,
-                placement.measuredHeight,
+                -local.width / 2,
+                -local.height / 2,
+                local.width,
+                local.height,
             )
             .stroke({ color, width: 1.5, alpha: 0.9 })
             .circle(0, 0, 2.5)

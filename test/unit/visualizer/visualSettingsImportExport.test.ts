@@ -6,6 +6,19 @@ import { DEFAULT_SONNET_TUNING } from '@/types';
 // Verifies visual settings configuration compression, base64 encoding, and decompression/restoration.
 
 describe('Visual Settings Import and Export', () => {
+    it('uses the requested Sonnet post-process defaults', () => {
+        expect(DEFAULT_SONNET_TUNING).toMatchObject({
+            postProcessEnabled: true,
+            postProcessGrain: 0.2,
+            postProcessContrast: 0,
+            postProcessRgbShift: 0,
+            postProcessLensDistortion: 0.3,
+            postProcessLensDispersion: 0.6,
+            postProcessHalftone: 0,
+            postProcessVignette: 0.85,
+        });
+    });
+
     const sampleConfig = {
         theme: {
             light: {
@@ -219,6 +232,10 @@ describe('Visual Settings Import and Export', () => {
         expect(decoded.monetTuning?.portraitStyle).toBe('square');
         expect(decoded.sonnetTuning?.enableTransitions).toBe(true);
         expect(decoded.sonnetTuning?.outerFrameMode).toBe('frame');
+        expect(decoded.sonnetTuning?.postProcessLensDistortion)
+            .toBe(DEFAULT_SONNET_TUNING.postProcessLensDistortion);
+        expect(decoded.sonnetTuning?.postProcessLensDispersion)
+            .toBe(DEFAULT_SONNET_TUNING.postProcessLensDispersion);
         expect(decoded.songThemeAutoSwitchEnabled).toBe(true);
         expect(decoded.songThemeAutoGenerateEnabled).toBe(true);
 
@@ -276,6 +293,8 @@ describe('Visual Settings Import and Export', () => {
             typographyMotion: 0.8,
             mgDensity: 1.6,
             textureResolution: 4,
+            postProcessLensDistortion: 0.7,
+            postProcessLensDispersion: 0.8,
         };
         const decoded = decompressConfig(compressConfig({
             visualizerMode: 'sonnet',

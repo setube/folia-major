@@ -510,6 +510,16 @@ const readStoredSonnetTuning = (): SonnetTuning => {
                 ? parsed.outerFrameMode
                 : DEFAULT_SONNET_TUNING.outerFrameMode,
             textureResolution: resolvePendoloNumber(parsed.textureResolution, DEFAULT_SONNET_TUNING.textureResolution, 0.5, 4),
+            postProcessEnabled: typeof parsed.postProcessEnabled === 'boolean'
+                ? parsed.postProcessEnabled
+                : DEFAULT_SONNET_TUNING.postProcessEnabled,
+            postProcessGrain: resolvePendoloNumber(parsed.postProcessGrain, DEFAULT_SONNET_TUNING.postProcessGrain, 0, 1),
+            postProcessContrast: resolvePendoloNumber(parsed.postProcessContrast, DEFAULT_SONNET_TUNING.postProcessContrast, 0, 1),
+            postProcessRgbShift: resolvePendoloNumber(parsed.postProcessRgbShift, DEFAULT_SONNET_TUNING.postProcessRgbShift, 0, 1),
+            postProcessHalftone: resolvePendoloNumber(parsed.postProcessHalftone, DEFAULT_SONNET_TUNING.postProcessHalftone, 0, 1),
+            postProcessVignette: resolvePendoloNumber(parsed.postProcessVignette, DEFAULT_SONNET_TUNING.postProcessVignette, 0, 2),
+            postProcessLensDistortion: resolvePendoloNumber(parsed.postProcessLensDistortion, DEFAULT_SONNET_TUNING.postProcessLensDistortion, 0, 2),
+            postProcessLensDispersion: resolvePendoloNumber(parsed.postProcessLensDispersion, DEFAULT_SONNET_TUNING.postProcessLensDispersion, 0, 1),
         };
     } catch {
         return DEFAULT_SONNET_TUNING;
@@ -2305,6 +2315,16 @@ export const useSettingsUiStore = create<SettingsUiState>((set, get) => ({
                 ? patch.outerFrameMode
                 : prev.outerFrameMode,
             textureResolution: resolvePendoloNumber(patch.textureResolution, prev.textureResolution, 0.5, 4),
+            postProcessEnabled: typeof patch.postProcessEnabled === 'boolean'
+                ? patch.postProcessEnabled
+                : prev.postProcessEnabled,
+            postProcessGrain: resolvePendoloNumber(patch.postProcessGrain, prev.postProcessGrain, 0, 1),
+            postProcessContrast: resolvePendoloNumber(patch.postProcessContrast, prev.postProcessContrast, 0, 1),
+            postProcessRgbShift: resolvePendoloNumber(patch.postProcessRgbShift, prev.postProcessRgbShift, 0, 1),
+            postProcessHalftone: resolvePendoloNumber(patch.postProcessHalftone, prev.postProcessHalftone, 0, 1),
+            postProcessVignette: resolvePendoloNumber(patch.postProcessVignette, prev.postProcessVignette, 0, 2),
+            postProcessLensDistortion: resolvePendoloNumber(patch.postProcessLensDistortion, prev.postProcessLensDistortion, 0, 2),
+            postProcessLensDispersion: resolvePendoloNumber(patch.postProcessLensDispersion, prev.postProcessLensDispersion, 0, 1),
         };
         if (typeof window !== 'undefined') localStorage.setItem('sonnet_tuning', JSON.stringify(next));
         set({ sonnetTuning: next });

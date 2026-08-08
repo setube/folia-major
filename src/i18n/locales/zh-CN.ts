@@ -979,6 +979,15 @@ export default {
     "sonnetShowGiantDecorativeText": "巨型装饰镂空文字",
     "sonnetShowBackgroundDecor": "背景装饰",
     "sonnetEnableTransitions": "场景转场",
+    "sonnetPostProcessSection": "后处理",
+    "sonnetPostProcessEnabled": "整体后处理滤镜",
+    "sonnetPostProcessGrain": "胶片颗粒",
+    "sonnetPostProcessContrast": "对比度增强",
+    "sonnetPostProcessRgbShift": "RGB 色差",
+    "sonnetPostProcessLensDistortion": "透镜扭曲",
+    "sonnetPostProcessLensDispersion": "透镜色散",
+    "sonnetPostProcessHalftone": "半调网点",
+    "sonnetPostProcessVignette": "暗角",
     "sonnetToggleOn": "开启",
     "sonnetToggleOff": "关闭",
     "sonnetPerformanceWarningTitle": "商籁性能警告",
@@ -1319,7 +1328,7 @@ export default {
   },
   "releaseNotes": {
     "v0_6_12": {
-      "intro": "以下是 0.6.13 的新功能与改进",
+      "intro": "以下是 0.6.14 的新功能与改进",
       "sonnetLayout": {
         "title": "商籁排版引擎重构",
         "description": "重构商籁 / Sonnet 模式的排版引擎，带来更加美观、合理且稳定的文字布局效果。"
