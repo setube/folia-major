@@ -42,6 +42,7 @@ import type { NavidromeMatchData } from '../components/modal/NaviLyricMatchModal
 import { applyQueueAddBehavior } from '../utils/queueAddBehavior';
 import { loadOnlineLyricsState, resolveOnlineLyrics, saveOnlineLyricsState, getOnlineLyricsStateCacheKey } from '../utils/onlineLyricsState';
 import { createSafeObjectUrl, getBlobObjectUrlSignature, isBlob } from '../utils/blobGuards';
+import { hasLocalSongCover } from '../utils/localSongCover';
 import { applyMatchedMetadata } from '../services/localLibraryCatalogService';
 import { buildLocalSongLyricMatchContext, shouldRefreshLocalSongLyricsFromMetadata, shouldRunLocalSongAutomaticMatch } from '../utils/lyrics/localSongMatchContext';
 import { getLocalLibraryCatalogSnapshot } from '../services/localLibraryEntityRepository';
@@ -375,6 +376,15 @@ export function useLibraryPlaybackController({
 
     const addCurrentSongToOnlinePlaylist = useCallback(async (playlist: ProviderCollection) => {
         if (!currentSong) throw new Error('No current song');
+        if (!omni.canAddSongToPlaylist(currentSong)) {
+            const source = getPlaybackSourceRef(currentSong);
+            const provider = source.kind === 'online' ? omni.getProviderLabel(source.providerId) : '';
+            setStatusMsg({
+                type: 'info',
+                text: t('status.providerPlaylistMutationUnavailable').replace('{{provider}}', provider),
+            });
+            return;
+        }
         await omni.addSongToPlaylist(currentSong, playlist);
         await removeFromCache(getProviderCacheKey(playlist.providerId, `playlist_tracks_${playlist.id}`));
         await removeFromCache(getProviderCacheKey(playlist.providerId, `playlist_detail_${playlist.id}`));
@@ -422,7 +432,7 @@ export function useLibraryPlaybackController({
             && (!localSong.matchedLyrics && !localSong.matchedIsPureMusic
                 || shouldRefreshLocalSongLyricsFromMetadata(localSong))
         );
-        const needsCoverMatch = !isBlob(localSong.embeddedCover) && !localSong.onlineMetadata?.coverUrl;
+        const needsCoverMatch = !hasLocalSongCover(localSong) && !localSong.onlineMetadata?.coverUrl;
 
         if ((needsLyricsMatch || needsCoverMatch) && shouldRunLocalSongAutomaticMatch(localSong)) {
             setStatusMsg({ type: 'info', text: t('status.matchingLyricsAndCover') || '' });
@@ -580,7 +590,7 @@ export function useLibraryPlaybackController({
             && (!localSong.matchedLyrics && !localSong.matchedIsPureMusic
                 || shouldRefreshLocalSongLyricsFromMetadata(localSong))
         );
-        const needsCoverMatch = !isBlob(localSong.embeddedCover) && !localSong.onlineMetadata?.coverUrl;
+        const needsCoverMatch = !hasLocalSongCover(localSong) && !localSong.onlineMetadata?.coverUrl;
         if ((needsLyricsMatch || needsCoverMatch) && shouldRunLocalSongAutomaticMatch(localSong)) {
             try {
                 const { matchLyrics } = await import('../services/localMusicService');
@@ -1467,6 +1477,14 @@ export function useLibraryPlaybackController({
         const sourceRef = getPlaybackSourceRef(currentSong);
         if (sourceRef.kind !== 'online') {
             setStatusMsg({ type: 'error', text: t('status.likeFailed') });
+            return;
+        }
+        if (!omni.canLikeSong(currentSong)) {
+            setStatusMsg({
+                type: 'info',
+                text: t('status.providerLikeUnavailable')
+                    .replace('{{provider}}', omni.getProviderLabel(sourceRef.providerId)),
+            });
             return;
         }
         try {

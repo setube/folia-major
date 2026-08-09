@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker, safeStorage } = require('electron');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -7,9 +7,11 @@ const crypto = require('crypto');
 const { createStageApi } = require('./stageApi.cjs');
 const { createWindowPlaybackHandoffStore } = require('./windowPlaybackHandoff.cjs');
 const { createKugouApiBridge } = require('./kugouApiBridge.cjs');
+const { createQqAuthSessionRepository } = require('./qqAuthSessionRepository.cjs');
 const { DEFAULT_DISCORD_APPLICATION_ID, createDiscordPresenceController } = require('./discordPresence.cjs');
 const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { createDisplaySleepBlocker } = require('./displaySleepBlocker.cjs');
+const { createLyricApi } = require('./lyricApi.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
 const { execFileSync } = require('child_process');
@@ -77,7 +79,10 @@ if (process.platform === 'darwin' && process.arch === 'x64') {
 }
 
 const store = new Store({ projectName: 'Folia' });
-const kugouApiBridge = createKugouApiBridge({ store });
+// KuGou credentials stay inside the main process and are encrypted lazily after Electron is ready.
+// The bridge refuses Linux's plaintext `basic_text` fallback and degrades to an in-memory session.
+const kugouApiBridge = createKugouApiBridge({ store, safeStorage });
+const qqAuthSessionRepository = createQqAuthSessionRepository({ store, safeStorage });
 
 // --- Electron main process locale map ---
 const APP_LOCALE_KEY = 'APP_LOCALE';
@@ -178,6 +183,7 @@ const STAGE_API_PORT_SETTING_KEY = 'STAGE_API_PORT';
 const OBS_BROWSER_SOURCE_ENABLED_SETTING_KEY = 'OBS_BROWSER_SOURCE_ENABLED';
 const OBS_BROWSER_SOURCE_TOKEN_SETTING_KEY = 'OBS_BROWSER_SOURCE_TOKEN';
 const OBS_BROWSER_SOURCE_PORT_SETTING_KEY = 'OBS_BROWSER_SOURCE_PORT';
+const LYRIC_API_ENABLED_SETTING_KEY = 'LYRIC_API_ENABLED';
 const DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY = 'DISCORD_RICH_PRESENCE_ENABLED';
 const CLOSE_TO_TRAY_SETTING_KEY = 'CLOSE_TO_TRAY';
 const CLOSE_MAIN_PANEL_ACTION_SETTING_KEY = 'CLOSE_MAIN_PANEL_ACTION';
@@ -196,6 +202,7 @@ const PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY = 'PREVENT_DISPLAY_SLEEP
 
 const DEFAULT_STAGE_API_PORT = 32107;
 const DEFAULT_OBS_BROWSER_SOURCE_PORT = 32108;
+const DEFAULT_LYRIC_API_PORT = 32109;
 const FOLIA_RELEASES_URL = 'https://github.com/setube/folia-major/releases';
 const FOLIA_GITHUB_REPOSITORY = {
   owner: 'setube',
@@ -312,6 +319,7 @@ function getPublicSettings() {
     [MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY]: readStoredBoolean(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, false),
     [TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY]: readStoredBoolean(TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY, false),
     [DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY]: readStoredBoolean(DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY, false),
+    [LYRIC_API_ENABLED_SETTING_KEY]: readStoredBoolean(LYRIC_API_ENABLED_SETTING_KEY, false),
     [VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY]: readStoredBoolean(VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY, false),
     [PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY]: readStoredBoolean(PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY, false),
     [UPDATE_CHANNEL_SETTING_KEY]: getCurrentReleaseChannel().id,
@@ -387,6 +395,13 @@ const stageApi = createStageApi({
   stageApiPortSettingKey: STAGE_API_PORT_SETTING_KEY,
   defaultStageApiPort: DEFAULT_STAGE_API_PORT,
   getNeteasePort: () => assignedPort,
+});
+
+const lyricApi = createLyricApi({
+  store,
+  getMainWindow: () => mainWindow,
+  enabledSettingKey: LYRIC_API_ENABLED_SETTING_KEY,
+  port: DEFAULT_LYRIC_API_PORT,
 });
 
 const discordPresence = createDiscordPresenceController({
@@ -2621,6 +2636,10 @@ const {
   refreshAnonymousToken,
   resolveXeapiPublicKey,
 } = require('./neteaseApiStartup.cjs');
+const {
+  isModuleNotFound: isQqApiModuleNotFound,
+  startQqApi: startQqApiServer,
+} = require('./qqApiStartup.cjs');
 
 const net = require('net');
 let assignedPort = 30000; // default fallback
@@ -2717,6 +2736,77 @@ async function startApi() {
   } catch (e) {
     updateNeteaseApiStatus({ status: 'error', port: null, error: serializeError(e) });
     console.error('Failed to start Netease API', e);
+  }
+}
+
+const QQ_API_STATUS_CHANNEL = 'qq-api-status-changed';
+let qqApiStatus = {
+  status: 'starting',
+  port: null,
+  error: null,
+  updatedAt: Date.now(),
+};
+
+function updateQqApiStatus(nextStatus) {
+  qqApiStatus = {
+    ...qqApiStatus,
+    ...nextStatus,
+    updatedAt: Date.now(),
+  };
+
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(QQ_API_STATUS_CHANNEL, qqApiStatus);
+    }
+  });
+}
+
+let qqApiHandle = null;
+
+// Runs @yakult-green-tea/qq-music-api in-process. Device identifiers remain in their existing file;
+// account credentials are owned by the API and cross this boundary only through an encrypted
+// main-process repository. The renderer continues to receive only an opaque session token.
+async function startQqApi() {
+  updateQqApiStatus({ status: 'starting', port: null, error: null });
+  try {
+    const freePort = await getFreePort();
+    // getFreePort only observes that the port was free a moment ago, so the bind can still lose a
+    // race. Awaiting the handle means 'running' is only published once the socket is really bound.
+    qqApiHandle = await startQqApiServer({
+      port: freePort,
+      stateFilePath: path.join(app.getPath('userData'), 'qq-auth-state', 'qq-device.json'),
+      authSessionRepository: qqAuthSessionRepository,
+    });
+    updateQqApiStatus({ status: 'running', port: freePort, error: null });
+    console.log('QQ API started on port', freePort);
+  } catch (error) {
+    qqApiHandle = null;
+
+    // A build that shipped without the package can never recover, so it is reported as
+    // 'unavailable' rather than 'error'; everything else (a lost port race, a throw from inside the
+    // package) is a real failure and keeps the error status.
+    if (isQqApiModuleNotFound(error)) {
+      updateQqApiStatus({ status: 'unavailable', port: null, error: serializeError(error) });
+      console.warn('[QQ API] Package not installed; QQ provider will stay unavailable in this build');
+      return;
+    }
+
+    updateQqApiStatus({ status: 'error', port: null, error: serializeError(error) });
+    console.error('Failed to start QQ API', error);
+  }
+}
+
+async function stopQqApi() {
+  const handle = qqApiHandle;
+  qqApiHandle = null;
+  if (!handle) {
+    return;
+  }
+
+  try {
+    await handle.close();
+  } catch (error) {
+    console.error('Failed to stop QQ API', error);
   }
 }
 
@@ -3322,6 +3412,7 @@ app.whenReady().then(async () => {
 
   setupAutoUpdater();
   await startApi();
+  await startQqApi();
   try {
     await stageApi.startStageServerIfNeeded();
   } catch (error) {
@@ -3332,6 +3423,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.error('[OBS] Failed to start browser source server during app startup', error);
   }
+  await lyricApi.start();
   ensureTray();
   // createWindow() 会把 pendingSilentLaunch 消费掉，先取下来。
   const isSilentStartup = pendingSilentLaunch;
@@ -3366,6 +3458,8 @@ app.on('before-quit', () => {
   voiceInputPauseMonitor.stop();
   displaySleepBlocker.stop();
   void discordPresence.destroy();
+  void stopQqApi();
+  void lyricApi.stop();
 });
 
 // Settings Management IPC
@@ -3671,6 +3765,11 @@ ipcMain.handle('get-netease-api-status', () => {
   return neteaseApiStatus;
 });
 
+// Retrieve dynamic port of the embedded QQ API server; null until it is running.
+ipcMain.handle('get-qq-port', () => qqApiStatus.port);
+
+ipcMain.handle('get-qq-api-status', () => qqApiStatus);
+
 ipcMain.handle('kugou-api-status', () => kugouApiBridge.getStatus());
 ipcMain.handle('kugou-api-request', (_event, operation, params) => kugouApiBridge.request(operation, params));
 
@@ -3840,6 +3939,27 @@ ipcMain.handle('obs-browser-source-publish-audio', (event, audio) => {
     broadcastObsBrowserSourceEvent('audio', latestObsBrowserSourceAudio);
   }
   return true;
+});
+
+ipcMain.handle('lyric-api-get-status', (event) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to read Lyrics API status.');
+  }
+  return lyricApi.buildStatus();
+});
+
+ipcMain.handle('lyric-api-set-enabled', (event, enabled) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to change Lyrics API state.');
+  }
+  return lyricApi.setEnabled(Boolean(enabled));
+});
+
+ipcMain.handle('lyric-api-publish', (event, lyrics) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return false;
+  }
+  return lyricApi.publishLyricData(lyrics);
 });
 
 ipcMain.handle('discord-presence-get-status', (event) => {

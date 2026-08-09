@@ -24,6 +24,7 @@ const createContext = (overrides: Partial<CommandPaletteContext> = {}): CommandP
     togglePlay: vi.fn(),
     toggleLoop: vi.fn(),
     onReplayGainModeChange: vi.fn(),
+    openAudioEqualizer: vi.fn(),
     handleNextTrack: vi.fn(),
     handlePrevTrack: vi.fn(),
     shuffleQueue: vi.fn(),
@@ -140,6 +141,18 @@ describe('command palette registry', () => {
         expect(offMatch.command.id).toBe('playback-replaygain-off');
         offMatch.command.execute(offMatch.input, context);
         expect(context.onReplayGainModeChange).toHaveBeenCalledWith('off');
+    });
+
+    it('opens the controls panel and ten-band equalizer', () => {
+        const context = createContext();
+        const [match] = getCommandPaletteMatches('十段均衡器', context);
+
+        expect(match.command.id).toBe('playback-equalizer');
+        match.command.execute(match.input, context);
+
+        expect(context.setPanelTab).toHaveBeenCalledWith('controls');
+        expect(context.setIsPanelOpen).toHaveBeenCalledWith(true);
+        expect(context.openAudioEqualizer).toHaveBeenCalled();
     });
 
     it('matches sync server settings and manual sync commands', () => {
@@ -522,6 +535,23 @@ describe('command palette registry', () => {
             expect(topMatch.command.id).toBe('desktop-toggle-main-window-always-on-top');
             await topMatch.command.execute('', context);
             expect(context.toggleMainWindowAlwaysOnTop).toHaveBeenCalled();
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('toggles the desktop-local lyrics API', async () => {
+        const getLyricApiStatus = vi.fn().mockResolvedValue({ enabled: false, running: false });
+        const setLyricApiEnabled = vi.fn().mockResolvedValue({ enabled: true, running: true });
+        vi.stubGlobal('window', { electron: { getLyricApiStatus, setLyricApiEnabled } });
+
+        try {
+            const context = createContext();
+            const [match] = getCommandPaletteMatches('歌词接口', context);
+            expect(match.command.id).toBe('desktop-toggle-lyric-api');
+            await match.command.execute('', context);
+            expect(setLyricApiEnabled).toHaveBeenCalledWith(true);
+            expect(context.setStatusMsg).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
         } finally {
             vi.unstubAllGlobals();
         }

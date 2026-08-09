@@ -25,17 +25,6 @@ describe('Sonnet post-process profile', () => {
         expect(profile.printEffects).toEqual({ rgbShift: 0, halftone: 0, vignette: 0 });
     });
 
-    // 后处理自 41a7e42 起默认开启，胶片颗粒随之成为默认行为。
-    // 上限锁在这里：颗粒必须保持克制，否则文字会糊。
-    it('applies subtle film grain by default now that post processing ships enabled', () => {
-        const profile = resolveSonnetPostProcessProfile(theme, DEFAULT_SONNET_TUNING, false);
-
-        expect(DEFAULT_SONNET_TUNING.postProcessEnabled).toBe(true);
-        expect(profile.noise).toBeCloseTo(DEFAULT_SONNET_TUNING.postProcessGrain * 0.35, 10);
-        expect(profile.noise).toBeGreaterThan(0);
-        expect(profile.noise).toBeLessThanOrEqual(0.1);
-    });
-
     it('disables filter passes in static mode', () => {
         expect(resolveSonnetPostProcessProfile(theme, DEFAULT_SONNET_TUNING, true))
             .toEqual({

@@ -1,4 +1,4 @@
-import { Sparkles, SunMoon } from 'lucide-react';
+import { Captions, Disc3, Image, SlidersHorizontal } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 // src/components/modal/newFeaturesRelease.ts
@@ -17,9 +17,11 @@ type NewFeaturesRelease = {
 
 // Defines the current release's cards; their localized text lives under i18nKey in every locale.
 export const NEW_FEATURES_RELEASE: NewFeaturesRelease = {
-    i18nKey: 'releaseNotes.v0_6_12',
+    i18nKey: 'releaseNotes.v0_6_16',
     features: [
-        { id: 'sonnetLayout', icon: Sparkles, daylightIconClassName: 'text-fuchsia-600', darkIconClassName: 'text-fuchsia-400' },
-        { id: 'followSystemTheme', icon: SunMoon, daylightIconClassName: 'text-sky-600', darkIconClassName: 'text-sky-400' },
+        { id: 'qqMusicProvider', icon: Disc3, daylightIconClassName: 'text-emerald-600', darkIconClassName: 'text-emerald-400' },
+        { id: 'audioEqualizer', icon: SlidersHorizontal, daylightIconClassName: 'text-sky-600', darkIconClassName: 'text-sky-400' },
+        { id: 'lyricApi', icon: Captions, daylightIconClassName: 'text-violet-600', darkIconClassName: 'text-violet-400' },
+        { id: 'localSongCovers', icon: Image, daylightIconClassName: 'text-amber-600', darkIconClassName: 'text-amber-400' },
     ],
 };

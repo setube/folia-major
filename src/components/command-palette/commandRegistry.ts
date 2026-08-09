@@ -275,10 +275,46 @@ export const COMMAND_PALETTE_COMMANDS: CommandPaletteCommand[] = [
     createReplayGainCommand('auto', 'Volume levelling: auto', 'Use ReplayGain tags when present, otherwise measure loudness during playback', ['volume levelling auto', 'replaygain auto', 'loudness auto', 'normalize volume', '音量均衡自动', '自动音量均衡', '响度自动', 'yinliangjunhengzidong', 'zidongyinliangjunheng', 'yljhzd', 'zdyljh']),
     createReplayGainCommand('track', 'ReplayGain: Track mode', 'Apply per-track ReplayGain adjustment', ['replaygain track', 'track gain', 'single track gain', '单曲增益', '单曲 replaygain', 'danquzengyi', 'dqzy']),
     createReplayGainCommand('album', 'ReplayGain: Album mode', 'Apply album ReplayGain adjustment', ['replaygain album', 'album gain', '专辑增益', '专辑 replaygain', 'zhuanjizengyi', 'zjzy']),
+    {
+        id: 'playback-equalizer',
+        group: 'playback',
+        title: 'Audio equalizer',
+        description: 'Open the ten-band audio equalizer',
+        keywords: ['equalizer', 'audio equalizer', 'eq', '10 band eq', '均衡器', '音频均衡器', '十段均衡器', 'junhengqi', 'yinpinjunhengqi', 'jhh', 'ypjhh'],
+        execute: (_input, context) => {
+            context.setPanelTab('controls');
+            context.setIsPanelOpen(true);
+            context.openAudioEqualizer();
+            return true;
+        },
+    },
     createSettingsCommand('settings-local-lyrics-priority', 'Local song lyrics priority', 'Choose whether local songs prefer local or online lyrics', ['local lyrics priority', 'online lyrics first', 'local song lyrics', '本地歌曲歌词优先级', '在线优先', '本地歌词', 'bendigeciyouxianji', 'zaixianyouxian', 'bdgcyxj', 'zxyx'], 'options', 'playback'),
     createSettingsCommand('settings-integration', 'Integration settings', 'Open Stage, Now Playing, and Navidrome settings', ['integration', 'stage', 'now playing', 'navidrome settings', '集成', '连接', 'jicheng', 'lianjie', 'jc', 'lj'], 'options', 'integration'),
     createSettingsCommand('settings-discord-presence', 'Discord playback status', 'Open Discord Rich Presence settings', ['discord', 'rich presence', 'discord presence', 'playing status', '播放状态', 'discord状态', 'discordzhuangtai', 'bofangzhuangtai', 'dc', 'zt'], 'options', 'integration'),
     createSettingsCommand('settings-obs-browser-source', 'OBS browser source', 'Open OBS browser source settings', ['obs', 'browser source', 'live source', '直播源', '浏览器源', 'zhiboyuan', 'liulanqiyuan', 'zby', 'llqy'], 'options', 'integration'),
+    {
+        id: 'desktop-toggle-lyric-api',
+        group: 'settings',
+        title: 'Lyrics API',
+        description: 'Toggle the local unauthenticated lyrics endpoint',
+        keywords: ['lyrics api', 'lyric endpoint', 'local api', '歌词接口', '本地接口', 'gecijiekou', 'bendijiekou', 'gcjk', 'bdjk'],
+        execute: async (_input, context) => {
+            if (!window.electron?.getLyricApiStatus || !window.electron?.setLyricApiEnabled) {
+                return false;
+            }
+            const currentStatus = await window.electron.getLyricApiStatus();
+            const nextStatus = await window.electron.setLyricApiEnabled(!currentStatus.enabled);
+            context.setStatusMsg({
+                type: nextStatus.enabled && !nextStatus.running ? 'error' : 'success',
+                text: nextStatus.enabled
+                    ? nextStatus.running
+                        ? context.t('options.lyricApiEnabledStatus', 'Lyrics API enabled at http://127.0.0.1:32109/v1/lyric')
+                        : context.t('options.lyricApiEnableFailed', 'Failed to start the Lyrics API')
+                    : context.t('options.lyricApiDisabledStatus', 'Lyrics API disabled'),
+            });
+            return true;
+        },
+    },
     createSettingsCommand('settings-storage', 'Storage settings', 'Open cache and storage settings', ['storage', 'cache', '存储', '缓存', 'cunchu', 'huancun', 'cc', 'hc'], 'options', 'storage'),
     createSettingsCommand('settings-r2-sync', 'Sync server settings', 'Open sync server settings', ['sync server', 'd1 sync', 'cloud sync', 'sync settings', '同步', '云同步', 'd1同步', 'tongbu', 'yuntongbu', 'tb', 'ytb'], 'options', 'storage'),
     {

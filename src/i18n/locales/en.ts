@@ -155,6 +155,11 @@ export default {
     "likeFailed": "Failed to like song",
     "unliked": "Removed from Liked",
     "playlistUpdated": "Playlist updated",
+    "providerLikeUnavailable": "{{provider}} does not support liking songs.",
+    "providerPlaylistMutationUnavailable": "{{provider}} does not support adding songs to playlists.",
+    "providerRecommendationsUnavailable": "{{provider}} does not provide recommendation content.",
+    "providerUserAlbumsUnavailable": "{{provider}} does not provide the user's album library.",
+    "providerLibraryUnavailable": "{{provider}} does not provide a playlist library.",
     "songUnavailable": "Song has been taken down",
     "songUnavailableSkipping": "Song has been taken down, skipping",
     "songUnavailablePrompt": "Song has been taken down. Auto-skipping in {{seconds}}s",
@@ -245,10 +250,12 @@ export default {
       "playback-replaygain-off": { "title": "Disable ReplayGain", "description": "Play audio without ReplayGain adjustment" },
       "playback-replaygain-track": { "title": "ReplayGain: Track mode", "description": "Apply per-track ReplayGain adjustment" },
       "playback-replaygain-album": { "title": "ReplayGain: Album mode", "description": "Apply album ReplayGain adjustment" },
+      "playback-equalizer": { "title": "Audio equalizer", "description": "Open the ten-band audio equalizer" },
       "settings-local-lyrics-priority": { "title": "Local song lyrics priority", "description": "Choose whether local songs prefer local or online lyrics" },
       "settings-integration": { "title": "Integration settings", "description": "Open Stage, Now Playing, and Navidrome settings" },
       "settings-discord-presence": { "title": "Discord playback status", "description": "Open Discord Rich Presence settings" },
       "settings-obs-browser-source": { "title": "OBS browser source", "description": "Open OBS browser source settings" },
+      "desktop-toggle-lyric-api": { "title": "Lyrics API", "description": "Toggle the local unauthenticated lyrics endpoint" },
       "settings-storage": { "title": "Storage settings", "description": "Open cache and storage settings" },
       "settings-r2-sync": { "title": "Sync server settings", "description": "Open sync server settings" },
       "sync-now": { "title": "Sync now", "description": "Sync AI themes" },
@@ -375,6 +382,22 @@ export default {
     "pause": "Pause",
     "close": "Close",
     "volume": "Volume",
+    "openEqualizer": "Open audio equalizer",
+    "equalizerTitle": "10-band equalizer",
+    "equalizerDescription": "Shape playback from deep bass to high treble. Changes are saved automatically.",
+    "equalizerEnabled": "Equalizer on",
+    "equalizerDisabled": "Equalizer off",
+    "equalizerGain": "Band gain",
+    "equalizerReset": "Reset equalizer",
+    "equalizerPreset": {
+      "flat": "Level",
+      "lofi": "Lo-Fi",
+      "radio": "Radio",
+      "vinyl": "Vinyl",
+      "vocal": "Vocal",
+      "bass": "Bass boost",
+      "custom": "Custom"
+    },
     "cadenze": {
       "fontScale": "Font Scale",
       "widthRatio": "Line Width",
@@ -440,6 +463,14 @@ export default {
     "loginNote": "Open Netease Music App > Discover > Scan QR",
     "loginTitleKugou": "Scan with KuGou Music",
     "loginNoteKugou": "Open KuGou Music and scan this QR code",
+    "loginTitleQq": "Scan to sign in to QQ Music",
+    "loginNoteQq": "Scan this QR code with the matching app",
+    "qqLoginMethodTitle": "Choose sign-in method",
+    "qqLoginMethodHint": "Pick the method matching the account your QQ Music app is bound to",
+    "qqLoginMethodPending": "Pick a sign-in method to generate the QR code",
+    "qqLoginMethodCurrent": "Current method: {{method}}",
+    "qqLoginMethodMobile": "QQ",
+    "qqLoginMethodWechat": "WeChat",
     "switchOnlineProvider": "Switch online music provider",
     "confirmOnlineProviderSwitch": "Switch to {{provider}}? Current online playback and queue will be cleared.",
     "onlineProvider": "Online music provider",
@@ -594,6 +625,16 @@ export default {
     "audioFadeScopeHint": "Covers pause, resume, and track start. No pre-emptive fade before a track ends naturally, so endings are never cut short.",
     "integrationSettings": "Integration settings",
     "integrationSettingsDesc": "Connections for external apps and services.",
+    "lyricApi": "Lyrics API",
+    "enableLyricApi": "Enable Lyrics API",
+    "lyricApiDesc": "Expose a fixed-port local endpoint without authentication so external programs can read sanitized lyrics for the current song. Listens on 127.0.0.1 only.",
+    "lyricApiAddress": "Endpoint",
+    "copyLyricApiAddress": "Copy endpoint",
+    "lyricApiRunning": "Running",
+    "lyricApiUnavailable": "Unavailable",
+    "lyricApiEnabledStatus": "Lyrics API enabled at http://127.0.0.1:32109/v1/lyric",
+    "lyricApiDisabledStatus": "Lyrics API disabled",
+    "lyricApiEnableFailed": "Failed to start the Lyrics API",
     "storageSettings": "Storage settings",
     "storageSettingsDesc": "Cache usage, cleanup, media cache, and cache directory.",
     "storageSettingsPanelDesc": "Cache usage, cleanup, and media cache behavior.",
@@ -1326,6 +1367,36 @@ export default {
     "noDescription": "No description available",
   },
   "releaseNotes": {
+    "v0_6_16": {
+      "intro": "Here are the new features and improvements in version 0.6.16.",
+      "qqMusicProvider": {
+        "title": "Initial QQ Music Integration",
+        "description": "Basic account sign-in, online search, and playback are now available. Feature support is still limited and will be expanded in future releases."
+      },
+      "audioEqualizer": {
+        "title": "Audio Equalizer",
+        "description": "Adjust and save equalizer settings from the playback controls for sound better suited to your device."
+      },
+      "lyricApi": {
+        "title": "Desktop Lyrics API",
+        "description": "A new local API lets external apps read the current track and synchronized lyrics."
+      },
+      "localSongCovers": {
+        "title": "Local Track Covers",
+        "description": "You can now import, display, and persist custom artwork for individual local tracks."
+      }
+    },
+    "v0_6_15": {
+      "intro": "Here are the new features and improvements in version 0.6.15.",
+      "sonnetLensEffects": {
+        "title": "Sonnet Lens Effects",
+        "description": "New lens distortion and chromatic dispersion controls give the Sonnet visualizer a richer optical look."
+      },
+      "sonnetPostProcess": {
+        "title": "Refined Sonnet Post-processing",
+        "description": "Improved defaults, stable transitions, and cleaner RGB Shift rendering keep Sonnet's effects expressive without compromising lyric clarity."
+      }
+    },
     "v0_6_12": {
       "intro": "Here are the new features and improvements in version 0.6.14.",
       "sonnetLayout": {

@@ -16,6 +16,7 @@ import type {
     OmniUser,
     OnlineMusicProvider,
     ProviderCatalogEntityKind,
+    QrLoginMethod,
     QrLoginState,
 } from '../../types/onlineMusic';
 import { resolveProviderLyricsChorus } from '../../utils/lyrics/chorusResolver';
@@ -170,11 +171,16 @@ export const omni = {
         await provider.auth.logout();
     },
 
-    async createQrLogin(providerId: OmniProviderId): Promise<{ key: string; imageUrl: string }> {
+    // 没有这个能力就回空数组，UI 据此走单步流程；netease / kugou 完全不受影响。
+    getQrLoginMethods(providerId: OmniProviderId): QrLoginMethod[] {
+        return requireOnlineMusicProvider(providerId).auth?.getQrLoginMethods?.() ?? [];
+    },
+
+    async createQrLogin(providerId: OmniProviderId, methodId?: string): Promise<{ key: string; imageUrl: string }> {
         const provider = requireOnlineMusicProvider(providerId);
         const auth = provider.auth;
         if (!auth?.getQrKey || !auth.createQr) return unsupported(providerId, 'qr-login');
-        const key = await auth.getQrKey();
+        const key = await auth.getQrKey(methodId);
         return { key, imageUrl: await auth.createQr(key) };
     },
 
@@ -182,6 +188,17 @@ export const omni = {
         const provider = requireOnlineMusicProvider(providerId);
         if (!provider.auth?.checkQr) return unsupported(providerId, 'qr-login');
         return provider.auth.checkQr(key);
+    },
+
+    // 没有这个能力就静默 no-op：netease / kugou 的扫码流程完全不受影响。
+    async cancelQrLogin(providerId: OmniProviderId, key: string): Promise<void> {
+        await requireOnlineMusicProvider(providerId).auth?.cancelQr?.(key);
+    },
+
+    // 只有明确声明了二维码寿命的 provider 才由前端计时；其余照旧只认后端报出的过期状态。
+    getQrTtlMs(providerId: OmniProviderId): number | null {
+        const ttlMs = requireOnlineMusicProvider(providerId).auth?.getQrTtlMs?.();
+        return typeof ttlMs === 'number' && ttlMs > 0 ? ttlMs : null;
     },
 
     async getUserPlaylists(userId: MediaId, page: PageInput): Promise<OmniPage<OmniCollection>> {
@@ -246,11 +263,67 @@ export const omni = {
         const source = getPlaybackSourceRef(song);
         if (source.kind !== 'online') return [];
         const provider = getOnlineMusicProvider(source.providerId);
+        if (
+            !providerSupports(provider, 'mutations')
+            || !providerSupports(provider, 'playlistTrackMutations')
+            || !provider?.mutations?.updatePlaylistTracks
+        ) {
+            return [];
+        }
         const collections = useOnlineProviderAccountStore.getState().accounts[source.providerId]?.collections || [];
         return collections.filter(collection => (
             collection.type === 'playlist'
-            && (provider?.mutations?.canAddToPlaylist?.(collection) ?? true)
+            && (provider.mutations?.canAddToPlaylist?.(collection) ?? true)
         ));
+    },
+
+    canAddSongToPlaylist(song: SongResult): boolean {
+        const source = getPlaybackSourceRef(song);
+        if (source.kind !== 'online') return false;
+        const provider = getOnlineMusicProvider(source.providerId);
+        return providerSupports(provider, 'mutations')
+            && providerSupports(provider, 'playlistTrackMutations')
+            && Boolean(provider?.mutations?.updatePlaylistTracks);
+    },
+
+    canLikeSong(song: SongResult): boolean {
+        const source = getPlaybackSourceRef(song);
+        if (source.kind !== 'online') return false;
+        const provider = getOnlineMusicProvider(source.providerId);
+        return providerSupports(provider, 'mutations')
+            && providerSupports(provider, 'likes')
+            && Boolean(provider?.mutations?.likeSong);
+    },
+
+    canEditCollectionTracks(collection: OmniCollection): boolean {
+        const provider = getOnlineMusicProvider(collection.providerId);
+        if (!providerSupports(provider, 'mutations')) return false;
+        if (collection.isLiked === true) {
+            return providerSupports(provider, 'likes') && Boolean(provider?.mutations?.likeSong);
+        }
+        return providerSupports(provider, 'playlistTrackMutations')
+            && Boolean(provider?.mutations?.updatePlaylistTracks);
+    },
+
+    canDislikeSong(song: SongResult): boolean {
+        const source = getPlaybackSourceRef(song);
+        if (source.kind !== 'online') return false;
+        const provider = getOnlineMusicProvider(source.providerId);
+        return providerSupports(provider, 'recommendations')
+            && Boolean(provider?.recommendations?.dislikeSong);
+    },
+
+    canSubscribeCollection(collection: OmniCollection): boolean {
+        const provider = getOnlineMusicProvider(collection.providerId);
+        if (
+            !providerSupports(provider, 'mutations')
+            || !providerSupports(provider, 'playlistSubscription')
+        ) {
+            return false;
+        }
+        return collection.type === 'album'
+            ? Boolean(provider?.mutations?.subscribeAlbum)
+            : Boolean(provider?.mutations?.subscribePlaylist);
     },
 
     async getUserAlbums(userId: MediaId, page: PageInput): Promise<OmniPage<OmniCollection>> {
@@ -394,6 +467,9 @@ export const omni = {
 
     async subscribe(collection: OmniCollection, subscribed: boolean): Promise<void> {
         const mutations = providerForCollection(collection).mutations;
+        if (!this.canSubscribeCollection(collection)) {
+            return unsupported(collection.providerId, 'collection-subscription');
+        }
         if (collection.type === 'album') {
             if (!mutations?.subscribeAlbum) return unsupported(collection.providerId, 'album-subscription');
             return mutations.subscribeAlbum(collection.id, subscribed);
@@ -403,8 +479,15 @@ export const omni = {
     },
 
     async updateCollectionTracks(collection: OmniCollection, operation: 'add' | 'del', tracks: SongResult[]): Promise<void> {
-        const mutations = providerForCollection(collection).mutations;
-        if (!mutations?.updatePlaylistTracks) return unsupported(collection.providerId, 'playlist-track-mutations');
+        const provider = providerForCollection(collection);
+        const mutations = provider.mutations;
+        if (
+            !providerSupports(provider, 'mutations')
+            || !providerSupports(provider, 'playlistTrackMutations')
+            || !mutations?.updatePlaylistTracks
+        ) {
+            return unsupported(collection.providerId, 'playlist-track-mutations');
+        }
         return mutations.updatePlaylistTracks(operation, collection, tracks);
     },
 
@@ -415,6 +498,9 @@ export const omni = {
         }
         if (playlist.providerId !== source.providerId || playlist.type !== 'playlist') {
             throw new OnlineProviderError('unsupported', 'Playlist does not belong to the song provider', source.providerId);
+        }
+        if (!this.canAddSongToPlaylist(song)) {
+            throw new OnlineProviderError('unsupported', 'Song provider does not support playlist track mutations', source.providerId);
         }
         const provider = providerForCollection(playlist);
         if (provider.mutations?.canAddToPlaylist && !provider.mutations.canAddToPlaylist(playlist)) {
@@ -433,12 +519,16 @@ export const omni = {
 
     async likeSong(song: SongResult, liked: boolean): Promise<void> {
         const provider = providerForSong(song);
-        if (!provider.mutations?.likeSong) return unsupported(provider.id, 'likes');
+        if (!this.canLikeSong(song) || !provider.mutations?.likeSong) return unsupported(provider.id, 'likes');
         return provider.mutations.likeSong(song, liked);
     },
 
     async dislikeSong(song: SongResult): Promise<{ replacement?: UnifiedSong; limitReached?: boolean }> {
-        return providerForSong(song).recommendations?.dislikeSong?.(song.id) ?? {};
+        const provider = providerForSong(song);
+        if (!this.canDislikeSong(song) || !provider.recommendations?.dislikeSong) {
+            return unsupported(provider.id, 'recommendation-dislike');
+        }
+        return provider.recommendations.dislikeSong(song.id);
     },
 
     canResolveCatalogRef(song: UnifiedSong, _kind: ProviderCatalogEntityKind): boolean {

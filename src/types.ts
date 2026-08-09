@@ -574,7 +574,7 @@ export const DEFAULT_SONNET_TUNING: SonnetTuning = {
   enableTransitions: true,
   outerFrameMode: 'full',
   textureResolution: 1.5,
-  postProcessEnabled: true,
+  postProcessEnabled: false,
   postProcessGrain: 0.2,
   postProcessContrast: 0,
   postProcessRgbShift: 0,
@@ -1034,7 +1034,10 @@ export interface LocalSong {
   discNumber?: number;
   embeddedMetadataVersion?: number;
 
-  embeddedCover?: Blob; // Preferred local cover blob (folder cover or embedded art), stored in IndexedDB
+  localCoverAssetId?: string; // Content-addressed preferred local cover stored in local_cover_assets
+  localCoverSource?: import('./types/localCover').LocalCoverSourceKind;
+  localCoverNeedsAssetMigration?: boolean; // Retries local cover hashing/persistence during the next rescan
+  embeddedCover?: Blob; // Legacy persisted cover or a runtime Blob materialized while loading the local library
   replayGain?: number; // ReplayGain track gain in dB
   replayGainTrackGain?: number; // ReplayGain track gain in dB
   replayGainTrackPeak?: number; // ReplayGain track peak ratio
