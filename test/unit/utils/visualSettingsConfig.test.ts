@@ -8,10 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/services/themePreferences', () => ({
     readStoredThemeAutoSwitchEnabled: vi.fn(),
     readStoredThemeAutoGenerateEnabled: vi.fn(),
+    readStoredThemeGenerationSource: vi.fn(),
 }));
 
 import { buildVisualSettingsConfig } from '@/utils/visualSettingsConfig';
-import { readStoredThemeAutoGenerateEnabled, readStoredThemeAutoSwitchEnabled } from '@/services/themePreferences';
+import { readStoredThemeAutoGenerateEnabled, readStoredThemeAutoSwitchEnabled, readStoredThemeGenerationSource } from '@/services/themePreferences';
 import { compressConfig, decompressConfig } from '@/utils/appearanceCodec';
 import { extractCfgFromInput } from '@/utils/obsUrl';
 import { DEFAULT_SONNET_TUNING } from '@/types';
@@ -19,6 +20,7 @@ import { useSettingsUiStore } from '@/stores/useSettingsUiStore';
 
 const switchMock = vi.mocked(readStoredThemeAutoSwitchEnabled);
 const generateMock = vi.mocked(readStoredThemeAutoGenerateEnabled);
+const generationSourceMock = vi.mocked(readStoredThemeGenerationSource);
 
 // A copied OBS URL, shaped as buildObsSourceUrl emits it (cfg is the terminal segment).
 const asObsUrl = (cfg: string) =>
@@ -27,6 +29,7 @@ const asObsUrl = (cfg: string) =>
 describe('buildVisualSettingsConfig', () => {
     beforeEach(() => {
         switchMock.mockReset().mockReturnValue(true);
+        generationSourceMock.mockReset().mockReturnValue('ai');
         generateMock.mockReset().mockReturnValue(false);
         useSettingsUiStore.setState({ followSystemTheme: false, isDaylight: false });
     });
@@ -97,6 +100,47 @@ describe('buildVisualSettingsConfig', () => {
         expect(restored.subtitleFontWeight).toBeNull();
     });
 
+    // Structural guard, not a field list. The recurring bug is a setting reaching this table but not
+    // the codec: the value then rides nowhere, and both the copied OBS link and the import box lose it
+    // silently — which is exactly how subtitleOverlayOpacity, staticMode and the three background
+    // toggles went missing. Asserting key survival rather than deep equality keeps it honest about the
+    // tunings, whose own compressors are deliberately lossy.
+    it('round-trips every field it emits through the codec', () => {
+        const config = buildVisualSettingsConfig();
+        const restored = decompressConfig(extractCfgFromInput(asObsUrl(compressConfig(config))));
+
+        // The codec truthy-guards these to save URL bytes, so an empty value means "nothing set" and
+        // is legitimately absent after the trip. Any other field must come back.
+        const droppedWhenEmpty = (value: unknown) =>
+            value === null || value === undefined || (Array.isArray(value) && value.length === 0);
+
+        const lost = Object.keys(config).filter(key => (
+            !droppedWhenEmpty(config[key]) && restored[key] === undefined
+        ));
+        expect(lost).toEqual([]);
+    });
+
+    // The five fields that were missing. Booleans and a number, so a regression here reads as a real
+    // absence rather than as an empty value the codec is allowed to drop.
+    it('carries the background toggles, static mode and the subtitle overlay opacity', () => {
+        useSettingsUiStore.setState({
+            useCoverColorBg: true,
+            disableVisualizerGeometricBackground: true,
+            disableVisualizerVignette: true,
+            staticMode: true,
+            subtitleOverlayOpacity: 0.45,
+        });
+
+        const restored = decompressConfig(extractCfgFromInput(asObsUrl(compressConfig(buildVisualSettingsConfig()))));
+        expect(restored).toMatchObject({
+            useCoverColorBg: true,
+            disableVisualizerGeometricBackground: true,
+            disableVisualizerVignette: true,
+            staticMode: true,
+            subtitleOverlayOpacity: 0.45,
+        });
+    });
+
     it('carries Sonnet visibility tuning and round-trips it through a copied OBS URL', () => {
         const sonnetTuning = {
             ...DEFAULT_SONNET_TUNING,
@@ -113,5 +157,15 @@ describe('buildVisualSettingsConfig', () => {
         expect(buildVisualSettingsConfig()).toMatchObject({ sonnetTuning });
         const restored = decompressConfig(extractCfgFromInput(asObsUrl(compressConfig(buildVisualSettingsConfig()))));
         expect(restored.sonnetTuning).toEqual(sonnetTuning);
+    });
+
+    it('carries the theme generation source through compress and decompress', () => {
+        generationSourceMock.mockReturnValue('cover');
+
+        const config = buildVisualSettingsConfig();
+        expect(config.themeGenerationSource).toBe('cover');
+
+        const restored = decompressConfig(compressConfig(config));
+        expect(restored.themeGenerationSource).toBe('cover');
     });
 });

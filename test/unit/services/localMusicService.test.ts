@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     deleteFolderSongs,
+    deleteSongsByIds,
     deleteLocalSong as deleteLocalMusicSong,
     extractMetadataFromFilename,
     importFolder,
     resyncAllFolders,
     resyncFolder,
+    removeImportedRoot,
 } from '@/services/localMusicService';
 import {
     deleteDirHandle,
@@ -225,6 +227,7 @@ describe('localMusicService', () => {
         vi.mocked(getFromCache).mockResolvedValue([]);
 
         vi.stubGlobal('window', {
+            electron: {},
             showDirectoryPicker: vi.fn(),
             dispatchEvent: vi.fn(),
         });
@@ -249,6 +252,100 @@ describe('localMusicService', () => {
                 filePath: 'Music/Disc 1/Track 01.mp3',
                 folderName: 'Music/Disc 1',
             }),
+        ]);
+    });
+
+    it('reuses handles collected during traversal without probing or resolving file paths again', async () => {
+        const lyricHandle = new FakeFileHandle('Track.lrc', { content: '[00:00.00]Track', type: 'text/plain' });
+        const coverHandle = new FakeFileHandle('cover.jpg', { content: 'cover', type: 'image/jpeg' });
+        const albumHandle = new FakeDirectoryHandle('Album', [
+            new FakeFileHandle('Track.mp3'),
+            lyricHandle,
+            coverHandle,
+        ]);
+        const selectedHandle = new FakeDirectoryHandle('Music', [albumHandle]);
+        const rootDirectoryLookup = vi.spyOn(selectedHandle, 'getDirectoryHandle');
+        const rootFileLookup = vi.spyOn(selectedHandle, 'getFileHandle');
+        const albumDirectoryLookup = vi.spyOn(albumHandle, 'getDirectoryHandle');
+        const albumFileLookup = vi.spyOn(albumHandle, 'getFileHandle');
+        const lyricFileLookup = vi.spyOn(lyricHandle, 'getFile');
+        const coverFileLookup = vi.spyOn(coverHandle, 'getFile');
+        vi.mocked((window as any).showDirectoryPicker).mockResolvedValue(
+            selectedHandle as unknown as FileSystemDirectoryHandle,
+        );
+
+        const importedSongs = await importFolder();
+
+        expect(importedSongs).toHaveLength(1);
+        expect(rootDirectoryLookup).not.toHaveBeenCalled();
+        expect(rootFileLookup).not.toHaveBeenCalled();
+        expect(albumDirectoryLookup).not.toHaveBeenCalled();
+        expect(albumFileLookup).not.toHaveBeenCalled();
+        expect(lyricFileLookup).toHaveBeenCalledOnce();
+        expect(coverFileLookup).toHaveBeenCalledOnce();
+    });
+
+    it('applies root .foliaignore rules to files, snapshots, and nested directories', async () => {
+        const selectedHandle = new FakeDirectoryHandle('Music', [
+            new FakeFileHandle('.foliaignore', {
+                content: 'Ignored/\n*.tmp.mp3\n!keep.tmp.mp3\n',
+                type: 'text/plain',
+            }),
+            new FakeDirectoryHandle('Ignored', [new FakeFileHandle('Hidden.mp3')]),
+            new FakeDirectoryHandle('Visible', [
+                new FakeFileHandle('Drop.tmp.mp3'),
+                new FakeFileHandle('keep.tmp.mp3'),
+                new FakeFileHandle('Track.mp3'),
+            ]),
+        ]);
+        vi.mocked((window as any).showDirectoryPicker).mockResolvedValue(
+            selectedHandle as unknown as FileSystemDirectoryHandle,
+        );
+
+        const importedSongs = await importFolder();
+
+        expect(importedSongs.map(song => song.filePath)).toEqual([
+            'Music/Visible/keep.tmp.mp3',
+            'Music/Visible/Track.mp3',
+        ]);
+        expect(saveLocalLibrarySnapshot).toHaveBeenCalledWith(expect.objectContaining({
+            tree: expect.objectContaining({
+                children: [expect.objectContaining({
+                    relativePath: 'Music/Visible',
+                    files: expect.arrayContaining([
+                        expect.objectContaining({ relativePath: 'Music/Visible/keep.tmp.mp3' }),
+                        expect.objectContaining({ relativePath: 'Music/Visible/Track.mp3' }),
+                    ]),
+                })],
+            }),
+        }));
+    });
+
+    it('applies nested .foliaignore rules relative to each directory', async () => {
+        const selectedHandle = new FakeDirectoryHandle('Music', [
+            new FakeFileHandle('.foliaignore', { content: '*.mp3\n', type: 'text/plain' }),
+            new FakeDirectoryHandle('Album', [
+                new FakeFileHandle('.foliaignore', { content: '!keep.mp3\n*.flac\n', type: 'text/plain' }),
+                new FakeFileHandle('keep.mp3'),
+                new FakeFileHandle('drop.mp3'),
+                new FakeFileHandle('drop.flac'),
+            ]),
+            new FakeDirectoryHandle('Other', [new FakeFileHandle('keep.mp3')]),
+        ]);
+        vi.mocked((window as any).showDirectoryPicker).mockResolvedValue(
+            selectedHandle as unknown as FileSystemDirectoryHandle,
+        );
+
+        const importedSongs = await importFolder();
+
+        expect(importedSongs.map(song => song.filePath)).toEqual(['Music/Album/keep.mp3']);
+        const savedSnapshot = vi.mocked(saveLocalLibrarySnapshot).mock.calls[0][0];
+        expect(savedSnapshot.tree.children.map(node => node.relativePath)).toEqual([
+            'Music/Album',
+            'Music/Other',
+        ]);
+        expect(savedSnapshot.tree.children[0].files).toEqual([
+            expect.objectContaining({ relativePath: 'Music/Album/keep.mp3' }),
         ]);
     });
 
@@ -362,5 +459,24 @@ describe('localMusicService', () => {
         expect(removeCachedCover).toHaveBeenCalledTimes(2);
         expect(removeCachedCover).toHaveBeenCalledWith('cover_local_song-1');
         expect(removeCachedCover).toHaveBeenCalledWith('cover_local_song-2');
+    });
+
+    it('cleans cover cache when deleting a selected batch by song id', async () => {
+        vi.mocked(getLocalSongs).mockResolvedValue([createSong({ id: 'song-1' })]);
+
+        await deleteSongsByIds(['song-1', 'song-1']);
+
+        expect(deleteLocalSongs).toHaveBeenCalledWith(['song-1']);
+        expect(removeCachedCover).toHaveBeenCalledWith('cover_local_song-1');
+    });
+
+    it('removes an imported root even when it contains no music', async () => {
+        vi.mocked(getLocalSongs).mockResolvedValue([]);
+
+        await removeImportedRoot('EmptyRoot');
+
+        expect(deleteDirHandle).toHaveBeenCalledWith('EmptyRoot');
+        expect(deleteLocalLibrarySnapshot).toHaveBeenCalledWith('EmptyRoot');
+        expect(deleteLocalSongs).not.toHaveBeenCalled();
     });
 });

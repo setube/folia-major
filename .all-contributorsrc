@@ -431,7 +431,8 @@
       "avatar_url": "https://avatars.githubusercontent.com/u/81014860?v=4",
       "profile": "https://github.com/qiushuo4a",
       "contributions": [
-        "ideas"
+        "ideas",
+        "bug"
       ]
     },
     {
@@ -441,6 +442,71 @@
       "profile": "https://github.com/wgfylxkm",
       "contributions": [
         "ideas"
+      ]
+    },
+    {
+      "login": "KurumizawaRio",
+      "name": "KurumizawaRio",
+      "avatar_url": "https://avatars.githubusercontent.com/u/71334741?v=4",
+      "profile": "https://github.com/KurumizawaRio",
+      "contributions": [
+        "bug",
+        "ideas"
+      ]
+    },
+    {
+      "login": "yoser-s",
+      "name": "yoser-s",
+      "avatar_url": "https://avatars.githubusercontent.com/u/123047804?v=4",
+      "profile": "https://github.com/yoser-s",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "CrKcel",
+      "name": "CrKcel",
+      "avatar_url": "https://avatars.githubusercontent.com/u/140730205?v=4",
+      "profile": "https://github.com/CrKcel",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "Seven97-k",
+      "name": "Seven97",
+      "avatar_url": "https://avatars.githubusercontent.com/u/320319183?v=4",
+      "profile": "https://github.com/Seven97-k",
+      "contributions": [
+        "ideas"
+      ]
+    },
+    {
+      "login": "MoeFurina",
+      "name": "Takanashi Hoshino",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222616389?v=4",
+      "profile": "https://www.focalors.ltd",
+      "contributions": [
+        "ideas"
+      ]
+    },
+    {
+      "login": "HKLHaoBin",
+      "name": "浩彬(^-^)",
+      "avatar_url": "https://avatars.githubusercontent.com/u/146098469?v=4",
+      "profile": "https://github.com/HKLHaoBin",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "gi-b716",
+      "name": "Gavin",
+      "avatar_url": "https://avatars.githubusercontent.com/u/78394473?v=4",
+      "profile": "http://gavin-blog.pages.dev",
+      "contributions": [
+        "bug",
+        "code"
       ]
     }
   ],

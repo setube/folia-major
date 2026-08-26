@@ -39,6 +39,8 @@ export interface ProviderCapabilities {
     artists: boolean;
     recommendations: boolean;
     mutations: boolean;
+    /** Personal FM can be steered by mode/scene, i.e. `getPersonalFm` honours PersonalFmRequestOptions. */
+    personalFmModes?: boolean;
     wordByWordLyrics: boolean;
     userCloud?: boolean;
     historyRecommendations?: boolean;
@@ -218,7 +220,7 @@ export interface OnlineSongMetadataProvider {
 
 // provider 自行声明它支持哪几种扫码登录方式；不声明即代表只有单一方式，UI 维持单步流程。
 export interface QrLoginMethod {
-    id: string;          // 传给后端的识别值（QQ: 'mobile' | 'wechat'）
+    id: string;          // 传给后端的识别值（QQ: 'qq' | 'wechat'）
     labelKey: string;    // i18n key，由 UI 层翻译
     iconKey: string;     // 图标识别值，由 UI 层映射到静态资源
 }
@@ -227,6 +229,8 @@ export interface OnlineAuthProvider {
     getLoginStatus(): Promise<ProviderUser | null>;
     logout(): Promise<void>;
     getQrLoginMethods?(): QrLoginMethod[];
+    // 需要远端能力发现的 provider 在这里等待结果；UI 用同一份返回值决定单步或多步流程。
+    resolveQrLoginMethods?(): Promise<QrLoginMethod[]>;
     getQrKey?(methodId?: string): Promise<string>;
     createQr?(key: string): Promise<string>;
     checkQr?(key: string): Promise<QrLoginState>;
@@ -259,9 +263,18 @@ export interface OnlineCatalogProvider {
     getSubscriptionStatus?(type: 'playlist' | 'album', id: MediaId, collection?: ProviderCollection): Promise<boolean>;
 }
 
+/**
+ * Personal FM tuning, provider-neutral on purpose: only NetEase's `/personal/fm/mode` understands
+ * these, and a provider without the concept ignores them rather than failing the call.
+ */
+export interface PersonalFmRequestOptions {
+    mode?: string;
+    submode?: string | null;
+}
+
 export interface OnlineRecommendationProvider {
     getDailySongs?(refresh?: boolean): Promise<UnifiedSong[]>;
-    getPersonalFm?(): Promise<UnifiedSong[]>;
+    getPersonalFm?(options?: PersonalFmRequestOptions): Promise<UnifiedSong[]>;
     getRecommendedCollections?(limit: number): Promise<ProviderCollection[]>;
     getHistoryEntries?(): Promise<ProviderHistoryEntry[]>;
     getHistoryDates?(): Promise<string[]>;

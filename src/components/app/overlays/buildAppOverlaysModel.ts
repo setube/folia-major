@@ -1,11 +1,13 @@
 import type React from 'react';
 import type { MotionValue } from 'framer-motion';
 import type FloatingPlayerControls from '../../FloatingPlayerControls';
-import type QueuePopover from '../../player-controls/QueuePopover';
 import type SearchWorkspace from '../search/SearchWorkspace';
 import type DevDebugOverlay from '../../DevDebugOverlay';
 import { PlayerState } from '../../../types';
 import type { SongResult, UnifiedSong, LyricData, PlayerLoopMode } from '../../../types';
+import type QueuePopover from '../../player-controls/QueuePopover';
+import { resolvePlaybackNeighbors } from '../../../utils/playbackNeighbors';
+import { getPlaybackSongKey } from '../../../utils/appPlaybackGuards';
 
 // src/components/app/overlays/buildAppOverlaysModel.ts
 
@@ -53,23 +55,27 @@ type BuildAppOverlaysModelParams = {
     setPlayerState: React.Dispatch<React.SetStateAction<PlayerState>>;
     togglePlay: FloatingControlsProps['onTogglePlay'];
     toggleLoop: FloatingControlsProps['onToggleLoop'];
-    handleNextTrack: FloatingControlsProps['onNextTrack'];
-    handlePrevTrack: FloatingControlsProps['onPrevTrack'];
-    toggleQueuePanel: FloatingControlsProps['onToggleQueue'];
-    openCurrentSongArtist: FloatingControlsProps['onOpenArtist'];
-    isCurrentSongLiked: FloatingControlsProps['isLiked'];
-    toggleCurrentSongLike: FloatingControlsProps['onToggleLike'];
-    playerVolume: FloatingControlsProps['volume'];
-    setPlayerVolume: FloatingControlsProps['onVolumeChange'];
     navigateToPlayer: () => void;
     isPlayerChromeHidden: boolean;
     shouldHidePlayerProgressBar: boolean;
     onSeekMainAudio: (time: number) => void;
     onStagePlayerSeek: () => Promise<unknown>;
     noTrackText: string;
+    playQueue: SongResult[];
+    isFmMode: boolean;
+    isNowPlayingStageActive: boolean;
+    handlePrevTrack: () => void;
+    handleNextTrack: () => void;
+    prevTrackLabel: string;
+    nextTrackLabel: string;
+    toggleQueuePanel: FloatingControlsProps['onToggleQueue'];
+    openCurrentSongArtist: FloatingControlsProps['onOpenArtist'];
+    isCurrentSongLiked: FloatingControlsProps['isLiked'];
+    toggleCurrentSongLike: FloatingControlsProps['onToggleLike'];
+    playerVolume: FloatingControlsProps['volume'];
+    setPlayerVolume: FloatingControlsProps['onVolumeChange'];
     isQueuePopoverOpen: boolean;
     closeQueuePopover: () => void;
-    playQueue: SongResult[];
     playSong: QueuePopoverProps['onPlaySong'];
     shuffleQueue: QueuePopoverProps['onShuffle'];
     removeQueueSong: QueuePopoverProps['onRemoveSong'];
@@ -111,23 +117,27 @@ export const buildAppOverlaysModel = ({
     setPlayerState,
     togglePlay,
     toggleLoop,
-    handleNextTrack,
-    handlePrevTrack,
-    toggleQueuePanel,
-    openCurrentSongArtist,
-    isCurrentSongLiked,
-    toggleCurrentSongLike,
-    playerVolume,
-    setPlayerVolume,
     navigateToPlayer,
     isPlayerChromeHidden,
     shouldHidePlayerProgressBar,
     onSeekMainAudio,
     onStagePlayerSeek,
     noTrackText,
+    playQueue,
+    isFmMode,
+    isNowPlayingStageActive,
+    handlePrevTrack,
+    handleNextTrack,
+    prevTrackLabel,
+    nextTrackLabel,
+    toggleQueuePanel,
+    openCurrentSongArtist,
+    isCurrentSongLiked,
+    toggleCurrentSongLike,
+    playerVolume,
+    setPlayerVolume,
     isQueuePopoverOpen,
     closeQueuePopover,
-    playQueue,
     playSong,
     shuffleQueue,
     removeQueueSong,
@@ -200,7 +210,6 @@ export const buildAppOverlaysModel = ({
                 }
             },
             onTogglePlay: togglePlay,
-            onToggleLoop: toggleLoop,
             onNextTrack: handleNextTrack,
             onPrevTrack: handlePrevTrack,
             onToggleQueue: toggleQueuePanel,
@@ -209,6 +218,7 @@ export const buildAppOverlaysModel = ({
             onToggleLike: toggleCurrentSongLike,
             volume: playerVolume,
             onVolumeChange: setPlayerVolume,
+            onToggleLoop: toggleLoop,
             onNavigateToPlayer: navigateToPlayer,
             noTrackText,
             primaryColor: 'var(--text-primary)',
@@ -217,6 +227,27 @@ export const buildAppOverlaysModel = ({
             isDaylight,
             isHidden: currentView === 'player' && isPlayerChromeHidden,
             hideControlBar: shouldHidePlayerProgressBar,
+            trackNavigation: ((): FloatingControlsProps['trackNavigation'] => {
+                const neighbors = resolvePlaybackNeighbors({
+                    playQueue,
+                    currentSong,
+                    loopMode: effectiveLoopMode,
+                    isFmMode,
+                    isStageActive: isNowPlayingStageActive,
+                });
+
+                return {
+                    currentTrackKey: getPlaybackSongKey(currentSong),
+                    onPrev: handlePrevTrack,
+                    onNext: handleNextTrack,
+                    canPrev: neighbors.prev.canGo && !isNowPlayingControlDisabled,
+                    canNext: neighbors.next.canGo && !isNowPlayingControlDisabled,
+                    prevTitle: neighbors.prev.title,
+                    nextTitle: neighbors.next.title,
+                    prevLabel: prevTrackLabel,
+                    nextLabel: nextTrackLabel,
+                };
+            })(),
         }
         : null,
 });

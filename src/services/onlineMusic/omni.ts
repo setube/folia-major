@@ -15,6 +15,7 @@ import type {
     OmniSongReplacement,
     OmniUser,
     OnlineMusicProvider,
+    PersonalFmRequestOptions,
     ProviderCatalogEntityKind,
     QrLoginMethod,
     QrLoginState,
@@ -174,6 +175,12 @@ export const omni = {
     // 没有这个能力就回空数组，UI 据此走单步流程；netease / kugou 完全不受影响。
     getQrLoginMethods(providerId: OmniProviderId): QrLoginMethod[] {
         return requireOnlineMusicProvider(providerId).auth?.getQrLoginMethods?.() ?? [];
+    },
+
+    async resolveQrLoginMethods(providerId: OmniProviderId): Promise<QrLoginMethod[]> {
+        const auth = requireOnlineMusicProvider(providerId).auth;
+        if (!auth) return [];
+        return auth.resolveQrLoginMethods?.() ?? auth.getQrLoginMethods?.() ?? [];
     },
 
     async createQrLogin(providerId: OmniProviderId, methodId?: string): Promise<{ key: string; imageUrl: string }> {
@@ -370,8 +377,8 @@ export const omni = {
         });
     },
 
-    async getPersonalFm(): Promise<UnifiedSong[]> {
-        return withActiveProvider(async provider => provider.recommendations?.getPersonalFm?.() ?? []);
+    async getPersonalFm(options?: PersonalFmRequestOptions): Promise<UnifiedSong[]> {
+        return withActiveProvider(async provider => provider.recommendations?.getPersonalFm?.(options) ?? []);
     },
 
     async getDailySongs(refresh?: boolean): Promise<UnifiedSong[]> {

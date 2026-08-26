@@ -5,9 +5,11 @@ import { useTranslation } from 'react-i18next';
 export default function WindowControls({
     revealed,
     isDaylight = false,
+    isMainWindowClickThroughEnabled = false,
 }: {
     revealed: boolean;
     isDaylight?: boolean;
+    isMainWindowClickThroughEnabled?: boolean;
 }) {
     const { t } = useTranslation();
     const [isMaximized, setIsMaximized] = useState(false);
@@ -23,8 +25,8 @@ export default function WindowControls({
 
     if (!electron) return null;
 
-    const remoteControlVisible = revealed;
-    const standardControlsVisible = revealed;
+    const remoteControlVisible = revealed && !isMainWindowClickThroughEnabled;
+    const standardControlsVisible = revealed && !isMainWindowClickThroughEnabled;
     const remoteBtnClass = `flex items-center justify-center w-11 h-full transition-all duration-200 ${
         remoteControlVisible
             ? isDaylight

@@ -10,7 +10,7 @@ import { omni } from '../services/onlineMusic/omni';
 import { createCoverPlaceholder } from '../utils/coverPlaceholders';
 import { getSizedCoverUrl } from '../utils/coverUrl';
 import { getSongCoverUrl } from '../services/onlineMusic/songMetadata';
-import { createSafeObjectUrl, getBlobObjectUrlSignature, isBlob } from '../utils/blobGuards';
+import { getLocalCoverAssetUrl } from '../services/localCoverAssetUrl';
 import { PolaroidCard } from './GridView';
 import { HexGridCoord, CubeCoord, getHexCubicSpiral } from './folia-grid/hexViewport';
 import { useFoliaHexViewport } from './folia-grid/useFoliaHexViewport';
@@ -22,6 +22,7 @@ import { useProgressiveItemEntrance } from './folia-grid/useProgressiveItemEntra
 import { useLocalLibraryCatalog } from '../hooks/useLocalLibraryCatalog';
 import { buildLocalLibraryIndex, followEntityRedirect } from '../utils/localLibraryIndex';
 import { ArtistGridInfoCutInPanel } from './artist-grid/ArtistGridInfoCutInPanel';
+import { isSongUnavailable } from '../services/onlineMusic/songAvailability';
 
 /*
  * ArtistGridView.tsx
@@ -58,11 +59,6 @@ interface GridItem {
     rawTrackIndex?: number;
     rawCollection?: any;
 }
-
-type LocalArtistCoverObjectUrlEntry = {
-    signature: string;
-    url: string;
-};
 
 type StoredArtistGridNavigationState = {
     focusedIndex: number;
@@ -331,7 +327,6 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
     const deferredSearchQuery = useDeferredValue(searchQuery);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const isComposingSearchRef = useRef(false);
-    const localCoverObjectUrlsRef = useRef<Map<string, LocalArtistCoverObjectUrlEntry>>(new Map());
     const loadGenerationRef = useRef(0);
 
     // Coordinate motion values mapping grid drags
@@ -369,43 +364,12 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
         }
     }, [navigationStorageKey]);
 
-    const clearLocalCoverObjectUrls = useCallback(() => {
-        localCoverObjectUrlsRef.current.forEach(entry => URL.revokeObjectURL(entry.url));
-        localCoverObjectUrlsRef.current.clear();
-    }, []);
-
-    const getOrCreateLocalCoverObjectUrl = useCallback((song: LocalSong) => {
-        if (!isBlob(song.embeddedCover)) {
-            return undefined;
-        }
-
-        const signature = getBlobObjectUrlSignature(song.embeddedCover, [
-            song.id,
-            song.fileSignature,
-            song.fileSize,
-            song.fileLastModified,
-        ]);
-        const cached = localCoverObjectUrlsRef.current.get(song.id);
-        if (cached?.signature === signature) {
-            return cached.url;
-        }
-
-        if (cached) {
-            URL.revokeObjectURL(cached.url);
-        }
-
-        const url = createSafeObjectUrl(song.embeddedCover);
-        if (!url) return null;
-        localCoverObjectUrlsRef.current.set(song.id, { signature, url });
-        return url;
-    }, []);
-
     const resolveLocalSongCoverUrl = useCallback((song: LocalSong) => {
-        const embeddedCoverUrl = getOrCreateLocalCoverObjectUrl(song);
+        const localCoverUrl = getLocalCoverAssetUrl(song.localCoverAssetId, 512);
         return song.useOnlineCover
-            ? (song.onlineMetadata?.coverUrl || embeddedCoverUrl)
-            : embeddedCoverUrl;
-    }, [getOrCreateLocalCoverObjectUrl]);
+            ? (song.onlineMetadata?.coverUrl || localCoverUrl)
+            : localCoverUrl;
+    }, []);
 
     // Appends online provider album pages without replacing already rendered artist content.
     const loadOnlineAlbumPages = async (artistId: string | number, generation: number, startOffset = 0) => {
@@ -569,13 +533,11 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
     };
 
     useEffect(() => {
-        clearLocalCoverObjectUrls();
         void loadArtistData();
         return () => {
             loadGenerationRef.current++;
-            clearLocalCoverObjectUrls();
         };
-    }, [clearLocalCoverObjectUrls, collection.id, collection.source, localLibraryCatalog, resolveLocalSongCoverUrl]);
+    }, [collection.id, collection.source, localLibraryCatalog, resolveLocalSongCoverUrl]);
 
     useEffect(() => {
         if (!showSearchPanel) return;
@@ -692,6 +654,11 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
 
         return itemsList;
     }, [albumGridItems, artistInfo, topSongs]);
+    // Queue context for track selection: unavailable tracks are excluded so playback matches the playlist/album surfaces.
+    const playableTopSongs = useMemo(
+        () => topSongs.filter(song => !isSongUnavailable(song)),
+        [topSongs]
+    );
     const shouldAnimateItemEntrance = useProgressiveItemEntrance(
         `${String(collection.source)}:${String(collection.id)}`
     );
@@ -984,7 +951,7 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
                     setShowFullBio(true);
                 } else if (focusedItem.rawTrack && onSelectTrack) {
                     e.preventDefault();
-                    onSelectTrack(focusedItem.rawTrack, topSongs);
+                    onSelectTrack(focusedItem.rawTrack, playableTopSongs);
                 } else if (focusedItem.rawCollection && onSelectAlbum) {
                     e.preventDefault();
                     persistNavigationState(focusedIndex);
@@ -1042,7 +1009,7 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
         showFullBio,
         showSearchPanel,
         showSidePanel,
-        topSongs,
+        playableTopSongs,
     ]);
 
     const renderedCards = useMemo(() => {
@@ -1086,7 +1053,7 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
                             }}
                         >
                             {item.coverUrl ? (
-                                <img src={item.coverUrl} alt="avatar" draggable={false} className="w-full h-full object-cover select-none" />
+                                <img src={getSizedCoverUrl(item.coverUrl, 512)} alt="avatar" draggable={false} loading="lazy" decoding="async" className="w-full h-full object-cover select-none" />
                             ) : (
                                 <div className="w-full h-full flex items-center justify-center bg-white/5">
                                     <Disc size={48} className="opacity-20 animate-spin" style={{ animationDuration: '4s' }} />
@@ -1194,7 +1161,7 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
                         isFocused={focusedIndex === idx}
                         onSelect={() => {
                             if (isSongCard && onSelectTrack && item.rawTrack) {
-                                onSelectTrack(item.rawTrack, topSongs);
+                                onSelectTrack(item.rawTrack, playableTopSongs);
                             } else if (!isSongCard && onSelectAlbum && item.rawCollection) {
                                 persistNavigationState(idx);
                                 onSelectAlbum(item.rawCollection.id, item.rawCollection);
@@ -1229,7 +1196,7 @@ const ArtistGridView: React.FC<ArtistGridViewProps> = ({
         clipRadius,
         focusedIndex,
         artistInfo,
-        topSongs,
+        playableTopSongs,
         onSelectTrack,
         onSelectAlbum,
         onSelectArtist,

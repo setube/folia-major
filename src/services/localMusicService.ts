@@ -5,7 +5,7 @@ import { parseEmbeddedMetadataAsync, type EmbeddedMetadataResult } from '../util
 import { useSettingsUiStore } from '../stores/useSettingsUiStore';
 import { autoMatchBestLyric } from '../utils/lyrics/autoMatchBestLyric';
 import { normalizeLyricMatchText } from '../utils/lyrics/matchScore';
-import { createSafeObjectUrl, isBlob } from '../utils/blobGuards';
+import { createSafeObjectUrl } from '../utils/blobGuards';
 import { resolveExplicitFileTimedLyricFormat, type ExplicitFileTimedLyricFormat } from '../utils/lyrics/formatDetection';
 import { applyMatchedMetadata } from './localLibraryCatalogService';
 import { buildLyricSearchQuery } from '../utils/lyrics/searchQuery';
@@ -18,11 +18,14 @@ import { getOnlineMusicProvider } from './onlineMusic/providerRegistry';
 import { getProviderSongMetadata } from './onlineMusic/songMetadata';
 import { normalizeLyricMatchMetadataCandidate } from './onlineMetadataSearchService';
 import {
-    loadLocalSongCoverBlob,
     prepareLocalCoverBlob,
+    stageLocalCoverAsset,
     type PreparedLocalCoverBlob,
 } from './localCoverAssetService';
+import { hasLocalCoverBinary } from './localCoverBinaryStore';
 import { hasLocalSongCover } from '../utils/localSongCover';
+import { createFoliaIgnoreMatcher, isIgnoredByFoliaMatchers, type FoliaIgnoreMatcher } from '../utils/foliaIgnore';
+import { getLocalLibraryAvailability } from './localLibraryAvailability';
 
 
 type EmbeddedMetadata = EmbeddedMetadataResult;
@@ -40,18 +43,25 @@ interface ImportPreparationMetrics {
 
 interface FileEntryForImport {
     handle: FileSystemFileHandle;
+    file: File;
     folderName: string;
     relativePath: string;
 }
 
 interface LocalLyricFileCandidate {
-    handle: FileSystemFileHandle;
+    file: File;
     format?: ExplicitFileTimedLyricFormat;
 }
 
 interface SnapshotTraversalResult {
     tree: LocalLibrarySnapshotNode;
     relevantFileCount: number;
+    filesByPath: Map<string, SnapshotTraversalFile>;
+}
+
+interface SnapshotTraversalFile {
+    handle: FileSystemFileHandle;
+    file: File;
 }
 
 interface ImportDiffPlan {
@@ -61,14 +71,14 @@ interface ImportDiffPlan {
     totalAudioFiles: number;
     relevantFileCount: number;
     lrcMap: Map<string, LocalLyricFileCandidate>;
-    tlrcMap: Map<string, FileSystemFileHandle>;
-    coverMap: Map<string, FileSystemFileHandle>;
+    tlrcMap: Map<string, File>;
+    coverMap: Map<string, File>;
     snapshot: LocalLibrarySnapshot;
 }
 
 // In-memory storage for hot-path access. Persistent recovery uses directory handles from IndexedDB.
 const fileHandleMap = new Map<string, FileSystemFileHandle>();
-const embeddedCoverRequestMap = new Map<string, Promise<LocalSong>>();
+const localCoverAssetRequestMap = new Map<string, Promise<LocalSong>>();
 const AUDIO_EXTENSIONS = /\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i;
 const LYRIC_EXTENSIONS = /\.(lrc|vtt|ttml|qrc|yrc|krc)$/i;
 const TRANSLATION_LYRIC_EXTENSIONS = /\.t\.(lrc|vtt)$/i;
@@ -156,9 +166,8 @@ async function getImportDirectoryHandle(expectedRootName?: string): Promise<File
         return persistedHandle;
     }
 
-    if (!('showDirectoryPicker' in window)) {
-        throw new Error('File System Access API not supported in this browser');
-    }
+    const availability = getLocalLibraryAvailability();
+    if (!availability.supported) throw new Error(`Local library unavailable: ${availability.reason}`);
 
     // @ts-ignore - showDirectoryPicker is not in all TypeScript definitions
     return await window.showDirectoryPicker();
@@ -403,12 +412,18 @@ async function extractEmbeddedMetadata(file: File, includeCover = false): Promis
 
 async function buildSnapshotTree(
     handle: FileSystemDirectoryHandle,
-    currentPath: string
+    currentPath: string,
+    rootFolderName: string,
+    inheritedIgnoreMatchers: readonly FoliaIgnoreMatcher[],
+    filesByPath = new Map<string, SnapshotTraversalFile>(),
 ): Promise<SnapshotTraversalResult> {
     const files: LocalLibrarySnapshotFile[] = [];
     const children: LocalLibrarySnapshotNode[] = [];
     let relevantFileCount = 0;
 
+    const directoryRelativePath = currentPath === rootFolderName
+        ? ''
+        : currentPath.slice(rootFolderName.length + 1);
     const childEntries: Array<FileSystemHandle> = [];
 
     try {
@@ -427,18 +442,46 @@ async function buildSnapshotTree(
                 files: [],
                 children: []
             },
-            relevantFileCount: 0
+            relevantFileCount: 0,
+            filesByPath,
         };
     }
 
     childEntries.sort((a, b) => a.name.localeCompare(b.name));
+    const ignoreHandle = childEntries.find(entry => entry.kind === 'file' && entry.name === '.foliaignore');
+    const localIgnoreMatcher = await loadFoliaIgnoreMatcher(
+        ignoreHandle as FileSystemFileHandle | undefined,
+        directoryRelativePath,
+        handle.name,
+    );
+    const ignoreMatchers = localIgnoreMatcher.ruleCount > 0
+        ? [...inheritedIgnoreMatchers, localIgnoreMatcher]
+        : inheritedIgnoreMatchers;
 
     for (const entry of childEntries) {
+        if (entry.name === '.foliaignore') {
+            continue;
+        }
+
+        const entryPath = `${currentPath}/${entry.name}`;
+        const importRelativePath = entryPath.startsWith(`${rootFolderName}/`)
+            ? entryPath.slice(rootFolderName.length + 1)
+            : entryPath;
+        if (isIgnoredByFoliaMatchers(ignoreMatchers, importRelativePath, entry.kind === 'directory')) {
+            continue;
+        }
+
         if (entry.kind === 'directory') {
-            const childPath = `${currentPath}/${entry.name}`;
+            const childPath = entryPath;
 
             try {
-                const childResult = await buildSnapshotTree(entry as FileSystemDirectoryHandle, childPath);
+                const childResult = await buildSnapshotTree(
+                    entry as FileSystemDirectoryHandle,
+                    childPath,
+                    rootFolderName,
+                    ignoreMatchers,
+                    filesByPath,
+                );
                 children.push(childResult.tree);
                 relevantFileCount += childResult.relevantFileCount;
             } catch (error) {
@@ -468,6 +511,7 @@ async function buildSnapshotTree(
                 lastModified: file.lastModified,
                 signature
             });
+            filesByPath.set(relativePath, { handle: fileHandle, file });
             relevantFileCount += 1;
         } catch (error) {
             console.warn(`[LocalMusic][Import] Skip unreadable file "${currentPath}/${entry.name}":`, error);
@@ -482,7 +526,27 @@ async function buildSnapshotTree(
         children
     };
 
-    return { tree, relevantFileCount };
+    return { tree, relevantFileCount, filesByPath };
+}
+
+async function loadFoliaIgnoreMatcher(
+    ignoreHandle: FileSystemFileHandle | undefined,
+    baseDirectory: string,
+    directoryName: string,
+): Promise<FoliaIgnoreMatcher> {
+    if (!ignoreHandle) {
+        return createFoliaIgnoreMatcher('', baseDirectory);
+    }
+
+    try {
+        const ignoreFile = await ignoreHandle.getFile();
+        const matcher = createFoliaIgnoreMatcher(await ignoreFile.text(), baseDirectory);
+        console.log(`[LocalMusic][Import] Loaded ${matcher.ruleCount} .foliaignore rules from "${directoryName}".`);
+        return matcher;
+    } catch (error) {
+        console.warn(`[LocalMusic][Import] Failed to read .foliaignore from "${directoryName}":`, error);
+        return createFoliaIgnoreMatcher('', baseDirectory);
+    }
 }
 
 function flattenSnapshotFiles(node: LocalLibrarySnapshotNode, target = new Map<string, LocalLibrarySnapshotFile>()) {
@@ -499,7 +563,7 @@ async function collectImportDiffPlan(
     existingSongs: LocalSong[],
     previousSnapshot: LocalLibrarySnapshot | null
 ): Promise<ImportDiffPlan> {
-    const traversalResult = await buildSnapshotTree(dirHandle, rootFolderName);
+    const traversalResult = await buildSnapshotTree(dirHandle, rootFolderName, rootFolderName, []);
     const snapshot: LocalLibrarySnapshot = {
         rootFolderName,
         scannedAt: Date.now(),
@@ -513,9 +577,9 @@ async function collectImportDiffPlan(
     const changedAudioPaths = new Set<string>();
     const changedLyricBasePaths = new Set<string>();
     const changedCoverFolders = new Set<string>();
-    const lyricCandidates = new Map<string, { handle: FileSystemFileHandle; priority: number; format?: ExplicitFileTimedLyricFormat; }>();
-    const translationLyricCandidates = new Map<string, { handle: FileSystemFileHandle; priority: number; }>();
-    const coverCandidates = new Map<string, { handle: FileSystemFileHandle; priority: number; }>();
+    const lyricCandidates = new Map<string, { file: File; priority: number; format?: ExplicitFileTimedLyricFormat; }>();
+    const translationLyricCandidates = new Map<string, { file: File; priority: number; }>();
+    const coverCandidates = new Map<string, { file: File; priority: number; }>();
 
     currentFiles.forEach((file) => {
         const previousFile = previousFiles.get(file.relativePath);
@@ -581,15 +645,17 @@ async function collectImportDiffPlan(
     const allRelevantFiles = Array.from(currentFiles.values()).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
     for (const snapshotFile of allRelevantFiles) {
+        const traversedFile = traversalResult.filesByPath.get(snapshotFile.relativePath);
+        if (!traversedFile) {
+            console.warn(`[LocalMusic][Import] Missing traversed file handle for "${snapshotFile.relativePath}".`);
+            continue;
+        }
+
         const pathSegments = snapshotFile.relativePath.split('/');
         const fileName = pathSegments[pathSegments.length - 1];
         const folderName = pathSegments.slice(0, -1).join('/');
 
         if (snapshotFile.kind === 'lyric' || snapshotFile.kind === 'translationLyric') {
-            const relativePathFromRoot = snapshotFile.relativePath.startsWith(`${rootFolderName}/`)
-                ? snapshotFile.relativePath.slice(rootFolderName.length + 1)
-                : snapshotFile.relativePath;
-            const fileHandle = await resolveFileHandleFromDirHandle(dirHandle, relativePathFromRoot);
             const baseName = getSidecarLyricBasePath(snapshotFile.relativePath, snapshotFile.kind);
             const priority = getTimedLyricPriority(snapshotFile.name);
             const format = resolveExplicitFileTimedLyricFormat(snapshotFile.name);
@@ -597,28 +663,24 @@ async function collectImportDiffPlan(
             if (snapshotFile.kind === 'translationLyric') {
                 const existingTranslationLyric = translationLyricCandidates.get(baseName);
                 if (!existingTranslationLyric || priority < existingTranslationLyric.priority) {
-                    translationLyricCandidates.set(baseName, { handle: fileHandle, priority });
+                    translationLyricCandidates.set(baseName, { file: traversedFile.file, priority });
                 }
             } else {
                 const existingLyric = lyricCandidates.get(baseName);
                 if (!existingLyric || priority < existingLyric.priority) {
-                    lyricCandidates.set(baseName, { handle: fileHandle, priority, format });
+                    lyricCandidates.set(baseName, { file: traversedFile.file, priority, format });
                 }
             }
             continue;
         }
 
         if (snapshotFile.kind === 'cover') {
-            const relativePathFromRoot = snapshotFile.relativePath.startsWith(`${rootFolderName}/`)
-                ? snapshotFile.relativePath.slice(rootFolderName.length + 1)
-                : snapshotFile.relativePath;
-            const fileHandle = await resolveFileHandleFromDirHandle(dirHandle, relativePathFromRoot);
             const folderKey = getParentRelativePath(snapshotFile.relativePath);
             const priority = getFolderCoverPriority(snapshotFile.name);
             const existingCover = coverCandidates.get(folderKey);
 
             if (!existingCover || priority < existingCover.priority) {
-                coverCandidates.set(folderKey, { handle: fileHandle, priority });
+                coverCandidates.set(folderKey, { file: traversedFile.file, priority });
             }
             continue;
         }
@@ -627,10 +689,6 @@ async function collectImportDiffPlan(
             continue;
         }
 
-        const relativePathFromRoot = snapshotFile.relativePath.startsWith(`${rootFolderName}/`)
-            ? snapshotFile.relativePath.slice(rootFolderName.length + 1)
-            : snapshotFile.relativePath;
-        const fileHandle = await resolveFileHandleFromDirHandle(dirHandle, relativePathFromRoot);
         const existingSong = existingSongsByPath.get(snapshotFile.relativePath);
 
         if (
@@ -640,15 +698,16 @@ async function collectImportDiffPlan(
             || existingSong.localCoverNeedsAssetMigration
         ) {
             changedEntries.push({
-                handle: fileHandle,
+                handle: traversedFile.handle,
+                file: traversedFile.file,
                 folderName,
                 relativePath: snapshotFile.relativePath
             });
             continue;
         }
 
-        fileHandleMap.set(existingSong.id, fileHandle);
-        existingSong.fileHandle = fileHandle;
+        fileHandleMap.set(existingSong.id, traversedFile.handle);
+        existingSong.fileHandle = traversedFile.handle;
         existingSong.fileSize = snapshotFile.size;
         existingSong.fileLastModified = snapshotFile.lastModified;
         existingSong.fileSignature = snapshotFile.signature;
@@ -661,9 +720,9 @@ async function collectImportDiffPlan(
         removedSongs,
         totalAudioFiles: currentAudioPaths.size,
         relevantFileCount: traversalResult.relevantFileCount,
-        lrcMap: new Map(Array.from(lyricCandidates.entries()).map(([baseName, value]) => [baseName, { handle: value.handle, format: value.format }])),
-        tlrcMap: new Map(Array.from(translationLyricCandidates.entries()).map(([baseName, value]) => [baseName, value.handle])),
-        coverMap: new Map(Array.from(coverCandidates.entries()).map(([folderKey, value]) => [folderKey, value.handle])),
+        lrcMap: new Map(Array.from(lyricCandidates.entries()).map(([baseName, value]) => [baseName, { file: value.file, format: value.format }])),
+        tlrcMap: new Map(Array.from(translationLyricCandidates.entries()).map(([baseName, value]) => [baseName, value.file])),
+        coverMap: new Map(Array.from(coverCandidates.entries()).map(([folderKey, value]) => [folderKey, value.file])),
         snapshot
     };
 }
@@ -671,16 +730,15 @@ async function collectImportDiffPlan(
 async function buildImportedSong(
     entry: FileEntryForImport,
     lrcMap: Map<string, LocalLyricFileCandidate>,
-    tlrcMap: Map<string, FileSystemFileHandle>,
-    coverMap: Map<string, FileSystemFileHandle>,
+    tlrcMap: Map<string, File>,
+    coverMap: Map<string, File>,
     coverBlobCache: Map<string, Promise<PreparedLocalCoverBlob | undefined>>,
     includeEmbeddedMetadata = true,
     existingSong?: LocalSong
 ): Promise<{ song: LocalSong | null; metrics: ImportPreparationMetrics; }> {
     const fileHandle = entry.handle;
-    const getFileStartedAt = performance.now();
-    const file = await fileHandle.getFile();
-    const getFileMs = performance.now() - getFileStartedAt;
+    const file = entry.file;
+    const getFileMs = 0;
 
     if (!isAudioFile(file)) {
         return {
@@ -707,8 +765,7 @@ async function buildImportedSong(
     if (lrcMap.has(baseName)) {
         try {
             const lyricCandidate = lrcMap.get(baseName)!;
-            const lrcFile = await lyricCandidate.handle.getFile();
-            localLyricsContent = await lrcFile.text();
+            localLyricsContent = await lyricCandidate.file.text();
             localLyricsFormat = lyricCandidate.format;
         } catch (e) {
             console.error(`[LocalMusic] Failed to read local lyric for ${file.name}`, e);
@@ -717,8 +774,7 @@ async function buildImportedSong(
 
     if (tlrcMap.has(baseName)) {
         try {
-            const tlrcFile = await tlrcMap.get(baseName)!.getFile();
-            localTranslationLyricsContent = await tlrcFile.text();
+            localTranslationLyricsContent = await tlrcMap.get(baseName)!.text();
         } catch (e) {
             console.error(`[LocalMusic] Failed to read local translation lyric for ${file.name}`, e);
         }
@@ -731,8 +787,7 @@ async function buildImportedSong(
         if (!coverBlobCache.has(entry.folderName)) {
             coverBlobCache.set(entry.folderName, (async () => {
                 try {
-                    const coverFile = await coverMap.get(entry.folderName)!.getFile();
-                    return (await prepareLocalCoverBlob(coverFile)) || undefined;
+                    return (await prepareLocalCoverBlob(coverMap.get(entry.folderName)!)) || undefined;
                 } catch (error) {
                     console.warn(`[LocalMusic] Failed to read folder cover for ${entry.folderName}:`, error);
                     return undefined;
@@ -797,7 +852,7 @@ async function buildImportedSong(
         discNumber: embeddedMetadata.discNumber,
         localCoverAssetId: folderCover?.assetId,
         localCoverSource: folderCover ? 'folder' : undefined,
-        embeddedCover: folderCover?.blob,
+        localCoverNeedsAssetMigration: folderCover && !folderCover.assetId ? true : undefined,
         hasManualLyricSelection: existingSong?.hasManualLyricSelection ?? false,
         folderName: entry.folderName,
         hasLocalLyrics: !!localLyricsContent,
@@ -889,10 +944,10 @@ async function hydrateSongMetadata(song: LocalSong): Promise<LocalSong> {
         song.replayGainAlbumGain = embeddedMetadata.replayGainAlbumGain;
         song.replayGainAlbumPeak = embeddedMetadata.replayGainAlbumPeak;
         if (includeCover) {
+            stageLocalCoverAsset(embeddedMetadata.coverAssetId, embeddedMetadata.cover);
             song.localCoverAssetId = embeddedMetadata.coverAssetId;
             song.localCoverSource = embeddedMetadata.cover ? 'embedded' : undefined;
             song.localCoverNeedsAssetMigration = coverHydrationFailed ? true : undefined;
-            song.embeddedCover = embeddedMetadata.cover;
         }
     } catch (error) {
         console.warn(`[LocalMusic][Import] Failed to hydrate metadata for ${song.fileName}:`, error);
@@ -916,16 +971,15 @@ async function hydrateImportedSongsInBackground(rootFolderName: string, songs: L
     });
 
     const flushBatch = async (forceNotify = false) => {
+        while (flushInFlight) {
+            await flushInFlight;
+        }
         if (pendingBatch.length === 0) {
             return;
         }
 
         const batch = pendingBatch.splice(0, pendingBatch.length);
-        const previousFlush = flushInFlight;
         const currentFlush = (async () => {
-            if (previousFlush) {
-                await previousFlush;
-            }
             await saveLocalSongs(batch);
             savedCount += batch.length;
             if (forceNotify || savedCount % HYDRATION_REFRESH_EVERY === 0 || savedCount === songs.length) {
@@ -940,9 +994,12 @@ async function hydrateImportedSongsInBackground(rootFolderName: string, songs: L
             console.log(`[LocalMusic][Import] Background metadata hydration saved ${savedCount}/${songs.length} songs for "${rootFolderName}".`);
         })();
         flushInFlight = currentFlush;
-        await currentFlush;
-        if (flushInFlight === currentFlush) {
-            flushInFlight = null;
+        try {
+            await currentFlush;
+        } finally {
+            if (flushInFlight === currentFlush) {
+                flushInFlight = null;
+            }
         }
     };
 
@@ -957,26 +1014,30 @@ async function hydrateImportedSongsInBackground(rootFolderName: string, songs: L
 
             pendingBatch.push(hydratedSong);
 
-            if (pendingBatch.length >= HYDRATION_BATCH_SIZE && !flushInFlight) {
-                void flushBatch();
+            if (pendingBatch.length >= HYDRATION_BATCH_SIZE) {
+                await flushBatch();
             }
         }
     };
 
-    const workerCount = Math.min(IMPORT_CONCURRENCY, songs.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    await flushBatch(true);
-    if (flushInFlight) {
-        await flushInFlight;
+    try {
+        const workerCount = Math.min(IMPORT_CONCURRENCY, songs.length);
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+        while (pendingBatch.length > 0) {
+            await flushBatch(true);
+        }
+        if (flushInFlight) {
+            await flushInFlight;
+        }
+        console.log(`[LocalMusic][Import] Background metadata hydration for "${rootFolderName}" finished in ${formatImportDuration(performance.now() - hydrationStartedAt)}.`);
+    } finally {
+        notifyLocalMusicScanProgress({
+            active: false,
+            folderName: rootFolderName,
+            totalSongs: songs.length,
+            completedSongs: savedCount
+        });
     }
-
-    notifyLocalMusicScanProgress({
-        active: false,
-        folderName: rootFolderName,
-        totalSongs: songs.length,
-        completedSongs: songs.length
-    });
-    console.log(`[LocalMusic][Import] Background metadata hydration for "${rootFolderName}" finished in ${formatImportDuration(performance.now() - hydrationStartedAt)}.`);
 }
 
 
@@ -1123,11 +1184,14 @@ export async function importFolder(expectedRootName?: string): Promise<LocalSong
         } catch (saveError) {
             console.error('Failed to save imported songs:', saveError);
             songsToPersist.forEach(song => fileHandleMap.delete(song.id));
+            throw saveError;
         }
 
         console.log(`[LocalMusic][Import] Finished importing "${rootFolderName}" with ${importedSongs.length}/${diffPlan.totalAudioFiles} available songs in ${formatImportDuration(performance.now() - importStartedAt)}.`);
         notifyLocalMusicUpdated();
-        void hydrateImportedSongsInBackground(rootFolderName, songsToPersist);
+        void hydrateImportedSongsInBackground(rootFolderName, songsToPersist).catch(error => {
+            console.error(`[LocalMusic][Import] Background metadata hydration failed for "${rootFolderName}":`, error);
+        });
 
         return importedSongs;
     } catch (error) {
@@ -1478,13 +1542,13 @@ async function extractAndPersistSongCover(
 ): Promise<LocalSong> {
     const file = await fileHandle.getFile();
     const metadata = await extractEmbeddedMetadata(file, true);
-    if (!metadata.cover) return song;
+    if (!metadata.cover || !metadata.coverAssetId) return song;
+    stageLocalCoverAsset(metadata.coverAssetId, metadata.cover);
 
     const updatedSong: LocalSong = {
         ...song,
         localCoverAssetId: metadata.coverAssetId,
         localCoverSource: 'embedded',
-        embeddedCover: metadata.cover,
         fileHandle,
     };
     Object.assign(song, updatedSong);
@@ -1492,20 +1556,12 @@ async function extractAndPersistSongCover(
     return updatedSong;
 }
 
-export async function ensureLocalSongEmbeddedCover(song: LocalSong): Promise<LocalSong> {
-    if (isBlob(song.embeddedCover)) {
-        return song;
-    }
-
-    const storedCover = await loadLocalSongCoverBlob(song);
-    if (storedCover) {
-        song.embeddedCover = storedCover;
-        return song;
-    }
+export async function ensureLocalSongCoverAsset(song: LocalSong): Promise<LocalSong> {
+    if (song.localCoverAssetId && await hasLocalCoverBinary(song.localCoverAssetId)) return song;
     if (song.localCoverSource === 'folder') return song;
 
-    if (!embeddedCoverRequestMap.has(song.id)) {
-        embeddedCoverRequestMap.set(song.id, (async () => {
+    if (!localCoverAssetRequestMap.has(song.id)) {
+        localCoverAssetRequestMap.set(song.id, (async () => {
             const fileHandle = await getAccessibleFileHandle(song);
             if (!fileHandle) {
                 return song;
@@ -1529,12 +1585,12 @@ export async function ensureLocalSongEmbeddedCover(song: LocalSong): Promise<Loc
                     return song;
                 }
             } finally {
-                embeddedCoverRequestMap.delete(song.id);
+                localCoverAssetRequestMap.delete(song.id);
             }
         })());
     }
 
-    return await embeddedCoverRequestMap.get(song.id)!;
+    return await localCoverAssetRequestMap.get(song.id)!;
 }
 
 // Get audio blob from File object (for file input imports)
@@ -1546,14 +1602,48 @@ export async function getAudioFromFile(file: File): Promise<string> {
 
 // Delete songs by their specific IDs
 export async function deleteSongsByIds(songIds: string[]): Promise<void> {
-    songIds.forEach(id => {
+    const uniqueSongIds = Array.from(new Set(songIds));
+    if (uniqueSongIds.length === 0) return;
+    const allSongs = await getLocalSongs();
+    const deletedIdSet = new Set(uniqueSongIds);
+    const affectedRoots = new Set(
+        allSongs
+            .filter(song => deletedIdSet.has(song.id))
+            .map(getRootFolderName)
+            .filter((root): root is string => Boolean(root)),
+    );
+    uniqueSongIds.forEach(id => {
         fileHandleMap.delete(id);
-        embeddedCoverRequestMap.delete(id);
+        localCoverAssetRequestMap.delete(id);
     });
-    await dbDeleteLocalSongs(songIds);
-    await removeDeletedSongIdsFromPlaylists(songIds);
+    await Promise.all([
+        dbDeleteLocalSongs(uniqueSongIds),
+        ...uniqueSongIds.map(id => removeCachedCover(`cover_local_${id}`)),
+    ]);
+    await removeDeletedSongIdsFromPlaylists(uniqueSongIds);
+    await Promise.all(Array.from(affectedRoots).map(cleanupDirHandleIfUnused));
     notifyLocalMusicUpdated();
-    console.log(`[LocalMusic] Deleted ${songIds.length} songs by ID`);
+    console.log(`[LocalMusic] Deleted ${uniqueSongIds.length} songs by ID`);
+}
+
+// Removes an imported root from the app, including empty roots, without deleting disk files.
+export async function removeImportedRoot(rootFolderName: string): Promise<void> {
+    const normalizedRoot = rootFolderName.split('/')[0]?.trim();
+    if (!normalizedRoot) return;
+
+    const allSongs = await getLocalSongs();
+    const songIds = allSongs
+        .filter(song => getRootFolderName(song) === normalizedRoot)
+        .map(song => song.id);
+
+    if (songIds.length > 0) {
+        await deleteSongsByIds(songIds);
+    }
+    await Promise.all([
+        deleteDirHandle(normalizedRoot),
+        deleteLocalLibrarySnapshot(normalizedRoot),
+    ]);
+    notifyLocalMusicUpdated();
 }
 
 // Resync folder: refresh an imported folder in place using the persisted root handle
@@ -1612,7 +1702,7 @@ export async function deleteFolderSongs(folderName: string): Promise<void> {
     const songIdsToDelete = songsToDelete.map(song => song.id);
     songIdsToDelete.forEach(id => {
         fileHandleMap.delete(id);
-        embeddedCoverRequestMap.delete(id);
+        localCoverAssetRequestMap.delete(id);
     });
     await Promise.all([
         dbDeleteLocalSongs(songIdsToDelete),

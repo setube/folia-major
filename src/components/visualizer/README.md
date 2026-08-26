@@ -32,6 +32,7 @@ App / ThemePark / VisPlayground / OBS source
 
 | mode | 显示名 | 主要 renderer / 辅助文件 |
 | --- | --- | --- |
+| `still` | 静止 | `still/VisualizerStill.tsx`（不挂载共享背景层） |
 | `classic` | Luminous | `classic/Visualizer.tsx`、`classic/tuning.ts` |
 | `cadenza` | Mindscape | `cadenza/VisualizerCadenza.tsx`、`cadenza/tuning.ts` |
 | `partita` | 云阶 | `partita/VisualizerPartita.tsx`、`partita/tuning.ts` |
@@ -43,6 +44,7 @@ App / ThemePark / VisPlayground / OBS source
 | `diorama` | 镜台 | `diorama/VisualizerDiorama.tsx`、`diorama/DioramaScene.tsx`、`diorama/dioramaTextRaster.ts` |
 | `pendolo` | Pendolo | `pendolo/VisualizerPendolo.tsx`、`pendolo/pendoloTextLayout.ts`、`pendolo/pendoloTimeline.ts` |
 | `sonnet` | 商籁 | `sonnet/VisualizerSonnet.tsx`、`sonnet/createSonnetPixiRuntime.ts`、`sonnet/*` |
+| `tempera` | 凝彩 | `tempera/VisualizerTempera.tsx`、`tempera/createTemperaPixiRuntime.ts`、`tempera/*` |
 
 `registry.tsx` 的默认模式是 `classic`。模式枚举/共享 tuning map 见 `src/types.ts`、`definition.ts`、`tuningRegistry.ts`。
 
@@ -120,7 +122,17 @@ Visualizer 消费已解析的 `LyricData` / `Line` / `Word`，不负责解析 `.
 
 ### Sonnet
 
-`sonnet/VisualizerSonnet.tsx` 负责 React shell/subtitle，`createSonnetPixiRuntime.ts` 创建 Pixi runtime；其余 `sonnet*` 文件按 scene builder、shot flow、glyph/typography、post-process、resource pool 分工。注意 Pixi runtime、纹理和 RAF 的销毁；当前还存在 `SonnetPerformanceWarningDialog` 这一 app dialog。
+`sonnet/VisualizerSonnet.tsx` 负责 React shell/subtitle，`createSonnetPixiRuntime.ts` 创建 Pixi runtime；其余 `sonnet*` 文件按 scene builder、shot flow、glyph/typography、post-process、resource pool 分工。注意 Pixi runtime、纹理和 RAF 的销毁。
+
+### Tempera
+
+完整说明见 [`tempera/README.md`](tempera/README.md)——编译期分镜、拼贴排版、逐字时序、网点图形语汇、文字反色 filter、渐变调色、片尾卡、画布图片池都在那里。快速定位：
+
+- `tempera/VisualizerTempera.tsx`：React shell / subtitle；`createTemperaPixiRuntime.ts`：Pixi runtime（scene cache ±1、绝对时间驱动）
+- `temperaProgram.ts` + `types.ts`：段落 / shot / slice 编译，121 种 shot kind
+- `temperaLayout.ts` + `temperaMotion.ts`：拼贴排版与逐字入场求解
+- `temperaDifferenceFilter.ts`：文字对背景逐像素反色，改动前务必先读那份说明里的约束
+- Tempera 渲染层不消费音频（`audioPower`/`audioBands` 只传给共享背景层）。
 
 ## Host surfaces
 
@@ -147,7 +159,7 @@ Visualizer 消费已解析的 `LyricData` / `Line` / `Word`，不负责解析 `.
 ```powershell
 rg -n "VisualizerRenderer|VisualizerSharedProps|VisualizerMode|import.meta.glob|applyVisualizerTuning" src/components/visualizer src/types.ts
 rg -n "getLineRenderHints|getLineRenderEndTime|buildPostLyricLayoutUnits|buildLineGraphemeTimeline" src/components/visualizer src/utils/lyrics
-rg -n "Pendolo|Sonnet|Diorama|Pixi|Canvas|pretext" src/components/visualizer
+rg -n "Pendolo|Sonnet|Tempera|Diorama|Pixi|Canvas|pretext" src/components/visualizer
 ```
 
 先看命中的入口和相邻 helper；只有需要修改具体模式时才继续读取该模式目录。

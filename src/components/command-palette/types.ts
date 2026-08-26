@@ -6,6 +6,13 @@ import type { HomeViewTab, LatentBackgroundTuning, LocalSong, PlayerState, Repla
 import type { AppLanguagePreference } from '../../i18n/config';
 import type { PanelTab } from '../UnifiedPanel';
 import type { SettingsModalInitialTab, SettingsSubviewId } from '../../stores/useSettingsUiStore';
+import type { AudioEqualizerModeId } from '../../utils/audioEqualizer';
+import type { ThemeGenerationSource } from '../../services/themePreferences';
+import type { PersonalFmSelection } from '../../services/onlineMusic/fmModes';
+import type { QueueBatchAction, QueueFacetKind } from './queueQuery';
+import type { CommandPlatform } from './availability';
+import type { CommandPaletteSurface } from './surfaces/types';
+import type { CommandSyntaxSpec } from './syntax/types';
 
 // src/components/command-palette/types.ts
 // Shared command palette contracts used by the registry, hook, and UI shell.
@@ -22,8 +29,24 @@ export type CommandPaletteCommand = {
     textSource?: 'i18n' | 'runtime';
     icon?: LucideIcon;
     keywords: string[];
-    placeholder?: string;
+    placeholder?: (context: CommandPaletteContext) => string;
     requiresInput?: boolean;
+    /** Environment gating: which platforms ship this feature at all. */
+    platform?: CommandPlatform[];
+    /** State gating: whether the command is worth offering right now. */
+    isAvailable?: (context?: CommandPaletteContext) => boolean;
+    /** Kept out of match results, the all-commands list, and the pinned-command picker. */
+    hidden?: boolean;
+    /** Global shortcut that opens the palette straight into this command. */
+    openHotkey?: { key: string; ctrl?: boolean };
+    /** Vim-style key sequence that runs this command from execute mode. Omit for anything
+     *  dangerous, irreversible, or needing confirmation. Must stay prefix-free registry-wide. */
+    executeShortcut?: string;
+    /** Panel body this command renders instead of the default match list. */
+    surface?: CommandPaletteSurface;
+    /** `--flag @facet:value` dialect this command accepts, parsed by ./syntax. */
+    syntax?: CommandSyntaxSpec;
+    getInitialInput?: (context: CommandPaletteContext) => string;
     getPreview?: (input: string, context: CommandPaletteContext) => string | null;
     queueIndex?: number;
     queueSong?: SongResult;
@@ -35,25 +58,22 @@ export type CommandPaletteMatch = {
     score: number;
     input: string;
     previewText?: string | null;
+    queueReasons?: QueueFacetKind[];
 };
 
-export type CommandPaletteContext = {
+// Capabilities every command may reach for, regardless of its group.
+export type CommandPaletteSharedContext = {
+    t: (key: string, fallback?: string) => string;
+    setStatusMsg: React.Dispatch<React.SetStateAction<StatusMessage | null>>;
+    currentSong: SongResult | null;
+    playerState: PlayerState;
+};
+
+export type CommandPaletteSearchContext = {
     currentSearchSourceTab: SearchSource;
     localSongs: LocalSong[];
     localLibraryCatalog: LocalLibraryDisplayCatalog;
-    playerState: PlayerState;
-    t: (key: string, fallback?: string) => string;
-    setStatusMsg: React.Dispatch<React.SetStateAction<StatusMessage | null>>;
-    openSettings: (initialTab?: SettingsModalInitialTab, initialSubview?: SettingsSubviewId | null) => void;
-    navigateToHome: () => void;
-    navigateToPlayer: () => void;
     navigateToSearch: (args: { query: string; sourceTab: SearchSource; replace?: boolean; returnView?: SearchReturnView; }) => void;
-    toggleBrowserFullscreen: () => Promise<boolean>;
-    toggleRemoteControlWindow: () => Promise<boolean>;
-    toggleMainWindowAlwaysOnTop: () => Promise<boolean>;
-    setHomeViewTab: (tab: HomeViewTab) => void;
-    setPanelTab: (tab: PanelTab) => void;
-    setIsPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
     submitSearch: (args: {
         query?: string;
         sourceTab: SearchSource;
@@ -64,53 +84,103 @@ export type CommandPaletteContext = {
         };
         returnView?: SearchReturnView;
     }) => Promise<boolean>;
+};
+
+export type CommandPalettePlaybackContext = {
+    volume: number;
+    isMuted: boolean;
+    setVolume: (volume: number) => void;
+    previewVolume: (volume: number) => void;
     togglePlay: () => void;
     toggleLoop: () => void;
-    onReplayGainModeChange: (mode: ReplayGainMode) => void;
-    openAudioEqualizer: () => void;
-    handleNextTrack: () => void;
-    handlePrevTrack: () => void;
-    shuffleQueue: () => void;
-    playQueue: SongResult[];
+    next: () => void;
+    prev: () => void;
+    queue: SongResult[];
     playSong: (song: SongResult, queue?: SongResult[]) => void | Promise<void>;
+    shuffleQueue: () => void;
+    clearQueue: () => void;
+    applyQueueBatchOperation: (action: QueueBatchAction, targetIndices: number[]) => boolean;
+    removeQueueSong: (index: number) => void;
+    moveQueueSongToNext: (index: number) => void;
+    moveQueueSongToEnd: (index: number) => void;
+    setReplayGainMode: (mode: ReplayGainMode) => void;
+    /** Personal FM owns the queue while it is on air; queue commands stand down. */
+    isFmMode: boolean;
+    personalFmSelection: PersonalFmSelection;
+    /** Only the providers that actually implement FM modes offer the picker. */
+    isPersonalFmModeSupported: boolean;
+    setPersonalFmSelection: (selection: PersonalFmSelection) => Promise<void> | void;
+    openAudioEqualizer: () => void;
+    applyAudioSoundPreset: (modeId: AudioEqualizerModeId) => void;
+    runAutoMatchBestLyric: () => Promise<boolean>;
+};
+
+export type CommandPaletteNavigationContext = {
+    navigateToHome: () => void;
+    navigateToPlayer: () => void;
+    setHomeViewTab: (tab: HomeViewTab) => void;
+    toggleBrowserFullscreen: () => Promise<boolean>;
+    toggleRemoteControlWindow: () => Promise<boolean>;
+    toggleMainWindowAlwaysOnTop: () => Promise<boolean>;
+};
+
+export type CommandPalettePanelContext = {
+    setPanelTab: (tab: PanelTab) => void;
+    setIsPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
+export type CommandPaletteSettingsContext = {
+    openSettings: (initialTab?: SettingsModalInitialTab, initialSubview?: SettingsSubviewId | null) => void;
+    setIsUserGuideModalOpen: (isOpen: boolean) => void;
+    setAppLanguagePreference: (preference: AppLanguagePreference) => Promise<void> | void;
+    toggleTransparentBackground: () => void;
+    toggleDaylightMode: () => void;
+    toggleBottomSubtitleOverlay: () => void;
+    subtitleContentMode: SubtitleContentMode;
+    cycleSubtitleContentMode: () => void;
+    toggleSubtitleOverlayBackground: () => void;
+    toggleAlwaysShowPlayerBackButton: () => void;
+    toggleAlwaysShowTrackSwitchButtons: () => void;
+    toggleAlwaysShowMainWindowTitlebar: () => void;
+    voiceInputPauseSupported: boolean;
+    toggleVoiceInputPause: () => void;
+    toggleCloseMainPanel: () => void;
+    /** 开机自启只在 macOS / Windows 生效，Linux 上据此隐藏命令而不是给一个无效开关。 */
+    launchAtLoginSupported: boolean;
+    toggleLaunchAtLogin: () => void;
+    toggleAutoplayOnLaunch: () => void;
+    toggleRememberPlaybackPosition: () => void;
+    togglePreventDisplaySleepDuringPlayback: () => void;
+    toggleWallpaperMode: () => void;
     canGenerateAITheme: boolean;
     isGeneratingTheme: boolean;
     generateAITheme: () => void;
+    openThemeQuickEditor: () => void;
+    canOpenThemeQuickEditor: boolean;
+    themeGenerationSource: ThemeGenerationSource;
+    setThemeGenerationSource: (source: ThemeGenerationSource) => void;
+};
+
+export type CommandPaletteVisualizerContext = {
+    /** The pickers state the current mode in their header, the way volume states its percent. */
+    visualizerMode: VisualizerMode;
+    /** Null means "no stored choice"; the picker resolves it against the registry default. */
+    visualizerBackgroundMode: VisualizerBackgroundMode | null;
     setVisualizerMode: (mode: VisualizerMode) => void;
-    randomVisualizerModePerSong: boolean;
     toggleRandomVisualizerModePerSong: () => void;
     setVisualizerBackgroundMode: (mode: VisualizerBackgroundMode) => void;
     setMonetBackgroundTuning: (patch: Partial<MonetBackgroundTuning>) => void;
     setLatentBackgroundTuning: (patch: Partial<LatentBackgroundTuning>) => void;
-    toggleTransparentBackground: () => void;
-    hideBottomSubtitleOverlay: boolean;
-    toggleBottomSubtitleOverlay: () => void;
-    subtitleContentMode: SubtitleContentMode;
-    cycleSubtitleContentMode: () => void;
-    subtitleOverlayBackground: boolean;
-    toggleSubtitleOverlayBackground: () => void;
-    alwaysShowPlayerBackButton: boolean;
-    toggleAlwaysShowPlayerBackButton: () => void;
-    alwaysShowMainWindowTitlebar: boolean;
-    toggleAlwaysShowMainWindowTitlebar: () => void;
-    toggleDaylightMode: () => void;
-    voiceInputPauseEnabled: boolean;
-    voiceInputPauseSupported: boolean;
-    toggleVoiceInputPause: () => void;
-    closeMainPanelEnabled: boolean;
-    toggleCloseMainPanel: () => void;
-    launchAtLogin: boolean;
-    launchAtLoginSupported: boolean;
-    toggleLaunchAtLogin: () => void;
-    autoplayOnLaunch: boolean;
-    toggleAutoplayOnLaunch: () => void;
-    rememberPlaybackPosition: boolean;
-    toggleRememberPlaybackPosition: () => void;
-    preventDisplaySleepDuringPlayback: boolean;
-    togglePreventDisplaySleepDuringPlayback: () => void;
-    setAppLanguagePreference: (preference: AppLanguagePreference) => Promise<void> | void;
-    runAutoMatchBestLyric: () => Promise<boolean>;
-    setIsUserGuideModalOpen: (isOpen: boolean) => void;
-    openThemeQuickEditor: () => void;
-    canOpenThemeQuickEditor: boolean;
+};
+
+// Namespaces mirror CommandPaletteGroup one-to-one (plus `shared`), so a command's group
+// tells you where to look for its dependencies. Cross-group access stays legal but visible.
+export type CommandPaletteContext = {
+    shared: CommandPaletteSharedContext;
+    search: CommandPaletteSearchContext;
+    playback: CommandPalettePlaybackContext;
+    navigation: CommandPaletteNavigationContext;
+    panel: CommandPalettePanelContext;
+    settings: CommandPaletteSettingsContext;
+    visualizer: CommandPaletteVisualizerContext;
 };

@@ -7,7 +7,7 @@
     "email": "setube@users.noreply.github.com"
   },
   "private": true,
-  "version": "0.6.16",
+  "version": "0.7.0",
   "license": "AGPL-3.0",
   "type": "module",
   "main": "electron/main.cjs",
@@ -16,6 +16,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:probe": "vite --open /dev-probe.html",
     "build": "npm run build:vercel-api && vite build",
     "build:vercel-api": "tsc -p api-ts/tsconfig.json",
     "preview": "vite preview",
@@ -29,13 +30,17 @@
     "manual:lyrics": "npx tsx test/manual/netease_lyrics_cli.ts",
     "audit:lyrics-sources": "npx tsx test/manual/lyric-audit/index.ts",
     "probe:netease-xeapi": "node test/manual/netease_xeapi_probe.cjs",
+    "manual:wallpaper-watchdog": "npx tsx test/manual/wallpaper-watchdog-sim.ts",
     "stage:client": "vite --open /stage-client.html",
-    "dev:electron": "cross-env ELECTRON_DEV=true concurrently -k \"vite\" \"wait-on tcp:3000 && electron .\"",
-    "dev:electron:dist": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true vite build && electron .",
-    "dev:electron:dist:swiftshader": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true FOLIA_LINUX_GRAPHICS_MODE=swiftshader vite build && electron .",
-    "dev:electron:dist:software": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true FOLIA_LINUX_GRAPHICS_MODE=software vite build && electron .",
-    "build:electron:dir": "cross-env ELECTRON_DEV=false ELECTRON=true vite build && electron-builder --linux dir",
-    "build:electron": "cross-env ELECTRON_DEV=false ELECTRON=true vite build && electron-builder",
+    "dev:electron": "cross-env ELECTRON_DEV=true FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer concurrently -k \"vite\" \"wait-on tcp:3000 && electron .\"",
+    "dev:electron:update-preview": "cross-env ELECTRON_DEV=true FOLIA_DEV_UPDATE_PREVIEW=true FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer concurrently -k \"vite\" \"wait-on tcp:3000 && electron .\"",
+    "dev:electron:wallpaper": "npm run build:windowtolayer && npm run dev:electron",
+    "dev:electron:dist": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer vite build && electron .",
+    "dev:electron:dist:swiftshader": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true FOLIA_LINUX_GRAPHICS_MODE=swiftshader FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer vite build && electron .",
+    "dev:electron:dist:software": "cross-env ELECTRON_DEV=false ELECTRON=true ELECTRON_LINUX_PACKAGED_GRAPHICS=true FOLIA_LINUX_GRAPHICS_MODE=software FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer vite build && electron .",
+    "build:electron:dir": "cross-env ELECTRON_DEV=false ELECTRON=true vite build && npm run build:windowtolayer && electron-builder --linux dir",
+    "build:electron": "cross-env ELECTRON_DEV=false ELECTRON=true vite build && npm run build:windowtolayer && electron-builder",
+    "build:windowtolayer": "node packaging/linux/build-windowtolayer.mjs",
     "contributors:add": "npx all-contributors-cli add",
     "contributors:generate": "npx all-contributors-cli generate"
   },
@@ -85,6 +90,14 @@
       {
         "from": "packaging/linux/README-LINUX.txt",
         "to": "linux/README-LINUX.txt"
+      },
+      {
+        "from": "build",
+        "to": ".",
+        "filter": [
+          "windowtolayer",
+          "windowtolayer-COPYING"
+        ]
       }
     ],
     "mac": {
@@ -138,14 +151,14 @@
     "@applemusic-like-lyrics/ttml": "^1.0.1",
     "@chenglou/pretext": "^0.0.8",
     "@google/genai": "^2.16.0",
-    "@neteasecloudmusicapienhanced/api": "^4.40.0",
+    "@neteasecloudmusicapienhanced/api": "^4.40.1",
     "@paper-design/shaders-react": "^0.0.80",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "@react-three/postprocessing": "^3.0.5",
     "@xhayper/discord-rpc": "^1.3.4",
     "@xmldom/xmldom": "^0.9.10",
-    "@yakult-green-tea/qq-music-api": "^2.3.0",
+    "@yakult-green-tea/qq-music-api": "^3.1.0",
     "axios": "^1.18.1",
     "blueimp-md5": "^2.19.0",
     "buffer": "^6.0.3",

@@ -10,6 +10,7 @@ import {
 } from '../../../types';
 import { applyVisualizerTuningsToSettings } from '../../visualizer/tuningRegistry';
 import { useSettingsUiStore } from '../../../stores/useSettingsUiStore';
+import { ObsCopyCssButton } from '../../shared/ObsCopyCssButton';
 import { mergeUrlBackgroundList } from '../../../utils/urlBackground';
 import { compressConfig, decompressConfig, readSavedCustomTheme } from '../../../utils/appearanceCodec';
 import { ACTIVATE_CUSTOM_THEME_KEY, buildImportPlan, THEME_DARK_KEY, THEME_LIGHT_KEY, type ImportPlan } from '../../../utils/appearanceImportPlan';
@@ -19,7 +20,8 @@ import { extractCfgFromInput } from '../../../utils/obsUrl';
 import { buildCurrentObsUrl } from '../../../utils/currentObsUrl';
 import { ObsCopyUrlButton } from '../../shared/ObsCopyUrlButton';
 import { resolveWebObsTarget, selectWebObsSource } from '../../../utils/webObsTarget';
-import { buildVisualSettingsConfig, hasCustomObsFont } from '../../../utils/visualSettingsConfig';
+import { buildVisualSettingsConfig, resolveObsCopyHintKey } from '../../../utils/visualSettingsConfig';
+import { isThemeGenerationSource, type ThemeGenerationSource } from '../../../services/themePreferences';
 
 // src/components/modal/settings/AppearanceSettingsSubview.tsx
 // Visual settings subview for theme presets, lyric renderer entry, layout settings, and configurations import/export.
@@ -39,6 +41,8 @@ type AppearanceSettingsSubviewProps = {
     onToggleFollowSystemTheme: (enabled: boolean) => void;
     onToggleCustomThemePreferred: (enabled: boolean) => void;
     onToggleSongThemeAutoSwitch: (enabled: boolean) => void;
+    themeGenerationSource: ThemeGenerationSource;
+    onChangeThemeGenerationSource: (source: ThemeGenerationSource) => void;
     onToggleTransparentPlayerBackground: (enabled: boolean) => void;
     onToggleAutoHidePlayerChrome: (enabled: boolean) => void;
     onSaveCustomTheme: (dualTheme: DualTheme) => void;
@@ -76,6 +80,8 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
     onToggleFollowSystemTheme,
     onToggleCustomThemePreferred,
     onToggleSongThemeAutoSwitch,
+    themeGenerationSource,
+    onChangeThemeGenerationSource,
     onToggleTransparentPlayerBackground,
     onToggleAutoHidePlayerChrome,
     onSaveCustomTheme,
@@ -165,6 +171,7 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
         monetTuning: state.monetTuning,
         pendoloTuning: state.pendoloTuning,
         sonnetTuning: state.sonnetTuning,
+        temperaTuning: state.temperaTuning,
         urlBackgroundList: state.urlBackgroundList,
         urlBackgroundSelectedId: state.urlBackgroundSelectedId,
         handleToggleFollowSystemTheme: state.setFollowSystemTheme,
@@ -178,6 +185,11 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
         handleToggleShowSubtitleTranslation: state.handleToggleShowSubtitleTranslation,
         handleSetSubtitleContentMode: state.handleSetSubtitleContentMode,
         handleToggleSubtitleOverlayBackground: state.handleToggleSubtitleOverlayBackground,
+        handleSetSubtitleOverlayOpacity: state.handleSetSubtitleOverlayOpacity,
+        handleToggleCoverColorBg: state.handleToggleCoverColorBg,
+        handleToggleStaticMode: state.handleToggleStaticMode,
+        handleToggleDisableVisualizerGeometricBackground: state.handleToggleDisableVisualizerGeometricBackground,
+        handleToggleDisableVisualizerVignette: state.handleToggleDisableVisualizerVignette,
         handleToggleShowHarmonySubtitle: state.handleToggleShowHarmonySubtitle,
         handleToggleHarmonySubtitleBackground: state.handleToggleHarmonySubtitleBackground,
         handleSetLyricsFontStyle: state.handleSetLyricsFontStyle,
@@ -204,6 +216,7 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
         handleSetMonetTuning: state.handleSetMonetTuning,
         handleSetPendoloTuning: state.handleSetPendoloTuning,
         handleSetSonnetTuning: state.handleSetSonnetTuning,
+        handleSetTemperaTuning: state.handleSetTemperaTuning,
         handleAddUrlBackgroundItem: state.handleAddUrlBackgroundItem,
         handleUpdateUrlBackgroundItem: state.handleUpdateUrlBackgroundItem,
         handleSetUrlBackgroundList: state.handleSetUrlBackgroundList,
@@ -282,9 +295,8 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
             await navigator.clipboard.writeText(url);
             setCopiedType('obsurl');
             setTimeout(() => setCopiedType('none'), 2000);
-            store.statusSetter?.(hasCustomObsFont()
-                ? { type: 'info', text: t('options.obsUrlCustomFontHint') }
-                : { type: 'success', text: t('status.copied') });
+            const hint = resolveObsCopyHintKey();
+            store.statusSetter?.({ type: hint.type, text: t(hint.key) });
         } catch (err) {
             // The URL is built asynchronously, so a browser that requires the write to stay inside the
             // click's own task can reject here. Say so instead of leaving the button looking inert.
@@ -376,6 +388,9 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
             if (has('subtitleOverlayBackground')) {
                 store.handleToggleSubtitleOverlayBackground(Boolean(config.subtitleOverlayBackground));
             }
+            if (has('subtitleOverlayOpacity')) {
+                store.handleSetSubtitleOverlayOpacity(config.subtitleOverlayOpacity);
+            }
             if (has('showHarmonySubtitle')) {
                 store.handleToggleShowHarmonySubtitle(Boolean(config.showHarmonySubtitle));
             }
@@ -388,6 +403,21 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
             }
             if (has('backgroundOpacity')) {
                 store.handleSetBackgroundOpacity(config.backgroundOpacity);
+            }
+            // Each of these four setters raises its own toast. They fire before the importSuccess
+            // message below, which writes the same single status slot last, so the user still ends
+            // on "imported" rather than on whichever toggle happened to be applied last.
+            if (has('useCoverColorBg')) {
+                store.handleToggleCoverColorBg(Boolean(config.useCoverColorBg));
+            }
+            if (has('disableVisualizerGeometricBackground')) {
+                store.handleToggleDisableVisualizerGeometricBackground(Boolean(config.disableVisualizerGeometricBackground));
+            }
+            if (has('disableVisualizerVignette')) {
+                store.handleToggleDisableVisualizerVignette(Boolean(config.disableVisualizerVignette));
+            }
+            if (has('staticMode')) {
+                store.handleToggleStaticMode(Boolean(config.staticMode));
             }
 
             if (has('lyricsFontStyle') && config.lyricsFontStyle) {
@@ -444,6 +474,7 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
                 if (has('monetTuning') && config.monetTuning) store.handleSetMonetTuning(config.monetTuning);
                 if (has('pendoloTuning') && config.pendoloTuning) store.handleSetPendoloTuning(config.pendoloTuning);
                 if (has('sonnetTuning') && config.sonnetTuning) store.handleSetSonnetTuning(config.sonnetTuning);
+                if (has('temperaTuning') && config.temperaTuning) store.handleSetTemperaTuning(config.temperaTuning);
             }
 
             if (has('monetBackgroundTuning') && config.monetBackgroundTuning) {
@@ -479,6 +510,9 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
             }
             if (has('songThemeAutoGenerateEnabled')) {
                 onToggleSongThemeAutoGenerate(Boolean(config.songThemeAutoGenerateEnabled));
+            }
+            if (has('themeGenerationSource') && isThemeGenerationSource(config.themeGenerationSource)) {
+                onChangeThemeGenerationSource(config.themeGenerationSource);
             }
             if (has('followSystemTheme')) {
                 store.handleToggleFollowSystemTheme(Boolean(config.followSystemTheme));
@@ -546,6 +580,38 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
                             <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{t('options.customTheme') || 'Custom'}</span>
                         </button>
                     </div>
+                    <div className={`p-3 rounded-xl border space-y-3 ${settingsCardClass}`}>
+                        <div className="space-y-1">
+                            <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                                {t('options.themeGenerationSource')}
+                            </div>
+                            <div className="text-xs opacity-50" style={{ color: 'var(--text-secondary)' }}>
+                                {t(themeGenerationSource === 'cover'
+                                    ? 'options.themeGenerationSourceCoverDesc'
+                                    : 'options.themeGenerationSourceAiDesc')}
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                            {(['ai', 'cover'] as ThemeGenerationSource[]).map(source => (
+                                <button
+                                    key={source}
+                                    type="button"
+                                    onClick={() => onChangeThemeGenerationSource(source)}
+                                    aria-pressed={themeGenerationSource === source}
+                                    className="px-3 py-2 rounded-lg border text-xs font-semibold transition-all"
+                                    style={{
+                                        ...getAccentOptionStyle(themeGenerationSource === source),
+                                        color: 'var(--text-primary)',
+                                        backgroundColor: themeGenerationSource === source
+                                            ? (isDaylight ? `${accentOutlineColor}12` : `${accentOutlineColor}18`)
+                                            : (isDaylight ? 'rgba(24, 24, 27, 0.035)' : 'rgba(9, 9, 11, 0.5)'),
+                                    }}
+                                >
+                                    {t(source === 'cover' ? 'options.themeGenerationSourceCover' : 'options.themeGenerationSourceAi')}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${settingsCardClass}`}>
                         <div className="space-y-1">
                             <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
@@ -607,7 +673,9 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
                                     {t('options.autoGenerateSongTheme')}
                                 </div>
                                 <div className="text-xs opacity-50" style={{ color: 'var(--text-secondary)' }}>
-                                    {t('options.autoGenerateSongThemeDesc')}
+                                    {t(themeGenerationSource === 'cover'
+                                        ? 'options.autoGenerateSongThemeCoverDesc'
+                                        : 'options.autoGenerateSongThemeDesc')}
                                 </div>
                             </div>
                             <button
@@ -830,6 +898,7 @@ const AppearanceSettingsSubview: React.FC<AppearanceSettingsSubviewProps> = ({
                                 disabled={webObsSource === null}
                             />
                         )}
+                        {!isElectron && <ObsCopyCssButton disabled={webObsSource === null} />}
                         <div className="flex-1 min-w-[20px]" />
                         <button
                             type="button"

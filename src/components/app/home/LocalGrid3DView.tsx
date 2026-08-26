@@ -1,13 +1,18 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, Loader2, Music, ListMusic, User, Disc3, RefreshCw } from 'lucide-react';
+import { FileUp, FolderOpen, Loader2, Music, ListMusic, User, Disc3, RefreshCw } from 'lucide-react';
 import DesktopGrid3DSurface, { DesktopGrid3DAction } from '../../folia-grid/DesktopGrid3DSurface';
 import { LocalLibraryGroup, LocalPlaylist, LocalSong, Theme } from '../../../types';
 import { GridViewCollectionDescriptor, createLocalGridViewCollection } from './gridViewCollectionAdapters';
 import { buildLocalGrid3DGroups } from './localGrid3DModel';
 import { useDebouncedFocusSync } from '../../../hooks/useDebouncedFocusSync';
 import { useLocalLibraryCatalog } from '../../../hooks/useLocalLibraryCatalog';
-import { createSafeObjectUrl, isBlob } from '../../../utils/blobGuards';
+import { buildLocalQueue } from '../../../services/playbackAdapters';
+import { createLocalPlaylist } from '../../../services/localPlaylistService';
+import { deleteSongsByIds, removeImportedRoot, resyncFolder } from '../../../services/localMusicService';
+import { loadLocalLibraryDirectoryTrees } from '../../../services/localLibraryDirectoryTree';
+import type { GridMapBatchConfig, GridMapBatchContext, GridMapDirectoryNode } from '../../folia-grid/gridMapBatch';
+import type { SongResult } from '../../../types';
 
 // src/components/app/home/LocalGrid3DView.tsx
 // Desktop-only local music Grid3D overview that opens GridView instead of legacy carousel details.
@@ -28,12 +33,17 @@ interface LocalGrid3DViewProps {
     focusedPlaylistIndex: number;
     setFocusedPlaylistIndex: (index: number) => void;
     onImportFolder: () => void;
+    onImportPlaylistFile?: (file: File) => Promise<void> | void;
     onRefreshFolders?: () => void;
     importButtonDisabled?: boolean;
     isImporting?: boolean;
     isRefreshing?: boolean;
     isScanInProgress?: boolean;
+    isImportingPlaylist?: boolean;
     onOpenGridView?: (collection: GridViewCollectionDescriptor) => void;
+    onPlayAll?: (songs: SongResult[]) => void;
+    onAddAllToQueue?: (songs: SongResult[]) => void;
+    onRefreshLocalSongs: () => Promise<void> | void;
     theme: Theme;
     isDaylight: boolean;
     hasFloatingPlayer?: boolean;
@@ -54,100 +64,54 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
     focusedPlaylistIndex,
     setFocusedPlaylistIndex,
     onImportFolder,
+    onImportPlaylistFile,
     onRefreshFolders,
     importButtonDisabled = false,
     isImporting = false,
     isRefreshing = false,
     isScanInProgress = false,
+    isImportingPlaylist = false,
     onOpenGridView,
+    onPlayAll,
+    onAddAllToQueue,
+    onRefreshLocalSongs,
     theme,
     isDaylight,
     hasFloatingPlayer = false,
     isInteractive = true,
 }) => {
     const { t } = useTranslation();
+    const playlistFileInputRef = useRef<HTMLInputElement>(null);
+    const [directoryTrees, setDirectoryTrees] = useState<GridMapDirectoryNode[]>([]);
+    const [directoryTreesLoaded, setDirectoryTreesLoaded] = useState(false);
     const catalog = useLocalLibraryCatalog(localSongs);
-    const { groups, coverSourceMap } = useMemo(() => {
-        const rawGroups = buildLocalGrid3DGroups(localSongs, localPlaylists, t, catalog.ready ? catalog : undefined);
-        const sourceMap = new Map<string, Blob | string | undefined>();
 
-        const processItems = (items: LocalLibraryGroup[]) => items.map(item => {
-            sourceMap.set(item.id, item.coverUrl);
-            return {
-                ...item,
-                coverUrl: undefined,
-            };
-        });
+    const refreshDirectoryTrees = React.useCallback(async () => {
+        try {
+            const trees = await loadLocalLibraryDirectoryTrees(localSongs);
+            setDirectoryTrees(trees);
+        } catch (error) {
+            console.warn('[LocalGrid3DView] Failed to load directory snapshots:', error);
+            setDirectoryTrees([]);
+        } finally {
+            setDirectoryTreesLoaded(true);
+        }
+    }, [localSongs]);
 
-        return {
-            groups: {
-                folders: processItems(rawGroups.folders),
-                albums: processItems(rawGroups.albums),
-                artists: processItems(rawGroups.artists),
-                playlists: processItems(rawGroups.playlists),
-            },
-            coverSourceMap: sourceMap,
-        };
-    }, [catalog.assignments, catalog.entities, catalog.ready, localPlaylists, localSongs, t]);
+    useEffect(() => {
+        void refreshDirectoryTrees();
+    }, [refreshDirectoryTrees]);
+    const groups = useMemo(() => buildLocalGrid3DGroups(
+        localSongs,
+        localPlaylists,
+        t,
+        catalog.ready ? catalog : undefined,
+    ), [catalog.assignments, catalog.entities, catalog.ready, localPlaylists, localSongs, t]);
 
     const [localFolderIndex, setLocalFolderIndex] = useDebouncedFocusSync(focusedFolderIndex, setFocusedFolderIndex);
     const [localAlbumIndex, setLocalAlbumIndex] = useDebouncedFocusSync(focusedAlbumIndex, setFocusedAlbumIndex);
     const [localArtistIndex, setLocalArtistIndex] = useDebouncedFocusSync(focusedArtistIndex, setFocusedArtistIndex);
     const [localPlaylistIndex, setLocalPlaylistIndex] = useDebouncedFocusSync(focusedPlaylistIndex, setFocusedPlaylistIndex);
-
-    const [groupCoverObjectUrls, setGroupCoverObjectUrls] = useState<Record<string, string>>({});
-
-    useEffect(() => {
-        const nextObjectUrls: Record<string, string> = {};
-        const createdUrls: string[] = [];
-
-        const allGroups = [
-            ...groups.folders,
-            ...groups.albums,
-            ...groups.artists,
-            ...groups.playlists,
-        ];
-
-        for (const group of allGroups) {
-            const source = coverSourceMap.get(group.id);
-            if (isBlob(source)) {
-                const url = createSafeObjectUrl(source);
-                if (!url) continue;
-                nextObjectUrls[group.id] = url;
-                createdUrls.push(url);
-            }
-        }
-
-        setGroupCoverObjectUrls(current => {
-            if (createdUrls.length === 0 && Object.keys(current).length === 0) {
-                return current;
-            }
-            return nextObjectUrls;
-        });
-
-        return () => {
-            createdUrls.forEach(url => URL.revokeObjectURL(url));
-        };
-    }, [groups, coverSourceMap]);
-
-    const groupsWithCovers = useMemo(() => {
-        const withCoverUrls = (items: typeof groups.folders) => items.map(group => {
-            const source = coverSourceMap.get(group.id);
-            const coverUrl = typeof source === 'string' ? source : groupCoverObjectUrls[group.id];
-
-            return {
-                ...group,
-                coverUrl,
-            };
-        });
-
-        return {
-            folders: withCoverUrls(groups.folders),
-            albums: withCoverUrls(groups.albums),
-            artists: withCoverUrls(groups.artists),
-            playlists: withCoverUrls(groups.playlists),
-        };
-    }, [coverSourceMap, groupCoverObjectUrls, groups]);
 
     const sections = useMemo(() => [
         {
@@ -155,7 +119,7 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
             row: 0 as LocalRow,
             label: t('localMusic.foldersAndPlaylists'),
             icon: <FolderOpen size={13} />,
-            items: groupsWithCovers.folders,
+            items: groups.folders,
             focusedIndex: localFolderIndex,
             setFocusedIndex: setLocalFolderIndex,
             emptyMessage: t('localMusic.noFoldersFound'),
@@ -165,7 +129,7 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
             row: 1 as LocalRow,
             label: t('localMusic.albums'),
             icon: <Disc3 size={13} />,
-            items: groupsWithCovers.albums,
+            items: groups.albums,
             focusedIndex: localAlbumIndex,
             setFocusedIndex: setLocalAlbumIndex,
             emptyMessage: t('localMusic.noAlbumsFound'),
@@ -175,7 +139,7 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
             row: 2 as LocalRow,
             label: t('localMusic.artists'),
             icon: <User size={13} />,
-            items: groupsWithCovers.artists,
+            items: groups.artists,
             focusedIndex: localArtistIndex,
             setFocusedIndex: setLocalArtistIndex,
             emptyMessage: t('localMusic.noArtistsFound'),
@@ -185,7 +149,7 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
             row: 3 as LocalRow,
             label: t('localMusic.customPlaylists') || t('home.playlists'),
             icon: <ListMusic size={13} />,
-            items: groupsWithCovers.playlists,
+            items: groups.playlists,
             focusedIndex: localPlaylistIndex,
             setFocusedIndex: setLocalPlaylistIndex,
             emptyMessage: t('localMusic.noPlaylistsFound'),
@@ -195,7 +159,7 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
         localArtistIndex,
         localFolderIndex,
         localPlaylistIndex,
-        groupsWithCovers,
+        groups,
         setLocalAlbumIndex,
         setLocalArtistIndex,
         setLocalFolderIndex,
@@ -204,6 +168,52 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
     ]);
 
     const activeSection = sections.find(section => section.row === activeRow) ?? sections[0];
+
+    const resolveBatchSongs = React.useCallback((context: GridMapBatchContext) => {
+        const songsById = new Map(localSongs.map(song => [song.id, song]));
+        return context.trackIds
+            .map(id => songsById.get(id))
+            .filter((song): song is LocalSong => Boolean(song));
+    }, [localSongs]);
+
+    const localBatchConfig = useMemo<GridMapBatchConfig | undefined>(() => {
+        if (!['folders', 'albums', 'artists'].includes(activeSection.key)) return undefined;
+
+        const baseConfig: GridMapBatchConfig = {
+            selectionType: activeSection.key as 'folders' | 'albums' | 'artists',
+            ...(activeSection.key === 'folders' ? { directoryTrees } : {}),
+            onPlay: context => {
+                const queue = buildLocalQueue(resolveBatchSongs(context), undefined, catalog.ready ? catalog : undefined);
+                if (queue.length > 0) onPlayAll?.(queue);
+            },
+            onAddToQueue: context => {
+                const queue = buildLocalQueue(resolveBatchSongs(context), undefined, catalog.ready ? catalog : undefined);
+                if (queue.length > 0) onAddAllToQueue?.(queue);
+            },
+            onCreatePlaylist: async (name, context) => {
+                await createLocalPlaylist(name, resolveBatchSongs(context));
+                await onRefreshLocalSongs();
+            },
+        };
+
+        if (activeSection.key !== 'folders') return baseConfig;
+
+        return {
+            ...baseConfig,
+            onRemove: async context => {
+                await deleteSongsByIds(context.trackIds);
+                await onRefreshLocalSongs();
+            },
+            onRescanRoot: async rootPath => {
+                await resyncFolder(rootPath);
+                await onRefreshLocalSongs();
+            },
+            onRemoveRoot: async rootPath => {
+                await removeImportedRoot(rootPath);
+                await onRefreshLocalSongs();
+            },
+        };
+    }, [activeSection.key, catalog, directoryTrees, onAddAllToQueue, onPlayAll, onRefreshLocalSongs, resolveBatchSongs]);
 
     const tabs: DesktopGrid3DAction[] = sections.map(section => ({
         id: section.key,
@@ -230,9 +240,17 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
             onClick: onRefreshFolders || (() => {}),
             title: t('options.refresh'),
         },
+        {
+            id: 'import-playlist',
+            label: isImportingPlaylist ? t('localMusic.importingPlaylist') : t('localMusic.importPlaylist'),
+            icon: isImportingPlaylist ? <Loader2 size={13} className="animate-spin" /> : <FileUp size={13} />,
+            disabled: importButtonDisabled || isImportingPlaylist,
+            onClick: () => playlistFileInputRef.current?.click(),
+            title: t('localMusic.importPlaylist'),
+        },
     ];
 
-    if (localSongs.length === 0) {
+    if (directoryTreesLoaded && localSongs.length === 0 && directoryTrees.length === 0) {
         return (
             <div className="w-full h-full flex flex-col items-center justify-center gap-4 opacity-60">
                 <Music size={64} />
@@ -250,34 +268,49 @@ export const LocalGrid3DView: React.FC<LocalGrid3DViewProps> = ({
     }
 
     return (
-        <DesktopGrid3DSurface
-            title={String(activeSection.label)}
-            mapButtonLabel={t('home.allAlbums')}
-            items={activeSection.items.map((item: any) => ({
-                id: item.id,
-                name: item.name,
-                coverUrl: item.coverUrl,
-                description: item.description,
-                trackCount: item.trackCount,
-                type: item.type,
-            }))}
-            focusedIndex={activeSection.focusedIndex}
-            onFocusedIndexChange={activeSection.setFocusedIndex}
-            onSelect={(_, index) => {
-                const group = activeSection.items[index];
-                if (group) {
-                    onOpenGridView?.(createLocalGridViewCollection(group));
-                }
-            }}
-            tabs={tabs}
-            actions={actions}
-            emptyMessage={activeSection.emptyMessage}
-            theme={theme}
-            isDaylight={isDaylight}
-            isInteractive={isInteractive}
-            hasFloatingPlayer={hasFloatingPlayer}
-            playlistVisibilityScope="local"
-        />
+        <>
+            <input
+                ref={playlistFileInputRef}
+                type="file"
+                accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl"
+                className="hidden"
+                onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = '';
+                    if (file) void onImportPlaylistFile?.(file);
+                }}
+            />
+            <DesktopGrid3DSurface
+                title={String(activeSection.label)}
+                mapButtonLabel={t('home.allAlbums')}
+                items={activeSection.items.map((item: any) => ({
+                    id: item.id,
+                    name: item.name,
+                    coverUrl: item.coverUrl,
+                    description: item.description,
+                    trackCount: item.trackCount,
+                    type: item.type,
+                    trackIds: item.songs.map((song: LocalSong) => song.id),
+                }))}
+                focusedIndex={activeSection.focusedIndex}
+                onFocusedIndexChange={activeSection.setFocusedIndex}
+                onSelect={(_, index) => {
+                    const group = activeSection.items[index];
+                    if (group) {
+                        onOpenGridView?.(createLocalGridViewCollection(group));
+                    }
+                }}
+                tabs={tabs}
+                actions={actions}
+                emptyMessage={activeSection.emptyMessage}
+                theme={theme}
+                isDaylight={isDaylight}
+                isInteractive={isInteractive}
+                hasFloatingPlayer={hasFloatingPlayer}
+                playlistVisibilityScope="local"
+                batchConfig={localBatchConfig}
+            />
+        </>
     );
 };
 

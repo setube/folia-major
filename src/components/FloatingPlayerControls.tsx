@@ -5,6 +5,19 @@ import { PlayerState, LyricData, Theme, type PlayerLoopMode } from '../types';
 import LyricsTimelineModal from './modal/LyricsTimelineModal';
 import ExpandedView from './player-controls/ExpandedView';
 import CollapsedView from './player-controls/CollapsedView';
+
+export interface TrackNavigation {
+    /** 当前曲目的稳定身份，用于识别「确实换歌了」；相邻两首同名时标题字符串不变，不能拿标题判断 */
+    currentTrackKey: string;
+    onPrev: () => void;
+    onNext: () => void;
+    canPrev: boolean;
+    canNext: boolean;
+    prevTitle: string | null;
+    nextTitle: string | null;
+    prevLabel: string;
+    nextLabel: string;
+}
 import { buildControlSurface } from './player-controls/controlSurface';
 import { useHoverExpansion } from './player-controls/useHoverExpansion';
 
@@ -48,6 +61,7 @@ interface FloatingPlayerControlsProps {
     isHidden?: boolean;
     hideControlBar?: boolean;
     controlsDisabled?: boolean;
+    trackNavigation?: TrackNavigation | null;
 }
 
 const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
@@ -80,6 +94,7 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
     isHidden = false,
     hideControlBar = false,
     controlsDisabled = false,
+    trackNavigation = null,
 }) => {
     const tokens = buildControlSurface(theme, isDaylight);
     const { isHovered, handleMouseEnter, handleMouseLeave } = useHoverExpansion();
@@ -164,6 +179,10 @@ const FloatingPlayerControls: React.FC<FloatingPlayerControlsProps> = ({
                                     hasLyrics={!!lyrics}
                                     tokens={tokens}
                                     controlsDisabled={controlsDisabled}
+                                    canPrevTrack={trackNavigation?.canPrev}
+                                    canNextTrack={trackNavigation?.canNext}
+                                    prevTrackTitle={trackNavigation?.prevTitle ?? null}
+                                    nextTrackTitle={trackNavigation?.nextTitle ?? null}
                                 />
                             ) : (
                                 <CollapsedView

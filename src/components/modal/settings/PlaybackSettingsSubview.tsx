@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { AudioLines, AudioWaveform, History, Monitor, Play, PlayCircle, RefreshCw, Rocket, Settings2 } from 'lucide-react';
+import { AudioLines, AudioWaveform, ChevronRight, History, Monitor, Play, PlayCircle, RefreshCw, Rocket, Settings2, Timer } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import type { LocalLyricsPriority, PlaylistEntryBehavior, QueueAddBehavior, ReplayGainMode, Theme } from '../../../types';
 import type { AudioFadeDuration } from '../../../utils/audioFade';
 import { useSettingsUiStore } from '../../../stores/useSettingsUiStore';
+import { useAudioOutputDevices } from '../../../hooks/useAudioOutputDevices';
 import { CustomSelect } from '../../shared/CustomSelect';
 import { LYRIC_MATCH_SOURCES } from '../../../utils/lyrics/lyricMatchSources';
 import { getLyricProviderPreferenceLabel } from '../../../utils/lyrics/lyricSourceLabels';
@@ -12,19 +13,14 @@ import { getLyricProviderPreferenceLabel } from '../../../utils/lyrics/lyricSour
 // src/components/modal/settings/PlaybackSettingsSubview.tsx
 // Playback behavior and output-device settings extracted from the global settings modal.
 
-interface AudioOutputDeviceOption {
-    deviceId: string;
-    label: string;
-}
-
 interface MediaDevicesWithAudioOutput extends MediaDevices {
     selectAudioOutput?: (options?: { deviceId?: string; }) => Promise<{ deviceId: string; label?: string; }>;
 }
 
 type PlaybackSettingsSubviewProps = {
-    isOpen: boolean;
     isDaylight: boolean;
     onAudioOutputDeviceChange: (deviceId: string) => Promise<boolean> | boolean;
+    onOpenGlobalLyricOffsetSettings: () => void;
     replayGainMode: ReplayGainMode;
     onReplayGainModeChange: (mode: ReplayGainMode) => void;
     settingsCardClass: string;
@@ -32,14 +28,10 @@ type PlaybackSettingsSubviewProps = {
     utilityGhostButtonClass: string;
 };
 
-const stopMediaStream = (stream: MediaStream | null) => {
-    stream?.getTracks().forEach(track => track.stop());
-};
-
 const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
-    isOpen,
     isDaylight,
     onAudioOutputDeviceChange,
+    onOpenGlobalLyricOffsetSettings,
     replayGainMode,
     onReplayGainModeChange,
     settingsCardClass,
@@ -56,6 +48,7 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         playlistEntryBehavior,
         audioFadeEnabled,
         audioFadeDuration,
+        globalLyricTimelineOffsetMs,
         onToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange,
         onLocalLyricsPriorityChange,
@@ -76,6 +69,7 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         playlistEntryBehavior: state.playlistEntryBehavior,
         audioFadeEnabled: state.audioFadeEnabled,
         audioFadeDuration: state.audioFadeDuration,
+        globalLyricTimelineOffsetMs: state.globalLyricTimelineOffsetMs,
         onToggleAutoUseBestLyric: state.handleToggleAutoUseBestLyric,
         onPreferredAlternativeLyricSourceChange: state.handleSetPreferredAlternativeLyricSource,
         onLocalLyricsPriorityChange: state.handleSetLocalLyricsPriority,
@@ -88,15 +82,19 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
         onToggleAutoplayOnLaunch: state.handleToggleAutoplayOnLaunch,
         onToggleRememberPlaybackPosition: state.handleToggleRememberPlaybackPosition,
     })));
-    const [audioOutputDevices, setAudioOutputDevices] = useState<AudioOutputDeviceOption[]>([]);
-    const [isAudioOutputDevicesLoading, setIsAudioOutputDevicesLoading] = useState(false);
-    const [audioOutputDevicesError, setAudioOutputDevicesError] = useState<string | null>(null);
+    const {
+        devices: audioOutputDevices,
+        ensureLoaded: ensureAudioOutputDevicesLoaded,
+        errorKey: audioOutputDevicesErrorKey,
+        hasLoaded: hasLoadedAudioOutputDevices,
+        isLoading: isAudioOutputDevicesLoading,
+        isSupported: supportsAudioOutputSelection,
+        refresh: refreshAudioOutputDevices,
+        selectedDeviceLabel: selectedAudioOutputLabel,
+        setErrorKey: setAudioOutputDevicesErrorKey,
+    } = useAudioOutputDevices(audioOutputDeviceId);
     const [isSelectingAudioOutput, setIsSelectingAudioOutput] = useState(false);
     const mediaDevicesWithAudioOutput = navigator.mediaDevices as MediaDevicesWithAudioOutput | undefined;
-    const supportsAudioOutputSelection = typeof window !== 'undefined'
-        && typeof navigator !== 'undefined'
-        && typeof navigator.mediaDevices?.enumerateDevices === 'function'
-        && 'setSinkId' in HTMLMediaElement.prototype;
     const accentOutlineColor = theme?.accentColor || (isDaylight ? '#44403c' : '#f4f4f5');
     const toggleOffBackgroundClass = isDaylight ? 'bg-zinc-300/90' : 'bg-white/10';
 
@@ -125,50 +123,8 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
             }
     );
 
-    const loadAudioOutputDevices = async () => {
-        if (!supportsAudioOutputSelection) {
-            setAudioOutputDevices([]);
-            setAudioOutputDevicesError(t('options.audioOutputUnsupported'));
-            return;
-        }
-
-        setIsAudioOutputDevicesLoading(true);
-        setAudioOutputDevicesError(null);
-
-        let permissionProbeStream: MediaStream | null = null;
-
-        try {
-            let devices = await navigator.mediaDevices.enumerateDevices();
-            const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
-            const hasMissingLabels = audioOutputs.some(device => !device.label?.trim());
-
-            if (hasMissingLabels && typeof navigator.mediaDevices.getUserMedia === 'function') {
-                try {
-                    permissionProbeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    devices = await navigator.mediaDevices.enumerateDevices();
-                } catch (permissionError) {
-                    console.warn('[PlaybackSettingsSubview] Audio permission probe failed', permissionError);
-                }
-            }
-
-            const outputs = devices
-                .filter(device => device.kind === 'audiooutput')
-                .map((device, index) => ({
-                    deviceId: device.deviceId,
-                    label: device.label || `${t('options.audioOutputUnnamed')} ${index + 1}`,
-                }));
-            setAudioOutputDevices(outputs);
-        } catch (error) {
-            console.error('[PlaybackSettingsSubview] Failed to enumerate audio output devices', error);
-            setAudioOutputDevicesError(t('options.audioOutputLoadFailed'));
-        } finally {
-            stopMediaStream(permissionProbeStream);
-            setIsAudioOutputDevicesLoading(false);
-        }
-    };
-
     const handleSelectAudioOutputDevice = async (deviceId: string) => {
-        setAudioOutputDevicesError(null);
+        setAudioOutputDevicesErrorKey(null);
 
         if (!deviceId) {
             await onAudioOutputDeviceChange('');
@@ -185,25 +141,34 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
             const selected = await mediaDevicesWithAudioOutput.selectAudioOutput({ deviceId });
             const applied = await onAudioOutputDeviceChange(selected.deviceId);
             if (applied) {
-                await loadAudioOutputDevices();
+                await refreshAudioOutputDevices();
             } else {
-                setAudioOutputDevicesError(t('options.audioOutputSelectFailed'));
+                setAudioOutputDevicesErrorKey('options.audioOutputSelectFailed');
             }
         } catch (error) {
             console.error('[PlaybackSettingsSubview] Failed to select audio output device', error);
-            setAudioOutputDevicesError(t('options.audioOutputSelectFailed'));
+            setAudioOutputDevicesErrorKey('options.audioOutputSelectFailed');
         } finally {
             setIsSelectingAudioOutput(false);
         }
     };
 
-    useEffect(() => {
-        if (!isOpen) {
-            return;
-        }
+    const audioOutputOptions = [
+        { value: '', label: t('options.audioOutputDefault') },
+        ...audioOutputDevices.map((device, index) => ({
+            value: device.deviceId,
+            label: device.label || `${t('options.audioOutputUnnamed')} ${index + 1}`,
+        })),
+    ];
 
-        void loadAudioOutputDevices();
-    }, [isOpen]);
+    // The list is enumerated on demand, so a device saved in an earlier session needs its own entry
+    // until then; without it the picker would look empty while a non-default output is active.
+    if (audioOutputDeviceId && !audioOutputDevices.some(device => device.deviceId === audioOutputDeviceId)) {
+        audioOutputOptions.push({
+            value: audioOutputDeviceId,
+            label: selectedAudioOutputLabel || t('options.audioOutputUnnamed'),
+        });
+    }
 
     return (
         <div className="space-y-5">
@@ -469,6 +434,30 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                                 })}
                             </div>
                     </div>
+                    <button
+                        type="button"
+                        onClick={onOpenGlobalLyricOffsetSettings}
+                        className="w-full p-4 border-t text-left transition-colors hover:bg-white/8"
+                        style={{ borderColor: 'var(--border-primary, rgba(255,255,255,0.06))' }}
+                    >
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="space-y-1">
+                                <div className="text-sm font-medium flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                                    <Timer size={14} />
+                                    {t('options.globalLyricTimelineOffset')}
+                                </div>
+                                <div className="text-[11px] opacity-50 max-w-[420px]" style={{ color: 'var(--text-secondary)' }}>
+                                    {t('options.globalLyricTimelineOffsetDesc')}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                <span className="font-mono text-xs opacity-70" style={{ color: 'var(--text-primary)' }}>
+                                    {globalLyricTimelineOffsetMs > 0 ? `+${globalLyricTimelineOffsetMs}` : globalLyricTimelineOffsetMs}ms
+                                </span>
+                                <ChevronRight size={18} className="opacity-60" style={{ color: 'var(--text-primary)' }} />
+                            </div>
+                        </div>
+                    </button>
                 </div>
             </section>
 
@@ -488,7 +477,7 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                         </div>
                         <button
                             type="button"
-                            onClick={() => void loadAudioOutputDevices()}
+                            onClick={() => void refreshAudioOutputDevices()}
                             disabled={!supportsAudioOutputSelection || isAudioOutputDevicesLoading || isSelectingAudioOutput}
                             className={`shrink-0 inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs transition-colors ${utilityGhostButtonClass} disabled:cursor-not-allowed disabled:opacity-45`}
                             style={{ color: 'var(--text-primary)' }}
@@ -509,14 +498,9 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                                 onChange={(val) => {
                                     void handleSelectAudioOutputDevice(val);
                                 }}
-                                options={[
-                                    { value: '', label: t('options.audioOutputDefault') },
-                                    ...audioOutputDevices.map((device, index) => ({
-                                        value: device.deviceId,
-                                        label: device.label || `${t('options.audioOutputUnnamed')} ${index + 1}`,
-                                    })),
-                                ]}
-                                disabled={isAudioOutputDevicesLoading || isSelectingAudioOutput}
+                                options={audioOutputOptions}
+                                onOpen={ensureAudioOutputDevicesLoaded}
+                                disabled={isSelectingAudioOutput}
                                 isDaylight={isDaylight}
                                 theme={theme}
                             />
@@ -529,13 +513,13 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                                         : (t('options.audioOutputDefaultDesc'))}
                             </div>
 
-                            {audioOutputDevicesError && (
+                            {audioOutputDevicesErrorKey && (
                                 <div className="text-xs opacity-60" style={{ color: 'var(--text-secondary)' }}>
-                                    {audioOutputDevicesError}
+                                    {t(audioOutputDevicesErrorKey)}
                                 </div>
                             )}
 
-                            {!isAudioOutputDevicesLoading && audioOutputDevices.length === 0 && !audioOutputDevicesError && (
+                            {hasLoadedAudioOutputDevices && !isAudioOutputDevicesLoading && audioOutputDevices.length === 0 && !audioOutputDevicesErrorKey && (
                                 <div className="text-xs opacity-60" style={{ color: 'var(--text-secondary)' }}>
                                     {t('options.audioOutputEmpty')}
                                 </div>

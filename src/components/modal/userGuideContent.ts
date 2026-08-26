@@ -12,8 +12,8 @@ export type UserGuideShortcut = {
 
 export type GuidePage = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
-export const USER_GUIDE_PAGE_COUNT = 6;
-export const USER_GUIDE_AUTO_OPEN_VERSION: string | null = '0.6.16';
+export const USER_GUIDE_PAGE_COUNT = 7;
+export const USER_GUIDE_AUTO_OPEN_VERSION: string | null = '0.7.0';
 
 export const PLAYER_PAGE_SHORTCUTS: UserGuideShortcut[] = [
     {
@@ -21,6 +21,13 @@ export const PLAYER_PAGE_SHORTCUTS: UserGuideShortcut[] = [
         titleKey: 'help.openCommandPalette',
         fallback: 'Open command palette',
         keys: ['S'],
+    },
+    {
+        id: 'open-command-palette-queue',
+        titleKey: 'help.openCommandPaletteQueue',
+        fallback: 'Open queue in command palette',
+        keys: ['Ctrl', 'P'],
+        separator: '+',
     },
     {
         id: 'play-pause',
@@ -59,6 +66,12 @@ export const PLAYER_PAGE_SHORTCUTS: UserGuideShortcut[] = [
         titleKey: 'help.toggleRightPanel',
         fallback: 'Toggle right panel',
         keys: ['P'],
+    },
+    {
+        id: 'cycle-right-panel-tabs',
+        titleKey: 'help.cycleRightPanelTabs',
+        fallback: 'Cycle open right panel tabs',
+        keys: ['Tab'],
     },
     {
         id: 'hide-player-chrome',

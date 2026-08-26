@@ -75,6 +75,7 @@ const FIELD_GROUPS: Record<string, ImportGroup> = {
     showSubtitleTranslation: 'visualizer',
     subtitleContentMode: 'visualizer',
     subtitleOverlayBackground: 'visualizer',
+    subtitleOverlayOpacity: 'visualizer',
     showHarmonySubtitle: 'visualizer',
     harmonySubtitleBackground: 'visualizer',
     visualizerTunings: 'visualizer',
@@ -89,6 +90,7 @@ const FIELD_GROUPS: Record<string, ImportGroup> = {
     monetTuning: 'visualizer',
     pendoloTuning: 'visualizer',
     sonnetTuning: 'visualizer',
+    temperaTuning: 'visualizer',
 
     lyricsFontStyle: 'fonts',
     lyricsFontScale: 'fonts',
@@ -106,6 +108,12 @@ const FIELD_GROUPS: Record<string, ImportGroup> = {
 
     visualizerBackgroundMode: 'background',
     backgroundOpacity: 'background',
+    useCoverColorBg: 'background',
+    disableVisualizerGeometricBackground: 'background',
+    disableVisualizerVignette: 'background',
+    // Static mode is presented under background rather than visualizer: what it actually does is
+    // drop the geometric background to save resources, which is how the settings panel describes it.
+    staticMode: 'background',
     monetBackgroundTuning: 'background',
     nomandBackgroundTuning: 'background',
     latentBackgroundTuning: 'background',
@@ -114,6 +122,7 @@ const FIELD_GROUPS: Record<string, ImportGroup> = {
 
     songThemeAutoSwitchEnabled: 'songTheme',
     songThemeAutoGenerateEnabled: 'songTheme',
+    themeGenerationSource: 'songTheme',
     followSystemTheme: 'theme',
 };
 
@@ -143,6 +152,7 @@ const TRUTHY_GUARDED_FIELDS = new Set([
     'monetTuning',
     'pendoloTuning',
     'sonnetTuning',
+    'temperaTuning',
     'monetBackgroundTuning',
     'nomandBackgroundTuning',
     'latentBackgroundTuning',
@@ -163,6 +173,7 @@ const BUNDLED_TUNING_FIELDS = new Set([
     'monetTuning',
     'pendoloTuning',
     'sonnetTuning',
+    'temperaTuning',
 ]);
 
 // Structural compare over the plain JSON the codec emits — enough for tunings and font arrays, and

@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronLeft, ChevronRight, Cpu, GamepadDirectional, Mic, Monitor, Moon, PlayCircle, RotateCcw, Settings2 } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, ChevronsLeftRight, Cpu, GamepadDirectional, Mic, Monitor, Moon, PlayCircle, RotateCcw, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import type { Theme, VisualizerFrameRate } from '../../../types';
@@ -49,6 +49,7 @@ const LabSettingsModal: React.FC<LabSettingsModalProps> = ({
         hidePlayerProgressBar,
         hidePlayerRightPanelButton,
         alwaysShowPlayerBackButton,
+        alwaysShowTrackSwitchButtons,
         alwaysShowMainWindowTitlebar,
         hidePlayerTranslationSubtitle,
         isDaylight,
@@ -59,6 +60,7 @@ const LabSettingsModal: React.FC<LabSettingsModalProps> = ({
         onToggleHidePlayerProgressBar,
         onToggleHidePlayerRightPanelButton,
         onToggleAlwaysShowPlayerBackButton,
+        onToggleAlwaysShowTrackSwitchButtons,
         onToggleAlwaysShowMainWindowTitlebar,
         onToggleHidePlayerTranslationSubtitle,
         onToggleHideTaskbarIcon,
@@ -75,6 +77,7 @@ const LabSettingsModal: React.FC<LabSettingsModalProps> = ({
         hidePlayerProgressBar: state.hidePlayerProgressBar,
         hidePlayerRightPanelButton: state.hidePlayerRightPanelButton,
         alwaysShowPlayerBackButton: state.alwaysShowPlayerBackButton,
+        alwaysShowTrackSwitchButtons: state.alwaysShowTrackSwitchButtons,
         alwaysShowMainWindowTitlebar: state.alwaysShowMainWindowTitlebar,
         hidePlayerTranslationSubtitle: state.hidePlayerTranslationSubtitle,
         isDaylight: state.isDaylight,
@@ -86,6 +89,7 @@ const LabSettingsModal: React.FC<LabSettingsModalProps> = ({
         onToggleHidePlayerProgressBar: state.handleToggleHidePlayerProgressBar,
         onToggleHidePlayerRightPanelButton: state.handleToggleHidePlayerRightPanelButton,
         onToggleAlwaysShowPlayerBackButton: state.handleToggleAlwaysShowPlayerBackButton,
+        onToggleAlwaysShowTrackSwitchButtons: state.handleToggleAlwaysShowTrackSwitchButtons,
         onToggleAlwaysShowMainWindowTitlebar: state.handleToggleAlwaysShowMainWindowTitlebar,
         onToggleHidePlayerTranslationSubtitle: state.handleToggleHidePlayerTranslationSubtitle,
         onToggleHideTaskbarIcon: state.handleToggleHideTaskbarIcon,
@@ -331,6 +335,19 @@ const LabSettingsModal: React.FC<LabSettingsModalProps> = ({
                                         </div>
                                     </div>
                                     {renderToggle(alwaysShowPlayerBackButton, () => onToggleAlwaysShowPlayerBackButton(!alwaysShowPlayerBackButton))}
+                                </div>
+
+                                <div className={`p-4 rounded-xl border flex items-center justify-between gap-4 ${settingsCardClass}`}>
+                                    <div className="space-y-1">
+                                        <div className="text-sm font-medium flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                                            <ChevronsLeftRight size={14} />
+                                            {t('options.alwaysShowTrackSwitchButtons')}
+                                        </div>
+                                        <div className="text-xs opacity-50 max-w-[320px]" style={{ color: 'var(--text-secondary)' }}>
+                                            {t('options.alwaysShowTrackSwitchButtonsDesc')}
+                                        </div>
+                                    </div>
+                                    {renderToggle(alwaysShowTrackSwitchButtons, () => onToggleAlwaysShowTrackSwitchButtons(!alwaysShowTrackSwitchButtons))}
                                 </div>
 
                                 <div className="border-t border-white/10 pt-5">

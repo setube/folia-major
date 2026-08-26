@@ -23,6 +23,7 @@ const DISCORD_PRESENCE_SNAPSHOT_INTERVAL_MS = 1000;
 
 type UseElectronPlaybackBridgeOptions = {
     isElectronWindow: boolean;
+    mainWindowClickThroughEnabled: boolean;
     setIsTitlebarRevealed: React.Dispatch<React.SetStateAction<boolean>>;
     isPlayerChromeHidden: boolean;
     setIsPlayerChromeHidden: React.Dispatch<React.SetStateAction<boolean>>;
@@ -60,6 +61,7 @@ type UseElectronPlaybackBridgeOptions = {
     lyricTimelineOffsetMs?: number;
     onRemoteExportCommand?: (command: RemoteControlCommand) => boolean;
     onExternalPlayRequest?: (request: any) => Promise<void>;
+    onRemoteCycleLoopMode?: () => void;
     isLiked: boolean;
     onLike?: () => void;
     onOpenPlayer?: () => void;
@@ -73,6 +75,7 @@ const emptyPlaybackSyncBridgeStatus = (): ElectronPlaybackSyncBridgeStatus => ({
 
 export const useElectronPlaybackBridge = ({
     isElectronWindow,
+    mainWindowClickThroughEnabled,
     setIsTitlebarRevealed,
     isPlayerChromeHidden,
     setIsPlayerChromeHidden,
@@ -110,6 +113,7 @@ export const useElectronPlaybackBridge = ({
     lyricTimelineOffsetMs,
     onRemoteExportCommand,
     onExternalPlayRequest,
+    onRemoteCycleLoopMode,
     isLiked,
     onLike,
     onOpenPlayer,
@@ -198,6 +202,7 @@ export const useElectronPlaybackBridge = ({
             isStageActive: isNowPlayingStageActive,
             controlsDisabled: isNowPlayingControlDisabledRef.current,
             transparentModeEnabled: transparentPlayerBackground,
+            mainWindowClickThroughEnabled,
             mainWindowBorderVisible: showTransparentWindowBorder,
             playerChromeHidden: isPlayerChromeHidden,
             exportState,
@@ -297,7 +302,9 @@ export const useElectronPlaybackBridge = ({
     };
 
     useEffect(() => {
-        if (!isElectronWindow) {
+        // Click-through keeps forwarding mouse-move into the renderer, so the titlebar would keep
+        // revealing itself on a window the cursor cannot actually reach. Stop tracking while it is on.
+        if (!isElectronWindow || mainWindowClickThroughEnabled) {
             setIsTitlebarRevealed(false);
             return;
         }
@@ -316,7 +323,7 @@ export const useElectronPlaybackBridge = ({
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseleave', handleMouseLeave);
         };
-    }, [isElectronWindow, setIsTitlebarRevealed]);
+    }, [isElectronWindow, mainWindowClickThroughEnabled, setIsTitlebarRevealed]);
 
     // 托盘动作监听只在挂载时注册一次（依赖全是稳定 ref），直接闭包捕获会拿到首帧的旧回调，
     // 那时 currentSong 还是 null，喜欢/跳转都会静默失效。用 ref 取最新值，与 mediaSession*Ref 同一套路。
@@ -469,15 +476,26 @@ export const useElectronPlaybackBridge = ({
         publish({ includeLyrics: true });
         const intervalId = window.setInterval(() => publish(), 500);
 
-        const handleResize = () => publish();
+        let lastReportedDpr = window.devicePixelRatio || 1;
+        const handleResize = () => {
+            publish();
+            // Only report DPR when it actually changes (avoids unnecessary IPC round-trips).
+            const currentDpr = window.devicePixelRatio || 1;
+            if (currentDpr !== lastReportedDpr) {
+                lastReportedDpr = currentDpr;
+                window.electron?.reportDevicePixelRatio(currentDpr);
+            }
+        };
         window.addEventListener('resize', handleResize);
+        // Report once on mount in case the window is never resized before exporting.
+        window.electron?.reportDevicePixelRatio(lastReportedDpr);
 
         return () => {
             window.clearInterval(intervalId);
             window.removeEventListener('resize', handleResize);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cachedCoverUrl, coverUrl, currentSong, duration, effectiveLoopMode, exportState, isDaylight, isFmMode, isNowPlayingStageActive, isPlayerChromeHidden, playerChromeVisibilityMode, lyrics, lyricTimelineOffsetMs, playbackSyncBridgeStatus, playQueue, playerState, showTransparentWindowBorder, transparentPlayerBackground, isLiked]);
+    }, [cachedCoverUrl, coverUrl, currentSong, duration, effectiveLoopMode, exportState, isDaylight, isFmMode, isNowPlayingStageActive, isPlayerChromeHidden, playerChromeVisibilityMode, lyrics, lyricTimelineOffsetMs, mainWindowClickThroughEnabled, playbackSyncBridgeStatus, playQueue, playerState, showTransparentWindowBorder, transparentPlayerBackground, isLiked]);
 
     useEffect(() => {
         if (!playbackSyncBridgeStatus.discordPresenceEnabled || !window.electron?.publishDiscordPresenceSnapshot) {
@@ -539,6 +557,11 @@ export const useElectronPlaybackBridge = ({
                 return;
             }
 
+            if (command.type === 'cycle-loop-mode') {
+                if (!isNowPlayingControlDisabledRef.current) onRemoteCycleLoopMode?.();
+                return;
+            }
+
             if (isNowPlayingControlDisabledRef.current || !taskbarHasTrackRef.current) {
                 return;
             }
@@ -595,7 +618,7 @@ export const useElectronPlaybackBridge = ({
 
         return window.electron.onRemoteControlCommand(runCommand);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activePlaybackContext, audioRef, canLikeCurrentSong, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteExportCommand, onRemotePlayerChromeVisibilityModeCycle, setShowTransparentWindowBorder, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef, onLike]);
+    }, [activePlaybackContext, audioRef, canLikeCurrentSong, currentTime, duration, isNowPlayingControlDisabledRef, mediaSessionNextRef, mediaSessionPauseRef, mediaSessionPlayRef, mediaSessionPrevRef, onRemoteCycleLoopMode, onRemoteExportCommand, onRemotePlayerChromeVisibilityModeCycle, setShowTransparentWindowBorder, syncStageLyricsClock, taskbarHasTrackRef, taskbarPlayerStateRef, onLike]);
 
     useEffect(() => {
         if (!window.electron?.onStagePlayerControlRequest) {

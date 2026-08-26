@@ -5,6 +5,7 @@ import { wrapsAroundQueue } from '../components/app/playback/shuffleOrder';
 import { getPlaybackSongKey, isLocalPlaybackSong, resolveNavidromePlaybackCarrier } from './appPlaybackGuards';
 import { buildStagePlayerSnapshot } from './stagePlayerSnapshot';
 import { getProviderSongMetadata } from '../services/onlineMusic/songMetadata';
+import { resolvePlaybackNeighbors } from './playbackNeighbors';
 
 // src/utils/playbackSyncBridge.ts
 // Derives shared playback publisher models before adapting them to Electron-facing protocols.
@@ -23,12 +24,15 @@ export interface PlaybackSyncBridgeModel {
     durationSec: number;
     stageDurationSec: number;
     playerState: PlayerState;
+    loopMode: PlayerLoopMode;
+    isFmMode: boolean;
     canGoPrevious: boolean;
     canGoNext: boolean;
     effectiveLoopMode: PlayerLoopMode;
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
+    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;
@@ -57,6 +61,7 @@ export interface BuildPlaybackSyncBridgeModelArgs {
     isStageActive: boolean;
     controlsDisabled: boolean;
     transparentModeEnabled: boolean;
+    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop?: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;
@@ -129,6 +134,7 @@ export const buildPlaybackSyncBridgeModel = ({
     isStageActive,
     controlsDisabled,
     transparentModeEnabled,
+    mainWindowClickThroughEnabled,
     mainWindowAlwaysOnTop = false,
     mainWindowBorderVisible,
     playerChromeHidden,
@@ -169,12 +175,15 @@ export const buildPlaybackSyncBridgeModel = ({
         durationSec: safeDurationSec,
         stageDurationSec: Math.max(0, clampFiniteNumber(stageDurationSec ?? safeDurationSec)),
         playerState,
+        loopMode: effectiveLoopMode,
+        isFmMode,
         canGoPrevious,
         canGoNext,
         effectiveLoopMode,
         controlsDisabled: controlsDisabled || !hasTrack,
         isStageActive,
         transparentModeEnabled,
+        mainWindowClickThroughEnabled,
         mainWindowAlwaysOnTop,
         mainWindowBorderVisible,
         playerChromeHidden,
@@ -191,7 +200,16 @@ export const buildPlaybackSyncBridgeModel = ({
 export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     model: PlaybackSyncBridgeModel,
     options: RemoteControlSnapshotOptions,
-): RemoteControlSnapshot => ({
+): RemoteControlSnapshot => {
+    const neighbors = resolvePlaybackNeighbors({
+        playQueue: model.playQueue,
+        currentSong: model.currentSong,
+        loopMode: model.loopMode,
+        isFmMode: model.isFmMode,
+        isStageActive: model.isStageActive,
+    });
+
+    return {
     hasTrack: model.hasTrack,
     title: model.title,
     artist: model.artist,
@@ -199,11 +217,15 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     currentTime: model.currentTimeSec,
     duration: model.durationSec,
     playerState: model.playerState,
+    loopMode: model.loopMode,
     canGoPrevious: model.canGoPrevious,
     canGoNext: model.canGoNext,
+    prevTrackTitle: neighbors.prev.title,
+    nextTrackTitle: neighbors.next.title,
     controlsDisabled: model.controlsDisabled,
     isStageActive: model.isStageActive,
     transparentModeEnabled: model.transparentModeEnabled,
+    mainWindowClickThroughEnabled: model.mainWindowClickThroughEnabled,
     mainWindowAlwaysOnTop: model.mainWindowAlwaysOnTop,
     mainWindowBorderVisible: model.mainWindowBorderVisible,
     playerChromeHidden: model.playerChromeHidden,
@@ -216,7 +238,8 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     updatedAt: model.sampledAt,
     mainWindowWidth: model.mainWindowWidth,
     mainWindowHeight: model.mainWindowHeight,
-});
+    };
+};
 
 export const buildStagePlayerSnapshotFromPlaybackSyncBridge = (
     model: PlaybackSyncBridgeModel,

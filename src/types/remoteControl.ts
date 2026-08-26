@@ -1,4 +1,4 @@
-import type { PlayerState, LyricData } from '../types';
+import type { PlayerState, LyricData, PlayerLoopMode } from '../types';
 import type { VideoExportPreset, VideoExportStartMode, VideoExportState } from './videoExport';
 
 // src/types/remoteControl.ts
@@ -12,6 +12,7 @@ export type RemoteControlCommand =
     | { type: 'previous' }
     | { type: 'next' }
     | { type: 'seek'; time: number }
+    | { type: 'cycle-loop-mode' }
     | { type: 'resize-main-window'; width: number; height: number }
     | { type: 'set-main-window-border-visible'; visible: boolean }
     | { type: 'set-main-window-always-on-top'; enabled: boolean }
@@ -32,11 +33,15 @@ export interface RemoteControlSnapshot {
     currentTime: number;
     duration: number;
     playerState: PlayerState;
+    loopMode: PlayerLoopMode;
     canGoPrevious: boolean;
     canGoNext: boolean;
+    prevTrackTitle: string | null;
+    nextTrackTitle: string | null;
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
+    mainWindowClickThroughEnabled: boolean;
     mainWindowAlwaysOnTop: boolean;
     mainWindowBorderVisible: boolean;
     playerChromeHidden: boolean;

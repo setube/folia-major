@@ -1,22 +1,26 @@
-const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker, safeStorage, protocol, net: electronNet } = require('electron');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { spawn } = require('child_process');
 const Store = require('electron-store').default || require('electron-store');
 const crypto = require('crypto');
 const { createStageApi } = require('./stageApi.cjs');
 const { createWindowPlaybackHandoffStore } = require('./windowPlaybackHandoff.cjs');
+const wallpaperWatchdogModule = require('./wallpaperWatchdog.cjs');
 const { createKugouApiBridge } = require('./kugouApiBridge.cjs');
 const { createQqAuthSessionRepository } = require('./qqAuthSessionRepository.cjs');
 const { DEFAULT_DISCORD_APPLICATION_ID, createDiscordPresenceController } = require('./discordPresence.cjs');
 const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { createDisplaySleepBlocker } = require('./displaySleepBlocker.cjs');
 const { createLyricApi } = require('./lyricApi.cjs');
+const { createLocalCoverAssetStore, getLocalCoverAssetDirectory } = require('./localCoverAssets.cjs');
 const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
 const { execFileSync } = require('child_process');
 const { LAUNCH_AT_LOGIN_MODES, LEGACY_APP_USER_MODEL_IDS, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
 const { getAiProviderAdapter, pickProviderCredentials, resolveAdapterEndpoint, resolveAdapterModel, stripJsonFence } = require('./aiProviderAdapters.cjs');
+const { resolveLinuxPasswordStore } = require('./linuxPasswordStore.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
 const useLinuxGraphicsDebugMode = process.env.ELECTRON_LINUX_PACKAGED_GRAPHICS === 'true';
 const isAppImageRuntime =
@@ -26,6 +30,17 @@ const linuxGraphicsMode =
   process.platform !== 'linux'
     ? 'system'
     : (process.env.FOLIA_LINUX_GRAPHICS_MODE || (isAppImageRuntime ? 'swiftshader' : 'system'));
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'folia-cover',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+}]);
 
 // Trusts only the known KuGou media CDN hostname mismatch while preserving TLS checks elsewhere.
 app.on('certificate-error', (event, _webContents, requestUrl, error, _certificate, callback) => {
@@ -51,6 +66,13 @@ app.on('certificate-error', (event, _webContents, requestUrl, error, _certificat
 
 // Fix for Arch Linux / Wayland & Vulkan compatibility issues
 if (process.platform === 'linux') {
+  // Must run before the ready event: Chromium reads the password backend once while initialising
+  // OSCrypt, and the default detection leaves unrecognised desktops without any real encryption.
+  const linuxPasswordStore = resolveLinuxPasswordStore();
+  if (linuxPasswordStore) {
+    app.commandLine.appendSwitch('password-store', linuxPasswordStore);
+  }
+
   app.commandLine.appendSwitch('disable-vulkan');
   app.commandLine.appendSwitch('disable-features', 'Vulkan');
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -71,6 +93,31 @@ if (process.platform === 'linux') {
   }
 }
 
+// Chromium starts the video capture service to enumerate video inputs whenever the renderer calls
+// enumerateDevices() -- which the playback settings panel must do to list audio outputs -- and does
+// not release it afterwards (crbug 377749384), leaving a utility process and an OS privacy
+// indicator behind. This feature adds an idle timer that shuts the video source provider down about
+// a minute after the last use.
+//
+// The flag alone is inert: Chromium only re-checks whether the provider is still needed when a
+// device-change subscription is dropped, and enumerating never schedules that check. The renderer
+// therefore subscribes to `devicechange` while the device picker is open and unsubscribes when it
+// closes, purely to trigger the timer -- see src/hooks/useAudioOutputDevices.ts. Removing that
+// subscription re-pins the capture service for the lifetime of the process.
+function appendChromiumFeature(featureName) {
+  // base::CommandLine keeps one value per switch, so a plain appendSwitch would drop features the
+  // user passed on the command line, or any appended earlier here.
+  const enabledFeatures = app.commandLine.getSwitchValue('enable-features');
+  app.commandLine.appendSwitch(
+    'enable-features',
+    enabledFeatures ? `${enabledFeatures},${featureName}` : featureName,
+  );
+}
+
+if (process.platform === 'win32' || process.platform === 'darwin') {
+  appendChromiumFeature('ReleaseVideoSourceProviderIfNotInUse');
+}
+
 // macOS: GPU 加速优化，解决 Intel Mac + AMD 独显在 Retina 屏幕下的渲染卡顿
 if (process.platform === 'darwin' && process.arch === 'x64') {
   app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -84,6 +131,184 @@ const store = new Store({ projectName: 'Folia' });
 const kugouApiBridge = createKugouApiBridge({ store, safeStorage });
 const qqAuthSessionRepository = createQqAuthSessionRepository({ store, safeStorage });
 
+// --- Desktop wallpaper mode (Wayland layer-shell via windowtolayer / X11 desktop window) ---
+// Settings keys follow the existing electron-store key/value chain; values are normalized here in
+// the main process so stale or dirty stored values never reach the windowtolayer CLI.
+const WALLPAPER_MODE_SETTING_KEY = 'wallpaper_mode';
+
+// Thin wrappers over electron/wallpaperWatchdog.cjs so the call sites across the file keep their
+// existing signatures while the predicates stay a single source of truth in the module.
+function isWallpaperModeEnabled() {
+  return wallpaperWatchdogModule.isWallpaperModeEnabled(store);
+}
+
+// X11 wallpaper mode: the main window is a _NET_WM_WINDOW_TYPE_DESKTOP window. It shares the
+// desktop layer with the KDE desktop window, and because desktop windows are rendered unredirected
+// there is no composited backdrop behind them. Click-through is therefore unavailable there: it
+// would let clicks reach the KDE desktop window, which KWin then raises above Folia (both are
+// desktop-type, the topmost wins), covering the wallpaper.
+function isX11WallpaperMode() {
+  return wallpaperWatchdogModule.isX11WallpaperMode({
+    platform: process.platform,
+    env: process.env,
+    store,
+  });
+}
+
+// The wrapped child keeps FOLIA_WRAPPED_BY_WINDOWTOLAYER=1; it must never wrap itself again.
+function isWallpaperWrapped() {
+  return wallpaperWatchdogModule.isWallpaperWrapped(process.env);
+}
+
+// The binary ships as resources/windowtolayer (built by packaging/linux/build-windowtolayer.mjs).
+// FOLIA_WINDOWTOLAYER_PATH overrides it for non-packaged (dev) runs; the dev:electron* scripts
+// inject `build/windowtolayer` (produced by `npm run build:windowtolayer`) so wallpaper mode also
+// works outside an electron-builder package. A missing binary just disables wallpaper mode.
+function resolveWindowToLayerPath() {
+  const override = process.env.FOLIA_WINDOWTOLAYER_PATH;
+  if (override) {
+    return fs.existsSync(override) ? override : null;
+  }
+  const candidate = path.join(process.resourcesPath, 'windowtolayer');
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+// Enables wallpaper mode on Wayland: spawn windowtolayer wrapping a fresh Folia child, then the
+// old process exits once the wrapper has spawned. Spawn failure (ENOENT/EACCES) arrives on the
+// async 'error' event, never as a synchronous throw, so we revert the setting instead of crashing.
+function launchWrappedSelf({ onError } = {}) {
+  const wtl = resolveWindowToLayerPath();
+  if (!wtl) {
+    console.warn('[Wallpaper] windowtolayer missing, cannot enable wallpaper mode');
+    store.set(WALLPAPER_MODE_SETTING_KEY, false);
+    onError?.(new Error('windowtolayer binary is missing'));
+    return Promise.resolve('missing');
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn(wtl, ['--layer=bottom', '--interactivity=all',
+      process.execPath, ...process.argv.slice(1)],
+      {
+        env: { ...process.env, FOLIA_WRAPPED_BY_WINDOWTOLAYER: '1', FOLIA_RELAUNCH: '1' },
+        stdio: 'inherit',
+      });
+    child.once('error', (err) => {
+      console.error('[Wallpaper] windowtolayer spawn failed, reverting wallpaper mode', err);
+      store.set(WALLPAPER_MODE_SETTING_KEY, false);
+      onError?.(err);
+      resolve('error');
+    });
+    child.once('spawn', () => {
+      resolve('spawned');
+      app.exit(0);
+    });
+  });
+}
+
+// Watchdog: liveness probe + recovery-to-normal-window live in electron/wallpaperWatchdog.cjs
+// (dependency-injected here so the same logic is unit-testable and simulatable headless).
+const wallpaperWatchdog = wallpaperWatchdogModule.createWallpaperWatchdog({
+  store,
+  env: process.env,
+  spawnFn: spawn,
+  execPath: () => process.execPath,
+  argv: () => process.argv.slice(1),
+  getPpid: () => process.ppid,
+  exit: (code) => app.exit(code),
+  killFn: process.kill.bind(process),
+  probeIntervalMs: 2000,
+});
+
+// Runtime change (save-settings IPC): relaunch the whole process so the new mode takes effect.
+// The store value is already written by the save-settings handler before this runs.
+function relaunchForWallpaperModeChange(nextEnabled) {
+  if (nextEnabled) {
+    if (isWallpaperWrapped()) {
+      return; // already a wallpaper session, nothing to do
+    }
+    if (Boolean(process.env.WAYLAND_DISPLAY)) {
+      void launchWrappedSelf({
+        onError: () => {
+          setMainWindowClickThroughEnabled(false);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+          }
+        },
+      });
+    } else {
+      wallpaperWatchdog.relaunchSelfNormal(); // X11: plain relaunch; the fresh window picks up type:'desktop'
+    }
+  } else {
+    wallpaperWatchdog.relaunchSelfNormal();
+  }
+}
+
+// Coalesce rapid UI toggles into one relaunch. The generation check also prevents a stale
+// handoff request from launching an older mode after the user changes the switch again.
+function scheduleWallpaperModeRelaunch(nextEnabled) {
+  wallpaperModeRelaunchGeneration += 1;
+  const generation = wallpaperModeRelaunchGeneration;
+  if (wallpaperModeRelaunchTimer) {
+    clearTimeout(wallpaperModeRelaunchTimer);
+  }
+
+  wallpaperModeRelaunchTimer = setTimeout(async () => {
+    wallpaperModeRelaunchTimer = null;
+    await requestWindowPlaybackHandoff();
+    if (generation !== wallpaperModeRelaunchGeneration) {
+      return;
+    }
+    relaunchForWallpaperModeChange(nextEnabled);
+  }, 300);
+}
+
+// Startup wrapper: only the main process reaches main.cjs (GPU/renderer children start with
+// --type=... and exit before this). The jumpboard takes the single-instance lock before spawning
+// windowtolayer; the wrapped child uses FOLIA_RELAUNCH to retry after the jumpboard exits.
+const wallpaperMode = isWallpaperModeEnabled();
+const onWayland = Boolean(process.env.WAYLAND_DISPLAY);
+
+// Serializes ownership, wrapper launch, and crash-loop accounting.
+async function prepareMainProcessStartup() {
+  const gotSingleInstanceLock = await acquireSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    return 'duplicate';
+  }
+
+  app.on('second-instance', () => {
+    focusMainWindow();
+  });
+
+  if (isWallpaperWrapped()) {
+    wallpaperWatchdog.recordWrappedLaunch();
+    wallpaperWatchdog.startParentLivenessProbe({ parentPid: process.ppid });
+    return 'ready';
+  }
+
+  if (!wallpaperMode || !onWayland) {
+    wallpaperWatchdog.resetWrappedCrashCount();
+    return 'ready';
+  }
+
+  if (wallpaperWatchdog.shouldDisableWallpaperMode()) {
+    // Repeated wrapped sessions crashed before the watchdog could fire; turn the mode off and
+    // run as a plain window this time instead of re-entering the wrap loop.
+    console.warn('[Wallpaper] repeated wrapped crashes, disabling wallpaper mode');
+    store.set(WALLPAPER_MODE_SETTING_KEY, false);
+    wallpaperWatchdog.resetWrappedCrashCount();
+    return 'fallback';
+  }
+
+  const wrapperResult = await launchWrappedSelf();
+  if (wrapperResult !== 'spawned') {
+    wallpaperWatchdog.resetWrappedCrashCount();
+    return 'fallback';
+  }
+  return wrapperResult;
+}
+
+const mainProcessStartupPromise = prepareMainProcessStartup();
+
 // --- Electron main process locale map ---
 const APP_LOCALE_KEY = 'APP_LOCALE';
 const mainLocale = {
@@ -95,6 +320,9 @@ const mainLocale = {
     trayPause: '暂停',
     trayNext: '下一首',
     trayNoTrack: '暂无播放',
+    trayToggleClickThrough: '切换点击穿透',
+    trayOverlayPreset: '锁定 + 透明 + 置顶',
+    trayResetWindow: '重置窗口',
     trayHideTaskbar: '隐藏任务栏图标',
     trayQuit: '退出',
     dialogImportTitle: '无法导入此文件夹',
@@ -110,6 +338,9 @@ const mainLocale = {
     trayPause: 'Pause',
     trayNext: 'Next Track',
     trayNoTrack: 'Nothing Playing',
+    trayToggleClickThrough: 'Toggle Click-Through',
+    trayOverlayPreset: 'Locked + Transparent + On Top',
+    trayResetWindow: 'Reset Window',
     trayHideTaskbar: 'Hide Taskbar Icon',
     trayQuit: 'Quit',
     dialogImportTitle: 'Cannot import this folder',
@@ -125,6 +356,9 @@ const mainLocale = {
     trayPause: 'Jeda',
     trayNext: 'Lagu Berikutnya',
     trayNoTrack: 'Tidak Ada Pemutaran',
+    trayToggleClickThrough: 'Alihkan Click-Through',
+    trayOverlayPreset: 'Terkunci + Transparan + Di Atas',
+    trayResetWindow: 'Atur Ulang Jendela',
     trayHideTaskbar: 'Sembunyikan Ikon Taskbar',
     trayQuit: 'Keluar',
     dialogImportTitle: 'Tidak dapat mengimpor folder ini',
@@ -134,12 +368,62 @@ const mainLocale = {
   },
 };
 
+// Maps an arbitrary BCP 47 tag onto one of the three locales the main process ships.
+// Returns null for unsupported tags so callers can keep walking the preference list.
+function normalizeMainLocaleKey(value) {
+  if (typeof value !== 'string' || !value) {
+    return null;
+  }
+
+  const lowered = value.toLowerCase();
+  if (lowered === 'in' || lowered.startsWith('id')) {
+    return 'in';
+  }
+  if (lowered.startsWith('zh')) {
+    return 'zh-CN';
+  }
+  if (lowered.startsWith('en')) {
+    return 'en';
+  }
+  return null;
+}
+
+// Used before the renderer has ever pushed APP_LOCALE, so a fresh install shows
+// tray and dialog text in the system language instead of hard-defaulting to English.
+// Both Electron locale APIs require `ready`, which every caller here is past.
+function detectSystemLocaleKey() {
+  const candidates = [];
+
+  if (typeof app.getPreferredSystemLanguages === 'function') {
+    try {
+      candidates.push(...app.getPreferredSystemLanguages());
+    } catch (error) {
+      console.warn('[Electron] Failed to read preferred system languages', error);
+    }
+  }
+
+  try {
+    candidates.push(app.getLocale());
+  } catch (error) {
+    console.warn('[Electron] Failed to read app locale', error);
+  }
+
+  for (const candidate of candidates) {
+    const normalized = normalizeMainLocaleKey(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return 'en';
+}
+
 function getMainLocale() {
   const stored = store.get(APP_LOCALE_KEY);
   if (stored === 'zh-CN' || stored === 'en' || stored === 'in') {
     return mainLocale[stored];
   }
-  return mainLocale.en;
+  return mainLocale[detectSystemLocaleKey()];
 }
 
 
@@ -159,13 +443,32 @@ const obsBrowserSourceClients = new Set();
 let remoteControlAlwaysOnTop = false;
 let remoteControlSkipTaskbarEnabled = false;
 let mainWindowAlwaysOnTop = false;
+// Click-through follows wallpaper mode on Wayland only; X11 wallpaper mode must keep it off (see
+// isX11WallpaperMode).
+let mainWindowClickThroughEnabled = isWallpaperModeEnabled() && Boolean(process.env.WAYLAND_DISPLAY);
+let mainWindowClickThroughUnlockHover = false;
+let mainWindowClickThroughUnlockHoverTimer = null;
 let mainWindowSkipTaskbarEnabled = false;
 let videoExportWindowRestoreState = null;
 let autoUpdater = null;
-const windowPlaybackHandoffStore = createWindowPlaybackHandoffStore();
+// Backed by the settings store so a handoff survives a full process relaunch (wallpaper mode)
+const windowPlaybackHandoffStore = createWindowPlaybackHandoffStore({
+  storage: store,
+  ttlMs: 60_000,
+});
 const pendingWindowPlaybackHandoffRequests = new Map();
 let pendingWindowStateSave = null;
 let windowStateSaveTimer = null;
+let wallpaperModeRelaunchTimer = null;
+let wallpaperModeRelaunchGeneration = 0;
+const x11WallpaperWindows = new WeakSet();
+const MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT = {
+  width: 48,
+  height: 40,
+  rightInset: 176,
+  topInset: 4,
+};
+const MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOVER_INTERVAL_MS = 150;
 const DEFAULT_WINDOW_BOUNDS = {
   width: 1200,
   height: 800,
@@ -324,6 +627,7 @@ function getPublicSettings() {
     [PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY]: readStoredBoolean(PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY, false),
     [UPDATE_CHANNEL_SETTING_KEY]: getCurrentReleaseChannel().id,
     'enable_player_page_native_blur': store.get('enable_player_page_native_blur') === true,
+    [WALLPAPER_MODE_SETTING_KEY]: isWallpaperModeEnabled(),
   };
 }
 
@@ -507,7 +811,7 @@ function clearWindowStateSaveTimer() {
 }
 
 function saveWindowState(win, options = {}) {
-  if (!win || win.isDestroyed()) {
+  if (!win || win.isDestroyed() || isX11WallpaperMode() || x11WallpaperWindows.has(win)) {
     return;
   }
 
@@ -637,6 +941,24 @@ function getAudioCacheDirectory() {
 function getCoverCacheDirectory() {
   return path.join(getConfiguredCacheDirectory(), 'cover');
 }
+
+const localCoverAssetStore = createLocalCoverAssetStore({
+  getDirectory: () => getLocalCoverAssetDirectory(app.getPath('userData')),
+  createThumbnail: async (source, requestedSize) => {
+    const image = nativeImage.createFromBuffer(source);
+    if (image.isEmpty()) return null;
+    const dimensions = image.getSize();
+    const longestEdge = Math.max(dimensions.width, dimensions.height);
+    if (longestEdge <= requestedSize) return null;
+    const scale = requestedSize / longestEdge;
+    const resized = image.resize({
+      width: Math.max(1, Math.round(dimensions.width * scale)),
+      height: Math.max(1, Math.round(dimensions.height * scale)),
+      quality: 'good',
+    });
+    return { data: resized.toJPEG(84), mimeType: 'image/jpeg' };
+  },
+});
 
 function getAudioCacheBaseName(cacheKey) {
   return crypto.createHash('sha256').update(cacheKey).digest('hex');
@@ -917,6 +1239,40 @@ function setMainWindowAlwaysOnTop(enabled) {
   return mainWindowAlwaysOnTop;
 }
 
+// Tray preset: click-through, a transparent window, and always-on-top switched as one thing, for
+// the overlay setup where Folia sits on top of whatever else is on screen and takes no clicks.
+function isMainWindowOverlayPresetActive() {
+  return mainWindowClickThroughEnabled
+    && mainWindowAlwaysOnTop
+    && isTransparentPlayerBackgroundEnabled();
+}
+
+// Order is forced by the transparency switch: it rebuilds the main window, and the rebuild reads
+// mainWindowAlwaysOnTop for the new window's options while resetting click-through to off. So the
+// on-top flag has to be set before the rebuild and click-through re-applied after it.
+async function setMainWindowOverlayPreset(enabled) {
+  const nextEnabled = Boolean(enabled);
+  // Click-through is refused in X11 wallpaper mode, which would leave the preset half applied.
+  if (nextEnabled && isX11WallpaperMode()) {
+    return false;
+  }
+
+  setMainWindowAlwaysOnTop(nextEnabled);
+  if (isTransparentPlayerBackgroundEnabled() !== nextEnabled) {
+    await setMainWindowTransparentModeFromRemote(nextEnabled);
+  }
+  // setMainWindowClickThroughEnabled refreshes the tray itself, so the checkbox is already correct.
+  setMainWindowClickThroughEnabled(nextEnabled);
+  return nextEnabled;
+}
+
+// Tray escape hatch: drops the window back to opaque, clickable and not on top, whichever of those
+// modes happen to be on. The overlay preset already applies exactly that combination in the order
+// the transparency rebuild requires, and it skips the rebuild when the window is opaque already.
+async function resetMainWindowPresentation() {
+  return setMainWindowOverlayPreset(false);
+}
+
 function refreshTrayMenu() {
   if (!appTray) {
     return;
@@ -961,6 +1317,30 @@ function refreshTrayMenu() {
       label: locale.trayOpenRemote,
       click: () => {
         createRemoteControlWindow();
+      },
+    },
+    ...(!isX11WallpaperMode() ? [{
+      label: locale.trayToggleClickThrough,
+      type: 'checkbox',
+      checked: mainWindowClickThroughEnabled,
+      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      click: () => {
+        setMainWindowClickThroughEnabled(!mainWindowClickThroughEnabled);
+      },
+    }, {
+      label: locale.trayOverlayPreset,
+      type: 'checkbox',
+      checked: isMainWindowOverlayPresetActive(),
+      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      click: () => {
+        void setMainWindowOverlayPreset(!isMainWindowOverlayPresetActive());
+      },
+    }] : []),
+    {
+      label: locale.trayResetWindow,
+      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      click: () => {
+        void resetMainWindowPresentation();
       },
     },
     {
@@ -1279,13 +1659,28 @@ function ensureTray() {
   return appTray;
 }
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
-
-if (!gotSingleInstanceLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    focusMainWindow();
+// Retries the single-instance lock for a short window during a relaunch race
+// (FOLIA_RELAUNCH=1): the old instance has just called app.exit() and is about to
+// release the lock, so a fresh process may need a few attempts before it wins it.
+function acquireSingleInstanceLock() {
+  if (app.requestSingleInstanceLock()) {
+    return true;
+  }
+  if (process.env.FOLIA_RELAUNCH !== '1') {
+    return false; // ordinary second launch: behave as before (focus existing instance and quit)
+  }
+  const deadline = Date.now() + 10_000;
+  return new Promise((resolve) => {
+    const attempt = () => {
+      if (app.requestSingleInstanceLock()) {
+        return resolve(true);
+      }
+      if (Date.now() >= deadline) {
+        return resolve(false);
+      }
+      setTimeout(attempt, 500);
+    };
+    attempt();
   });
 }
 
@@ -1695,6 +2090,22 @@ function isUpdateCheckSupported() {
   return getUpdateCheckSupportReason() === null;
 }
 
+function isDevUpdatePreviewEnabled() {
+  return process.env.ELECTRON_DEV === 'true' && process.env.FOLIA_DEV_UPDATE_PREVIEW === 'true';
+}
+
+// Builds a believable next patch version so the preview stays aligned with package metadata.
+function getDevUpdatePreviewVersion() {
+  const currentVersion = normalizeVersion(app.getVersion());
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(currentVersion);
+
+  if (!match) {
+    return '999.0.0';
+  }
+
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
 function isAutoUpdaterSupported() {
   return (
     isUpdateCheckSupported() &&
@@ -1716,12 +2127,13 @@ const updateState = {
 
 function getUpdateStatus() {
   const availableVersion = updateState.availableVersion;
+  const isDevPreview = isDevUpdatePreviewEnabled();
 
   return {
     ...updateState,
-    supported: isAutoUpdaterSupported(),
-    updateCheckSupported: isUpdateCheckSupported(),
-    updateCheckSupportReason: getUpdateCheckSupportReason(),
+    supported: isDevPreview || isAutoUpdaterSupported(),
+    updateCheckSupported: isDevPreview || isUpdateCheckSupported(),
+    updateCheckSupportReason: isDevPreview ? null : getUpdateCheckSupportReason(),
     platform: process.platform,
     updateCheckEnabled: getUpdateCheckEnabled(),
     autoUpdateEnabled: getAutoUpdateEnabled(),
@@ -1848,6 +2260,11 @@ function configureAutoUpdaterChannel(updater) {
 }
 
 async function downloadAvailableUpdate() {
+  if (isDevUpdatePreviewEnabled()) {
+    setUpdateState({ status: 'downloaded', error: null, downloadProgress: null });
+    return getUpdateStatus();
+  }
+
   if (!isAutoUpdaterSupported()) {
     setUpdateState({ status: 'unsupported', error: null });
     return getUpdateStatus();
@@ -1886,6 +2303,19 @@ async function downloadAvailableUpdate() {
 }
 
 async function checkForUpdates({ manual = false } = {}) {
+  if (isDevUpdatePreviewEnabled()) {
+    const availableVersion = getDevUpdatePreviewVersion();
+    setUpdateState({
+      status: 'available',
+      availableVersion,
+      updateUrl: getReleaseUrl(getCurrentReleaseChannel().id, availableVersion, FOLIA_RELEASES_URL),
+      error: null,
+      lastCheckedAt: Date.now(),
+      downloadProgress: null,
+    });
+    return getUpdateStatus();
+  }
+
   if (!getUpdateCheckEnabled() && !manual) {
     setUpdateState({ status: 'disabled', error: null, downloadProgress: null });
     return getUpdateStatus();
@@ -1952,6 +2382,11 @@ async function openExternalUrl(url) {
 }
 
 function scheduleStartupUpdateCheck() {
+  if (isDevUpdatePreviewEnabled()) {
+    void checkForUpdates({ manual: true });
+    return;
+  }
+
   if (!getUpdateCheckEnabled()) {
     setUpdateState({ status: 'disabled', error: null });
     return;
@@ -3120,6 +3555,114 @@ function patchRemoteControlSnapshot(patch) {
   sendRemoteControlSnapshot(latestRemoteControlSnapshot);
 }
 
+function publishMainWindowClickThroughState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+
+  mainWindow.webContents.send('main-window-click-through-changed', {
+    enabled: mainWindowClickThroughEnabled,
+    unlockHoverActive: mainWindowClickThroughUnlockHover,
+  });
+  refreshTrayMenu();
+  return true;
+}
+
+function isCursorInsideMainWindowClickThroughUnlockHotspot() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+
+  const bounds = mainWindow.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  const hotspotRight = bounds.x + bounds.width - MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.rightInset;
+  const hotspotLeft = hotspotRight - MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.width;
+  const hotspotTop = bounds.y + MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.topInset;
+  const hotspotBottom = hotspotTop + MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT.height;
+
+  return cursor.x >= hotspotLeft
+    && cursor.x <= hotspotRight
+    && cursor.y >= hotspotTop
+    && cursor.y <= hotspotBottom;
+}
+
+function syncMainWindowClickThroughUnlockHoverFromCursor() {
+  if (!mainWindowClickThroughEnabled) {
+    return false;
+  }
+
+  return setMainWindowClickThroughUnlockHover(isCursorInsideMainWindowClickThroughUnlockHotspot());
+}
+
+function startMainWindowClickThroughUnlockHoverMonitor() {
+  if (mainWindowClickThroughUnlockHoverTimer) {
+    return;
+  }
+
+  syncMainWindowClickThroughUnlockHoverFromCursor();
+  mainWindowClickThroughUnlockHoverTimer = setInterval(
+    syncMainWindowClickThroughUnlockHoverFromCursor,
+    MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOVER_INTERVAL_MS
+  );
+}
+
+function stopMainWindowClickThroughUnlockHoverMonitor() {
+  if (!mainWindowClickThroughUnlockHoverTimer) {
+    return;
+  }
+
+  clearInterval(mainWindowClickThroughUnlockHoverTimer);
+  mainWindowClickThroughUnlockHoverTimer = null;
+}
+
+function applyMainWindowMouseIgnoreState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+
+  mainWindow.setIgnoreMouseEvents(
+    mainWindowClickThroughEnabled && !mainWindowClickThroughUnlockHover,
+    { forward: true }
+  );
+  publishMainWindowClickThroughState();
+  return true;
+}
+
+function setMainWindowClickThroughEnabled(enabled) {
+  // Refuse to enable on X11 wallpaper mode: clicks would reach the KDE desktop window and KWin
+  // would raise it above Folia (both desktop-type), covering the wallpaper. The state stays off.
+  if (Boolean(enabled) && isX11WallpaperMode()) {
+    return mainWindowClickThroughEnabled;
+  }
+
+  mainWindowClickThroughEnabled = Boolean(enabled);
+  if (!mainWindowClickThroughEnabled) {
+    mainWindowClickThroughUnlockHover = false;
+    stopMainWindowClickThroughUnlockHoverMonitor();
+  }
+
+  applyMainWindowMouseIgnoreState();
+  if (mainWindowClickThroughEnabled) {
+    startMainWindowClickThroughUnlockHoverMonitor();
+  }
+  refreshTrayMenu();
+  patchRemoteControlSnapshot({
+    mainWindowClickThroughEnabled,
+  });
+  return mainWindowClickThroughEnabled;
+}
+
+function setMainWindowClickThroughUnlockHover(active) {
+  const nextActive = Boolean(active) && mainWindowClickThroughEnabled;
+  if (mainWindowClickThroughUnlockHover === nextActive) {
+    return mainWindowClickThroughUnlockHover;
+  }
+
+  mainWindowClickThroughUnlockHover = nextActive;
+  applyMainWindowMouseIgnoreState();
+  return mainWindowClickThroughUnlockHover;
+}
+
 function sendRemoteControlSnapshot(snapshot) {
   if (!remoteControlWindow || remoteControlWindow.isDestroyed()) {
     return false;
@@ -3127,6 +3670,20 @@ function sendRemoteControlSnapshot(snapshot) {
 
   remoteControlWindow.webContents.send('remote-control-snapshot', snapshot);
   return true;
+}
+
+// Wallpaper mode (Wayland): windowtolayer turns the first window it sees into the layer
+// surface and passes every later one through to xdg-shell as an ordinary window. The main
+// window claims that slot at startup, but a hidden window has no surface at all, so show it
+// again before building a secondary window — otherwise the secondary window would become the
+// wallpaper. No-op outside a wrapped session.
+function ensureWallpaperLayerHeldByMainWindow() {
+  if (!isWallpaperWrapped() || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
 }
 
 function createRemoteControlWindow() {
@@ -3139,6 +3696,8 @@ function createRemoteControlWindow() {
     broadcastPlaybackSyncBridgeStatus();
     return remoteControlWindow;
   }
+
+  ensureWallpaperLayerHeldByMainWindow();
 
   const win = new BrowserWindow({
     modal: false,
@@ -3211,6 +3770,141 @@ function sanitizeVideoExportSize(size) {
   };
 }
 
+// Resize the main window so that its *bounds* (the area the capture source
+// actually records, which includes Windows' frameless-window DWM decoration)
+// yields a content physical size >= the requested export size. We use a snap
+// search around the ideal CSS size to find a value where getContentSize() * dpr
+// exceeds the preset (overshoot), then the frontend Canvas crops the excess
+// pixels with integer symmetric cropping — no scaling, no black bars.
+// After sizing, we enter a decoration-removal loop: if DWM adds asymmetric
+// borders that shift content off-center inside bounds, we grow the window by
+// 1px on each edge and retry until bounds == content (decoration eliminated).
+function fitMainWindowBoundsToExportSize(exportSize) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+
+  const exportDpr = mainWindow.__dpr && mainWindow.__dpr > 0 ? mainWindow.__dpr : 1;
+
+  // Size the window so its *bounds* (the area the capture source actually records —
+  // a whole-window capture includes the ~1px frameless-window DWM decoration) matches
+  // the preset in physical pixels exactly. If the bounds physical size differed from the
+  // preset, the capture source aspect ratio would mismatch the output and crop-and-scale
+  // would add black bars. We set the rounded CSS content size, then read back the bounds
+  // physical size and nudge by +/-1 CSS px until it equals the preset. The content area
+  // ends up ~decoration px smaller than the preset (a minor crop), but the recording has
+  // no scaling black bars and the output is exactly the requested resolution.
+  let cssWidth = Math.max(1, Math.round(exportSize.width / exportDpr));
+  let cssHeight = Math.max(1, Math.round(exportSize.height / exportDpr));
+  mainWindow.setContentSize(cssWidth, cssHeight, false);
+
+  // Keep the window on whichever display it already lives on instead of forcing
+  // it to the primary display. getDisplayMatching resolves the display containing
+  // the window's current bounds, so the export stays put (no surprise jump).
+  const workArea = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
+  // Center the window and snap its position to a whole physical pixel. Under a non-100% DPI
+  // the CSS position times dpr can land on a half-pixel, and Chromium's crop-and-scale
+  // capture derives its crop rect from the window's physical bounds; a half-pixel offset
+  // between the reported bounds and where the window is actually composited can leave a
+  // 1-2px black strip. Aligning the physical position to whole pixels removes that drift.
+  const center = (w, h) => {
+    let x = Math.round(workArea.x + (workArea.width - w) / 2);
+    let y = Math.round(workArea.y + (workArea.height - h) / 2);
+    if (!Number.isInteger(x * exportDpr)) x += (x % 2 === 0) ? 1 : -1;
+    if (!Number.isInteger(y * exportDpr)) y += (y % 2 === 0) ? 1 : -1;
+    mainWindow.setBounds({ x, y, width: w, height: h }, false);
+    return mainWindow.getBounds();
+  };
+
+  // The capture source is the *whole window* (bounds), which on a frameless transparent
+  // window on Windows carries a 1px DWM border (decoLeftCss = 1) and, after DWM snaps the
+  // window to its grid, can gain/lose a pixel on resize. So neither the rounded CSS size
+  // nor a single +/-1 nudge reliably yields boundsPhys == preset. We search a small CSS
+  // window around the rounded size, CENTERING THE WINDOW EACH TIME so we read the *final*
+  // boundsPhys (including DWM snapping), and pick the value whose *content* physical
+  // size (from getContentSize, NOT bounds) is >= preset + margin (so the Canvas crop
+  // can work in pure-crop mode without upscaling).
+  // Minimum overshoot (in device pixels) to guarantee pure-crop mode without upscaling.
+  // This is a hard lower bound, NOT a per-resolution guess: regardless of DPR or DWM decoration
+  // size, snap() only ensures contentPhys >= preset + CROP_MARGIN_PX, and the actual crop amount is
+  // always derived from (video.videoWidth/videoHeight - preset) at runtime. Do not retune per resolution.
+  const CROP_MARGIN_PX = 6; // Minimum extra pixels for pure crop (no scaling)
+  const snap = (base, axis, otherCss) => {
+    base = Math.max(1, base);
+    let bestCss = base;
+    let bestErr = Infinity;
+    let bestContentPhys = 0;
+    // Target contentPhys must be >= preset + margin to allow pure crop in Canvas
+    const target = (axis === 'w' ? exportSize.width : exportSize.height) + CROP_MARGIN_PX;
+    const presetVal = axis === 'w' ? exportSize.width : exportSize.height;
+    let probe = '';
+    // Fixed search radius around the rounded CSS size. This is an exploration window to absorb
+    // 1px DWM-snap jitter, NOT a hand-tuned value for a specific resolution: we always test every
+    // delta and pick the one whose measured contentPhys is closest to (preset + CROP_MARGIN_PX).
+    for (let delta = -3; delta <= 5; delta++) { // Extended search range for overshoot
+      const tryCss = base + delta;
+      if (tryCss < 1) continue;
+      if (axis === 'w') mainWindow.setContentSize(tryCss, otherCss, false);
+      else mainWindow.setContentSize(otherCss, tryCss, false);
+      const b = center(axis === 'w' ? tryCss : otherCss, axis === 'w' ? otherCss : tryCss);
+      // Compare CONTENT physical size (not bounds) because the Canvas crop operates
+      // on the content area after excluding DWM decoration pixels.
+      const [cW, cH] = mainWindow.getContentSize();
+      const cPhys = axis === 'w'
+        ? Math.round(cW * exportDpr)
+        : Math.round(cH * exportDpr);
+      const bPhys = axis === 'w'
+        ? Math.round(b.width * exportDpr)
+        : Math.round(b.height * exportDpr);
+      probe += ` [${axis} tryCss=${tryCss} boundsPhys=${bPhys} contentPhys=${cPhys}]`;
+      const err = Math.abs(cPhys - target);
+      if (cPhys >= presetVal && err <= bestErr) {
+        // Accept any value where contentPhys >= preset, prefer closest to target (=preset+margin)
+        if (err < bestErr || (err === bestErr && cPhys > bestContentPhys)) {
+          bestErr = err; bestCss = tryCss; bestContentPhys = cPhys;
+        }
+      } else if (bestContentPhys < presetVal && cPhys > bestContentPhys) {
+        // Fallback: if no valid overshoot found yet, keep the largest undershoot
+        bestErr = err; bestCss = tryCss; bestContentPhys = cPhys;
+      }
+    }
+    return bestCss;
+  };
+
+  cssWidth = snap(cssWidth, 'w', cssHeight);
+  let bounds = center(cssWidth, cssHeight);
+
+  // A frameless transparent window on Windows keeps a 1px DWM border (decoLeftCss = 1,
+  // sometimes also bottom). That border makes the captured whole-window source wider/taller
+  // than the content, so its aspect ratio can never exactly equal the preset and crop-and-scale
+  // pads black bars. Force the content rect to fill the whole window so bounds == content;
+  // retry a few times because a single setContentBounds can race with DWM. Once the decoration
+  // is gone, boundsPhys equals contentPhys and the source aspect ratio matches the preset.
+  for (let i = 0; i < 4; i++) {
+    mainWindow.setContentBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
+    const cb = mainWindow.getContentBounds();
+    const b2 = mainWindow.getBounds();
+    const dl = cb.x - b2.x, dt = cb.y - b2.y;
+    const dr = (b2.x + b2.width) - (cb.x + cb.width);
+    const db = (b2.y + b2.height) - (cb.y + cb.height);
+    if (dl === 0 && dt === 0 && dr === 0 && db === 0) break;
+    bounds = b2;
+  }
+  bounds = mainWindow.getBounds();
+
+  // With the decoration removed, bounds == content, so snapping the height now targets the
+  // real content height: a CSS height of round(600/1.5)=400 yields boundsPhys==600 exactly.
+  cssHeight = snap(cssHeight, 'h', cssWidth);
+  bounds = center(cssWidth, cssHeight);
+
+  let boundsPhysW = Math.round(bounds.width * exportDpr);
+  let boundsPhysH = Math.round(bounds.height * exportDpr);
+
+  return {
+    exportDpr, cssWidth, cssHeight, bounds, boundsPhysW, boundsPhysH,
+  };
+}
+
 async function getMainWindowCaptureSource() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return null;
@@ -3239,34 +3933,78 @@ function createWindow(options = {}) {
   // 静默启动只对开机后的第一扇主窗生效，之后手动重建窗口（例如切换透明模式）要正常显示。
   const startMinimized = pendingSilentLaunch;
   pendingSilentLaunch = false;
-  const { bounds: storedBounds, isMaximized } = getStoredWindowState();
-  const windowBounds = ensureWindowBoundsVisible(storedBounds);
+  // X11 wallpaper mode: the main window becomes a desktop window (maps to
+  // _NET_WM_WINDOW_TYPE_DESKTOP) covering the whole work area. Wayland ignores the
+  // type option, so this branch is mutually exclusive with the windowtolayer path.
+  const useDesktopWindowType = isX11WallpaperMode();
+  // On a scaled X11 desktop (KWin display scale > 1) the bounds from the screen module are
+  // device-independent pixels, and Chromium clamps a window that is mapped immediately to the
+  // work-area width (which excludes panels). The window must therefore be mapped hidden, sized to
+  // the full display, and then shown — a fresh map at the explicit bounds covers the whole screen.
+  const deferShowForDesktopSizing = useDesktopWindowType && showImmediately;
+  const { bounds: storedBounds, isMaximized: storedMaximized } = getStoredWindowState();
+  const windowBounds = useDesktopWindowType
+    ? screen.getPrimaryDisplay().bounds
+    : ensureWindowBoundsVisible(storedBounds);
+  const isMaximized = useDesktopWindowType ? false : storedMaximized;
   const useTransparentWindow = isTransparentPlayerBackgroundEnabled();
   const enableNativeBlur = store.get('enable_player_page_native_blur') === true;
-  const win = new BrowserWindow({
-    ...windowBounds,
-    minWidth: 350,
-    minHeight: 100,
-    frame: false,
-    transparent: useTransparentWindow,
-    hasShadow: !useTransparentWindow,
-    thickFrame: process.platform === 'win32' ? !useTransparentWindow : undefined,
-    backgroundColor: (useTransparentWindow || enableNativeBlur) ? '#00000000' : '#09090b',
-    vibrancy: (!useTransparentWindow && enableNativeBlur) && process.platform === 'darwin' ? 'fullscreen-ui' : undefined,
-    backgroundMaterial: (!useTransparentWindow && enableNativeBlur) && process.platform === 'win32' ? 'acrylic' : undefined,
-    autoHideMenuBar: true,
-    icon: APP_ICON_PATH,
-    skipTaskbar: mainWindowSkipTaskbarEnabled,
-    alwaysOnTop: mainWindowAlwaysOnTop,
-    show: showImmediately && !startMinimized,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: true, // Disable for local app
-      backgroundThrottling: false
-    }
+  let win;
+  try {
+    win = new BrowserWindow({
+      ...windowBounds,
+      type: useDesktopWindowType ? 'desktop' : undefined,
+      minWidth: 350,
+      minHeight: 100,
+      frame: false,
+      transparent: useTransparentWindow,
+      hasShadow: !useTransparentWindow,
+      thickFrame: process.platform === 'win32' ? !useTransparentWindow : undefined,
+      backgroundColor: (useTransparentWindow || enableNativeBlur) ? '#00000000' : '#09090b',
+      vibrancy: (!useTransparentWindow && enableNativeBlur) && process.platform === 'darwin' ? 'fullscreen-ui' : undefined,
+      backgroundMaterial: (!useTransparentWindow && enableNativeBlur) && process.platform === 'win32' ? 'acrylic' : undefined,
+      autoHideMenuBar: true,
+      icon: APP_ICON_PATH,
+      skipTaskbar: mainWindowSkipTaskbarEnabled,
+      // Desktop windows already live below every normal window; alwaysOnTop is meaningless here.
+      alwaysOnTop: useDesktopWindowType ? false : mainWindowAlwaysOnTop,
+      show: showImmediately && !deferShowForDesktopSizing && !startMinimized,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: true, // Disable for local app
+        backgroundThrottling: false
+      }
+    });
+  } catch (error) {
+    // Watchdog trigger point 1: failing to build the window means the wallpaper session
+    // never connected to the compositor; recover instead of leaving the app dead.
+    console.error('[Wallpaper] Failed to create main window', error);
+    wallpaperWatchdog.handleWindowBuildFailure();
+    throw error;
+  }
+
+  if (useDesktopWindowType) {
+    x11WallpaperWindows.add(win);
+  }
+
+  // Watchdog trigger point 1: a crashed renderer breaks the wallpaper connection.
+  win.webContents.on('render-process-gone', (_event, details) => {
+    wallpaperWatchdog.handleRendererGone(details);
   });
+
+  // Wallpaper desktop windows: re-assert the full display bounds while still hidden, then show.
+  // Without the re-assert the initial map would be clamped to the work area (see
+  // deferShowForDesktopSizing), leaving an uncovered strip. When showImmediately is false the
+  // caller (e.g. recreateMainWindowWithTransparencyMode) owns the show, but the bounds fix still
+  // applies so the window is full-size by the time it appears.
+  if (useDesktopWindowType) {
+    win.setBounds(screen.getPrimaryDisplay().bounds);
+  }
+  if (deferShowForDesktopSizing) {
+    win.show();
+  }
 
   loadAppEntry(win);
   if (isElectronDevRuntime()) {
@@ -3296,6 +4034,10 @@ function createWindow(options = {}) {
   }
   ensureTray();
   setMainWindowSkipTaskbarEnabled(mainWindowSkipTaskbarEnabled);
+  // Full initializer, not just applyMainWindowMouseIgnoreState(): when click-through is on at
+  // startup (wallpaper mode) this also starts the unlock-hotspot monitor, so the user can still
+  // reveal the lock button to turn click-through back off.
+  setMainWindowClickThroughEnabled(mainWindowClickThroughEnabled);
   updateWindowThumbarButtons();
   win.on('resize', () => {
     saveWindowState(win, { deferred: true });
@@ -3349,6 +4091,17 @@ function recreateMainWindowWithTransparencyMode(enabled, handoff = null) {
   saveWindowState(previousWindow);
   mainWindow = null;
 
+  // Wallpaper mode: windowtolayer only hands the layer surface to a window created while no
+  // other window holds it (see ensureWallpaperLayerHeldByMainWindow), so the old wallpaper
+  // window must be gone before the replacement is built — otherwise the rebuilt main window
+  // comes back as an ordinary window and the wallpaper disappears with the old one.
+  if (isWallpaperWrapped()) {
+    previousWindow.destroy();
+    const createdWindow = createWindow();
+    focusMainWindow();
+    return createdWindow;
+  }
+
   const nextWindow = createWindow({ showImmediately: false });
   nextWindow.once('ready-to-show', () => {
     nextWindow.show();
@@ -3376,6 +4129,18 @@ async function setMainWindowTransparentModeFromRemote(enabled) {
 }
 
 app.whenReady().then(async () => {
+  const startupResult = await mainProcessStartupPromise;
+  if (startupResult === 'duplicate') {
+    app.quit();
+    return;
+  }
+  if (startupResult === 'spawned') {
+    return;
+  }
+  if (startupResult === 'fallback') {
+    mainWindowClickThroughEnabled = false;
+  }
+
   if (process.platform === 'win32') {
     app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
   }
@@ -3384,9 +4149,21 @@ app.whenReady().then(async () => {
   // 反过来会先抹掉"曾经开启"的证据，自启就被静默关掉了。
   reconcileLaunchAtLoginEntry();
   removeLegacyLaunchAtLoginEntries();
+  if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+    const backend = safeStorage.getSelectedStorageBackend();
+    // Without a real backend the KuGou and QQ repositories keep credentials in memory only, so this
+    // line is the fastest way to tell a lost-login report apart from an authentication bug.
+    if (backend === 'basic_text' || !safeStorage.isEncryptionAvailable()) {
+      console.warn('[Electron] No OS credential encryption available; online accounts will not persist', {
+        backend,
+        desktop: process.env.XDG_CURRENT_DESKTOP || null,
+      });
+    }
+  }
 
   setupFileSystemAccessPermissionHandlers();
   setupCorsBypassHandlers();
+  localCoverAssetStore.registerProtocolHandler(protocol, electronNet);
 
   session.defaultSession.on('file-system-access-restricted', (event, details, callback) => {
     if (details.isDirectory) {
@@ -3467,6 +4244,16 @@ ipcMain.handle('window-set-native-theme', (event, themeSource) => {
   nativeTheme.themeSource = themeSource;
 });
 
+// Cache the main window's device pixel ratio so export window sizing can be
+// expressed in physical pixels (see resize-main-window / video-export-prepare-window).
+ipcMain.handle('report-device-pixel-ratio', (event, ratio) => {
+  if (!isTrustedMainWindowContents(event.sender)) return;
+  const dpr = Number(ratio);
+  if (Number.isFinite(dpr) && dpr > 0) {
+    mainWindow.__dpr = dpr;
+  }
+});
+
 ipcMain.handle('get-settings', () => {
   return getPublicSettings();
 });
@@ -3514,12 +4301,18 @@ ipcMain.handle('save-settings', (event, key, value) => {
     key === TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY ||
     key === DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY ||
     key === VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY ||
-    key === PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY
+    key === PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY ||
+    key === WALLPAPER_MODE_SETTING_KEY
   ) {
     nextValue = Boolean(value);
   }
-
   store.set(key, nextValue);
+
+  if (key === WALLPAPER_MODE_SETTING_KEY) {
+    // Let the renderer receive its save-settings response before the process relaunches, while
+    // coalescing rapid toggles into one handoff/relaunch operation.
+    scheduleWallpaperModeRelaunch(Boolean(nextValue));
+  }
 
   if (key === 'enable_player_page_native_blur') {
     if (!isTransparentPlayerBackgroundEnabled()) {
@@ -3703,6 +4496,13 @@ ipcMain.handle('updates-quit-and-install', () => {
     return false;
   }
 
+  // Wallpaper mode is process-wide state: quitAndInstall relaunches the app without letting us
+  // clear env, and a wrapped session's WAYLAND_SOCKET is a dead fd after restart. Drop the mode
+  // first so the updated app comes back as a normal window.
+  if (isWallpaperModeEnabled()) {
+    store.set(WALLPAPER_MODE_SETTING_KEY, false);
+  }
+
   updater.quitAndInstall(false, true);
   return true;
 });
@@ -3754,6 +4554,23 @@ ipcMain.handle('get-cover-cache-usage', async () => {
 ipcMain.handle('clear-cover-cache', async () => {
   await clearCoverCacheDirectory();
   return true;
+});
+
+ipcMain.handle('has-local-cover-asset', async (_event, assetId) => {
+  return localCoverAssetStore.has(assetId);
+});
+
+ipcMain.handle('save-local-cover-asset', async (_event, assetId, data, mimeType) => {
+  await localCoverAssetStore.write(assetId, data, mimeType);
+  return true;
+});
+
+ipcMain.handle('remove-local-cover-asset', async (_event, assetId) => {
+  return localCoverAssetStore.remove(assetId);
+});
+
+ipcMain.handle('clear-local-cover-assets', async () => {
+  return localCoverAssetStore.clear();
 });
 
 // Retrieve dynamic port of local Netease API Server
@@ -3955,11 +4772,11 @@ ipcMain.handle('lyric-api-set-enabled', (event, enabled) => {
   return lyricApi.setEnabled(Boolean(enabled));
 });
 
-ipcMain.handle('lyric-api-publish', (event, lyrics) => {
+ipcMain.handle('lyric-api-publish', (event, lyrics, offset) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     return false;
   }
-  return lyricApi.publishLyricData(lyrics);
+  return lyricApi.publishLyricData(lyrics, offset);
 });
 
 ipcMain.handle('discord-presence-get-status', (event) => {
@@ -4308,8 +5125,10 @@ ipcMain.handle('remote-control-send-command', (event, command) => {
       mainWindow.unmaximize();
     }
 
-    mainWindow.setContentSize(exportSize.width, exportSize.height, true);
-    mainWindow.center();
+    const fit = fitMainWindowBoundsToExportSize(exportSize);
+    if (!fit) {
+      return false;
+    }
     mainWindow.focus();
     return true;
   }
@@ -4387,10 +5206,16 @@ ipcMain.handle('video-export-prepare-window', (event, size) => {
     mainWindow.unmaximize();
   }
 
-  mainWindow.setContentSize(exportSize.width, exportSize.height, true);
-  mainWindow.center();
+  const fit = fitMainWindowBoundsToExportSize(exportSize);
+  if (!fit) {
+    return false;
+  }
+  const { exportDpr } = fit;
   mainWindow.focus();
-  return true;
+  return {
+    success: true,
+    dpr: exportDpr,
+  };
 });
 
 ipcMain.handle('video-export-restore-window', (event) => {

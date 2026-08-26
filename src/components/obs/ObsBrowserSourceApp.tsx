@@ -206,8 +206,11 @@ const ObsBrowserSourceApp: React.FC = () => {
                 visualizerOpacity={config.visualizerOpacity}
                 background={config.background}
                 lyricsFontScale={config.lyricsFontScale}
+                subtitleFontScale={config.subtitleFontScale}
                 subtitleOverlayOpacity={config.subtitleOverlayOpacity}
                 subtitleOverlayBackground={config.subtitleOverlayBackground ?? true}
+                showHarmonySubtitle={config.showHarmonySubtitle ?? true}
+                harmonySubtitleBackground={config.harmonySubtitleBackground ?? true}
                 isPlayerChromeHidden={true}
                 hideTranslationSubtitle={config.hideTranslationSubtitle}
                 showSubtitleTranslation={config.showSubtitleTranslation ?? true}
@@ -215,6 +218,7 @@ const ObsBrowserSourceApp: React.FC = () => {
                 cappellaCustomEmojiImages={config.cappellaCustomEmojiImages}
                 cappellaCustomAvatarImages={config.cappellaCustomAvatarImages}
                 monetPortraitImage={config.monetPortraitImage}
+                temperaLayerImageAssets={config.temperaLayerImageAssets}
             />
         </div>
     );

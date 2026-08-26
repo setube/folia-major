@@ -40,6 +40,8 @@ type BuildPlayerPanelModelParams = {
     daylightTheme: UnifiedPanelProps['playback']['daylightTheme'];
     visualizerMode: UnifiedPanelProps['playback']['visualizerMode'];
     handleSetVisualizerMode: UnifiedPanelProps['playback']['onVisualizerModeChange'];
+    transparentPlayerBackground: UnifiedPanelProps['playback']['transparentPlayerBackground'];
+    toggleTransparentModeWithHandoff: UnifiedPanelProps['playback']['onToggleTransparentPlayerBackground'];
     handleManualMatchOnline: UnifiedPanelProps['playback']['onMatchOnline'];
     handleUpdateLocalLyrics: UnifiedPanelProps['playback']['onUpdateLocalLyrics'];
     handleChangeLyricsSource: UnifiedPanelProps['playback']['onChangeLyricsSource'];
@@ -53,6 +55,8 @@ type BuildPlayerPanelModelParams = {
     replayGainMode: UnifiedPanelProps['playback']['replayGainMode'];
     handleChangeReplayGainMode: UnifiedPanelProps['playback']['onChangeReplayGainMode'];
     isFmMode: boolean;
+    fmModeLabel: string;
+    handleOpenFmModePicker?: () => void;
     handleFmTrash: UnifiedPanelProps['playback']['onFmTrash'];
     handleNextTrack: UnifiedPanelProps['playback']['onNextTrack'];
     handlePrevTrack: UnifiedPanelProps['playback']['onPrevTrack'];
@@ -136,6 +140,8 @@ export const buildPlayerPanelModel = ({
     daylightTheme,
     visualizerMode,
     handleSetVisualizerMode,
+    transparentPlayerBackground,
+    toggleTransparentModeWithHandoff,
     handleManualMatchOnline,
     handleUpdateLocalLyrics,
     handleChangeLyricsSource,
@@ -149,6 +155,8 @@ export const buildPlayerPanelModel = ({
     replayGainMode,
     handleChangeReplayGainMode,
     isFmMode,
+    fmModeLabel,
+    handleOpenFmModePicker,
     handleFmTrash,
     handleNextTrack,
     handlePrevTrack,
@@ -231,6 +239,8 @@ export const buildPlayerPanelModel = ({
             daylightTheme,
             visualizerMode,
             onVisualizerModeChange: handleSetVisualizerMode,
+            transparentPlayerBackground,
+            onToggleTransparentPlayerBackground: toggleTransparentModeWithHandoff,
             onMatchOnline: handleManualMatchOnline,
             onUpdateLocalLyrics: handleUpdateLocalLyrics,
             onChangeLyricsSource: handleChangeLyricsSource,
@@ -244,6 +254,8 @@ export const buildPlayerPanelModel = ({
             replayGainMode,
             onChangeReplayGainMode: handleChangeReplayGainMode,
             isFmMode,
+            fmModeLabel,
+            onOpenFmModePicker: handleOpenFmModePicker,
             onFmTrash: handleFmTrash,
             onNextTrack: handleNextTrack,
             onPrevTrack: handlePrevTrack,

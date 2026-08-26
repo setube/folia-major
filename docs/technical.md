@@ -35,6 +35,20 @@ yay -S folia-major-bin
 
 `tar.gz` 包中附带图标与 `.desktop` 模板，可按需手动创建桌面启动项。
 
+### Quickshell 歌词插件
+
+对于 omarchy 4 / quickshell 用户，我们提供一个简单的顶部歌词插件：[lia.lines](https://github.com/chthollyphile/lia.lines)
+
+omarchy 用户可从下列官方插件市场链接获取：
+
+https://omarchyplugins.com/plugin.html?id=lia.folia-lyrics
+
+可连接 folia-v1-lyric 接口，在顶部状态栏查看歌词，以及进行暂停/播放操作。该插件在folia没有播放的时候也支持作为简易MPRIS组件，显示媒体信息
+
+<img width="2560" height="51" alt="image" src="https://github.com/user-attachments/assets/87cb8db0-ef00-4382-9eb3-fa7696e4f6ff" />
+
+
+
 ### Hyprland / Wayland 遥控窗
 
 桌面端的外部遥控窗会作为主窗口的伴随窗口打开，并使用稳定窗口标题 `Folia Remote`。在 Hyprland 下，如果希望它以悬浮小窗方式出现，可以在 `hyprland.conf` 中添加类似规则：
@@ -65,7 +79,7 @@ windowrule {
 
 如果使用前端版本的话，需要先自行部署该 API 服务。
 
-QQ 音乐是可选音源，由 npm 包 `@yakult-green-tea/qq-music-api` 提供。它需要一个常驻的 Node 进程（Docker 容器、裸 Node，或 Electron 主进程内嵌），因为原生扫码依赖 MQTT over WebSocket 长连线与进程内会话，暂不支持 Cloudflare Workers 与 Vercel Serverless。部署方式、环境变量、装置状态与 serverless 的完整说明见 [`deploy/docker/qq-api/README.md`](../deploy/docker/qq-api/README.md)。Web 版把 `VITE_QQ_API_BASE` 指向实例地址即可；Electron 版在主进程内直接启动该包，不需要单独部署。
+QQ 音乐是可选音源，由 npm 包 `@yakult-green-tea/qq-music-api` 提供，有两种部署形态。一是常驻 Node 进程（Docker 容器、裸 Node，或 Electron 主进程内嵌），功能最完整，支持微信扫码和 QQ 扫码两种登录方式。二是 serverless：从 3.0.0 起该包提供 `./serverless` 导出，本仓库已内置 Cloudflare Workers 与 Vercel 两个平台的入口，把 `VITE_QQ_API_BASE` 填成 `/api/qq` 并配好 `QQ_SESSION_SECRET` 即可，不需要单独部署 API 实例。serverless 形态默认只支持微信扫码登录，且 `/getMusicPlay` 必须先登录；Cloudflare 使用 3.1.0 或更高版本时，可选地绑定 Durable Object（`QQ_QR_CHANNEL` → `QqQrChannel`），增加 QQ 扫码登录方式。完整部署步骤与排错方法见 [QQ 音乐部署指南](qq-music-deployment.md)；Docker 镜像、卷和常驻服务细节见 [`deploy/docker/qq-api/README.md`](../deploy/docker/qq-api/README.md)。Electron 版在主进程内直接启动该包，不需要单独部署。
 
 ### AI 能力
 
@@ -90,7 +104,7 @@ Electron 桌面端可在“连接与集成”中启用歌词接口。启用后�
 GET http://127.0.0.1:32109/v1/lyric
 ```
 
-接口返回当前歌词的精简 JSON；当前没有歌词时返回 `null`。请求、响应结构、字段说明和调用示例见 [歌词接口文档](lyric-api.md)。
+接口返回当前歌词的精简 JSON，并在顶层 `offset` 字段中携带用户设置的歌词时间偏移（毫秒）；当前没有歌词时返回 `null`。请求、响应结构、字段说明和调用示例见 [歌词接口文档](lyric-api.md)。
 
 ### 一键部署到 Vercel
 
@@ -132,7 +146,9 @@ vercel env pull .env.local
 | --- | --- | --- |
 | `VITE_NETEASE_API_BASE` | 网易云音乐 API 实例地址 | 是 |
 | `VITE_KUGOU_API_BASE` | Web 版的 KuGouMusicApi 实例地址；Electron 不使用此项 | 否，默认留空 |
-| `VITE_QQ_API_BASE` | QQ 音乐 API 实例地址；留空时 QQ 入口可见但不可用 | 否，默认留空 |
+| `VITE_QQ_API_BASE` | QQ 音乐 API 实例地址；Cloudflare / Vercel 上可填 `/api/qq` 用本仓库内置的 serverless 入口；留空时 QQ 入口可见但不可用 | 否，默认留空 |
+| `QQ_SESSION_SECRET` | serverless 形态下加密登录态用的服务端密钥，**不加 `VITE_` 前缀**；未设置时 QQ 登录路由回 501，曲库路由仍可用 | 用 `/api/qq` 时需要 |
+| `QQ_SESSION_SECRET_PREVIOUS` | 轮换 `QQ_SESSION_SECRET` 时用来验证旧令牌，避免把所有人一次性登出 | 否 |
 | `VITE_AI_PROVIDER` | AI 提供商，`google` 或 `openai` | 是 |
 | `GEMINI_API_KEY` | Gemini API Key | 使用 Gemini 时需要 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key | 使用 OpenAI兼容接口 时需要 |
@@ -214,9 +230,16 @@ vercel dev
 | `npm run build` | 构建 Web 版本 |
 | `npm run preview` | 预览构建结果 |
 | `npm run dev:electron` | 启动 Electron 开发模式 |
+| `npm run dev:electron:update-preview` | 启动 Electron 开发模式，并模拟显示版本更新提示 |
+| `npm run dev:electron:wallpaper` | 先构建 `windowtolayer`，再启动 Electron 开发模式（Linux 壁纸模式联调） |
 | `npm run dev:electron:dist` | 构建后以桌面模式运行 |
 | `npm run build:electron` | 打包桌面端应用 |
+| `npm run build:windowtolayer` | 单独构建 Linux 壁纸模式依赖的 `build/windowtolayer` |
 | `npm run stage:client` | 打开本地 Stage API 联调台 |
+
+所有 `dev:electron*` 脚本都会注入 `FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer`，让开发运行也能找到壁纸模式所需的
+`windowtolayer`（打包运行时用的是 `resources/windowtolayer`）。该二进制不随仓库分发，首次联调壁纸模式前先跑一次
+`npm run build:windowtolayer`（或直接用 `npm run dev:electron:wallpaper`）；二进制缺失时壁纸模式开关会自动回退关闭。
 
 ## 代码速查地图
 
@@ -225,7 +248,7 @@ vercel dev
 | App 顶层装配、overlay、dialog、播放器面板参数组装 | `src/components/app/*` |
 | 设置中心 UI | `src/components/modal/settings/*` |
 | 设置持久化、visualizer tuning、偏好 store | `src/stores/useSettingsUiStore.ts` |
-| 命令面板命令 | `src/components/command-palette/commandRegistry.ts` |
+| 命令面板命令 | `src/components/command-palette/commands/<group>Commands.ts`（`commandRegistry.ts` 只做拼接与过滤） |
 | visualizer 共享契约和注册 | `src/components/visualizer/definition.ts`、`src/components/visualizer/registry.tsx` |
 | visualizer 预览和设置面板 | `src/components/visualizer/VisPlayground.tsx`、`src/components/visualizer/VisPlaygroundSettingsPanel.tsx` |
 | visualizer 模式实现 | `src/components/visualizer/<mode>/*` |

@@ -3,22 +3,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appDatabase } from '../../../src/services/appDatabase';
 import { assignImportedSongs } from '../../../src/services/localLibraryCatalogService';
 import {
-    materializeLocalSongCoverBlobs,
+    cancelLocalCoverAssetMigration,
+    migrateLegacyLocalCoverAssetsInBackground,
     prepareLocalCoverBlob,
-    prepareLocalSongsCoverAssets,
     resetLocalCoverAssetRuntime,
 } from '../../../src/services/localCoverAssetService';
 import type { LocalSong } from '../../../src/types';
 import { hashLocalCoverBlobAsync } from '../../../src/utils/localMetadataWorkerClient';
+import { hasLocalCoverBinary, removeLocalCoverBinary, writeLocalCoverBinary } from '../../../src/services/localCoverBinaryStore';
 
 // test/unit/services/localCoverAssetService.test.ts
-// Verifies content-addressed cover deduplication, failure isolation, and simple runtime materialization.
+// Verifies one-time hashing, external deduplication, lightweight descriptors, and retry-safe migration.
 
 vi.mock('../../../src/utils/localMetadataWorkerClient', () => ({
     hashLocalCoverBlobAsync: vi.fn(),
 }));
 
-const buildSong = (id: string, embeddedCover?: Blob): LocalSong => ({
+vi.mock('../../../src/services/localCoverBinaryStore', async importOriginal => {
+    const actual = await importOriginal<typeof import('../../../src/services/localCoverBinaryStore')>();
+    return {
+        ...actual,
+        hasLocalCoverBinary: vi.fn(),
+        removeLocalCoverBinary: vi.fn(),
+        writeLocalCoverBinary: vi.fn(),
+    };
+});
+
+const buildSong = (id: string, localCoverAssetId?: string): LocalSong => ({
     id,
     fileName: `${id}.flac`,
     filePath: `Music/${id}.flac`,
@@ -34,7 +45,7 @@ const buildSong = (id: string, embeddedCover?: Blob): LocalSong => ({
     fileSize: 1,
     mimeType: 'audio/flac',
     addedAt: 1,
-    embeddedCover,
+    localCoverAssetId,
 });
 
 describe('localCoverAssetService', () => {
@@ -43,47 +54,47 @@ describe('localCoverAssetService', () => {
         await appDatabase.delete();
         await appDatabase.open();
         vi.mocked(hashLocalCoverBlobAsync).mockReset();
+        vi.mocked(hasLocalCoverBinary).mockReset().mockResolvedValue(false);
+        vi.mocked(removeLocalCoverBinary).mockReset().mockResolvedValue(undefined);
+        vi.mocked(writeLocalCoverBinary).mockReset().mockImplementation(async (_assetId, blob) => ({
+            backend: 'opfs',
+            mimeType: (blob as Blob).type,
+            size: (blob as Blob).size,
+        }));
+        vi.stubGlobal('window', {
+            dispatchEvent: vi.fn(),
+            setTimeout: globalThis.setTimeout,
+        });
+        vi.stubGlobal('CustomEvent', class {
+            constructor(public type: string, public init?: CustomEventInit) {}
+        });
     });
 
     afterEach(async () => {
         vi.restoreAllMocks();
+        vi.unstubAllGlobals();
         await appDatabase.delete();
     });
 
-    it('stores identical cover content once and leaves song batches with lightweight references', async () => {
+    it('hashes a shared cover once and stores one external payload for two song references', async () => {
         const assetId = `sha256:${'1'.repeat(64)}`;
-        const coverA = new Blob(['same-cover'], { type: 'image/png' });
-        const coverB = new Blob(['same-cover'], { type: 'image/png' });
-        vi.mocked(hashLocalCoverBlobAsync).mockImplementation(async cover => ({ cover, coverAssetId: assetId }));
-        const assetWrite = vi.spyOn(appDatabase.local_cover_assets, 'bulkPut');
+        const cover = new Blob(['same-cover'], { type: 'image/png' });
+        vi.mocked(hashLocalCoverBlobAsync).mockResolvedValue({ cover, coverAssetId: assetId });
 
-        const prepared = await prepareLocalSongsCoverAssets([
-            buildSong('one', coverA),
-            buildSong('two', coverB),
+        const prepared = await prepareLocalCoverBlob(cover);
+        await assignImportedSongs([
+            buildSong('one', prepared?.assetId),
+            buildSong('two', prepared?.assetId),
         ]);
-        await assignImportedSongs(prepared);
 
-        expect(prepared.map(song => song.localCoverAssetId)).toEqual([assetId, assetId]);
-        expect(prepared.every(song => song.embeddedCover instanceof Blob)).toBe(true);
-        expect(assetWrite).toHaveBeenCalledTimes(1);
+        expect(hashLocalCoverBlobAsync).toHaveBeenCalledOnce();
+        expect(writeLocalCoverBinary).toHaveBeenCalledOnce();
         expect(await appDatabase.local_cover_assets.count()).toBe(1);
-        expect((await appDatabase.local_music.toArray()).every(song => song.embeddedCover === undefined)).toBe(true);
-    });
-
-    it('retains the legacy Blob and a retry marker when cover hashing fails', async () => {
-        const cover = new Blob(['failed-cover'], { type: 'image/jpeg' });
-        vi.mocked(hashLocalCoverBlobAsync).mockResolvedValue(null);
-
-        const [prepared] = await prepareLocalSongsCoverAssets([buildSong('cover-write-failed', cover)]);
-        await assignImportedSongs([prepared]);
-
-        expect(prepared.localCoverAssetId).toBeUndefined();
-        expect(prepared.localCoverNeedsAssetMigration).toBe(true);
-        expect(prepared.embeddedCover).toBe(cover);
-        expect(await appDatabase.local_music.get(prepared.id)).toBeTruthy();
-        expect(await appDatabase.local_library_assignments.get(prepared.id)).toBeTruthy();
-        expect((await appDatabase.local_music.get(prepared.id))?.embeddedCover).toBeInstanceOf(Blob);
-        expect(await appDatabase.local_cover_assets.count()).toBe(0);
+        expect(await appDatabase.local_music.toArray()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ localCoverAssetId: assetId }),
+            expect.objectContaining({ localCoverAssetId: assetId }),
+        ]));
+        expect(await appDatabase.local_cover_assets.get(assetId)).not.toHaveProperty('blob');
     });
 
     it('infers the MIME type for a folder cover File whose browser type is empty', async () => {
@@ -95,49 +106,76 @@ describe('localCoverAssetService', () => {
 
         expect(result).toMatchObject({ assetId });
         expect(result?.blob.type).toBe('image/jpeg');
-        expect(await appDatabase.local_cover_assets.count()).toBe(0);
     });
 
-    it('rolls back a new asset when the owning song transaction fails', async () => {
+    it('releases a staged Blob after confirming that its binary already exists', async () => {
+        const assetId = `sha256:${'2'.repeat(64)}`;
+        const cover = new Blob(['existing-cover'], { type: 'image/png' });
+        vi.mocked(hashLocalCoverBlobAsync).mockResolvedValue({ cover, coverAssetId: assetId });
+        vi.mocked(hasLocalCoverBinary).mockResolvedValue(true);
+        await appDatabase.local_cover_assets.put({
+            id: assetId,
+            backend: 'opfs',
+            mimeType: cover.type,
+            size: cover.size,
+            createdAt: 1,
+        });
+        await prepareLocalCoverBlob(cover);
+
+        await assignImportedSongs([buildSong('existing-cover-song', assetId)]);
+        await appDatabase.local_cover_assets.delete(assetId);
+        vi.mocked(hasLocalCoverBinary).mockResolvedValue(false);
+        await assignImportedSongs([buildSong('existing-cover-song', assetId)]);
+
+        expect(writeLocalCoverBinary).not.toHaveBeenCalled();
+        expect(await appDatabase.local_music.get('existing-cover-song')).toMatchObject({
+            localCoverNeedsAssetMigration: true,
+        });
+    });
+
+    it('limits concurrent binary writes', async () => {
+        let hashIndex = 0;
+        let activeWrites = 0;
+        let maximumActiveWrites = 0;
+        vi.mocked(hashLocalCoverBlobAsync).mockImplementation(async cover => ({
+            cover,
+            coverAssetId: `sha256:${(hashIndex++).toString(16).padStart(64, '0')}`,
+        }));
+        vi.mocked(writeLocalCoverBinary).mockImplementation(async (_assetId, blob) => {
+            activeWrites += 1;
+            maximumActiveWrites = Math.max(maximumActiveWrites, activeWrites);
+            await new Promise(resolve => setTimeout(resolve, 5));
+            activeWrites -= 1;
+            return { backend: 'opfs', mimeType: (blob as Blob).type, size: (blob as Blob).size };
+        });
+        const prepared = await Promise.all(Array.from({ length: 8 }, (_, index) => (
+            prepareLocalCoverBlob(new Blob([`cover-${index}`], { type: 'image/png' }))
+        )));
+
+        await assignImportedSongs(prepared.map((coverResult, index) => (
+            buildSong(`bounded-write-${index}`, coverResult?.assetId)
+        )));
+
+        expect(maximumActiveWrites).toBeGreaterThan(1);
+        expect(maximumActiveWrites).toBeLessThanOrEqual(3);
+    });
+
+    it('cleans an unreferenced external asset if the owning song transaction fails', async () => {
         const assetId = `sha256:${'5'.repeat(64)}`;
         const cover = new Blob(['transaction-cover'], { type: 'image/png' });
         vi.mocked(hashLocalCoverBlobAsync).mockResolvedValue({ cover, coverAssetId: assetId });
-        const [prepared] = await prepareLocalSongsCoverAssets([buildSong('rollback-cover', cover)]);
+        await prepareLocalCoverBlob(cover);
         vi.spyOn(appDatabase.local_music, 'bulkPut').mockRejectedValueOnce(new Error('forced song failure'));
 
-        await expect(assignImportedSongs([prepared])).rejects.toThrow('forced song failure');
+        await expect(assignImportedSongs([buildSong('rollback-cover', assetId)])).rejects.toThrow('forced song failure');
 
         expect(await appDatabase.local_cover_assets.get(assetId)).toBeUndefined();
-        expect(await appDatabase.local_music.get(prepared.id)).toBeUndefined();
+        expect(await appDatabase.local_music.get('rollback-cover')).toBeUndefined();
     });
 
-    it('keeps the previous legacy cover when the asset-table write fails', async () => {
+    it('keeps a legacy IndexedDB Blob untouched when external migration fails', async () => {
         const assetId = `sha256:${'8'.repeat(64)}`;
         const cover = new Blob(['legacy-cover'], { type: 'image/png' });
-        vi.mocked(hashLocalCoverBlobAsync).mockResolvedValueOnce(null);
-        const [legacySong] = await prepareLocalSongsCoverAssets([buildSong('legacy-rollback', cover)]);
-        await assignImportedSongs([legacySong]);
-
-        vi.mocked(hashLocalCoverBlobAsync).mockResolvedValueOnce({ cover, coverAssetId: assetId });
-        const [updatedSong] = await prepareLocalSongsCoverAssets([{
-            ...legacySong,
-            embeddedMetadataVersion: 5,
-        }]);
-        vi.spyOn(appDatabase.local_cover_assets, 'bulkPut').mockRejectedValueOnce(new Error('quota exceeded'));
-
-        await expect(assignImportedSongs([updatedSong])).rejects.toThrow('quota exceeded');
-
-        const storedSong = await appDatabase.local_music.get(legacySong.id);
-        expect(storedSong?.localCoverAssetId).toBeUndefined();
-        expect(storedSong?.localCoverNeedsAssetMigration).toBe(true);
-        expect(storedSong?.embeddedMetadataVersion).toBeUndefined();
-        expect(storedSong?.embeddedCover).toBeInstanceOf(Blob);
-        expect(await appDatabase.local_cover_assets.get(assetId)).toBeUndefined();
-    });
-
-    it('reads a shared asset once while materializing multiple local songs', async () => {
-        const assetId = `sha256:${'3'.repeat(64)}`;
-        const cover = new Blob(['shared-cover'], { type: 'image/webp' });
         await appDatabase.local_cover_assets.put({
             id: assetId,
             blob: cover,
@@ -145,28 +183,83 @@ describe('localCoverAssetService', () => {
             size: cover.size,
             createdAt: 1,
         });
-        const assetRead = vi.spyOn(appDatabase.local_cover_assets, 'get');
-        const songs = await materializeLocalSongCoverBlobs([
-            { ...buildSong('one'), localCoverAssetId: assetId },
-            { ...buildSong('two'), localCoverAssetId: assetId },
-        ]);
+        vi.mocked(writeLocalCoverBinary).mockRejectedValueOnce(new Error('quota exceeded'));
 
-        expect(assetRead).toHaveBeenCalledTimes(1);
-        expect(songs.every(song => song.embeddedCover instanceof Blob)).toBe(true);
-        expect(songs[0].embeddedCover).toBe(songs[1].embeddedCover);
+        await migrateLegacyLocalCoverAssetsInBackground();
+
+        expect((await appDatabase.local_cover_assets.get(assetId))?.blob).toBeInstanceOf(Blob);
     });
 
-    it('clears a missing asset reference and marks the song for cover rehydration', async () => {
-        const assetId = `sha256:${'6'.repeat(64)}`;
+    it('replaces a migrated IndexedDB Blob with a lightweight descriptor', async () => {
+        const assetId = `sha256:${'9'.repeat(64)}`;
+        const cover = new Blob(['legacy-cover'], { type: 'image/webp' });
+        await appDatabase.local_cover_assets.put({
+            id: assetId,
+            blob: cover,
+            mimeType: cover.type,
+            size: cover.size,
+            createdAt: 1,
+        });
 
-        const [song] = await materializeLocalSongCoverBlobs([{
-            ...buildSong('missing-cover'),
-            localCoverAssetId: assetId,
-            localCoverSource: 'folder',
-        }]);
+        await migrateLegacyLocalCoverAssetsInBackground();
 
-        expect(song.localCoverAssetId).toBeUndefined();
-        expect(song.localCoverSource).toBeUndefined();
-        expect(song.localCoverNeedsAssetMigration).toBe(true);
+        expect(await appDatabase.local_cover_assets.get(assetId)).toMatchObject({
+            id: assetId,
+            backend: 'opfs',
+            mimeType: 'image/webp',
+        });
+        expect(await appDatabase.local_cover_assets.get(assetId)).not.toHaveProperty('blob');
+    });
+
+    it('continues migration after a complete batch of legacy assets fails', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const records = Array.from({ length: 21 }, (_, index) => {
+            const id = `sha256:${index.toString(16).padStart(64, '0')}`;
+            const blob = new Blob([`legacy-cover-${index}`], { type: 'image/png' });
+            return { id, blob, mimeType: blob.type, size: blob.size, createdAt: index + 1 };
+        });
+        const failedIds = new Set(records.slice(0, 20).map(record => record.id));
+        await appDatabase.local_cover_assets.bulkPut(records);
+        vi.mocked(writeLocalCoverBinary).mockImplementation(async (assetId, blob) => {
+            if (failedIds.has(assetId)) throw new Error('permanent legacy failure');
+            return { backend: 'opfs', mimeType: (blob as Blob).type, size: (blob as Blob).size };
+        });
+
+        await migrateLegacyLocalCoverAssetsInBackground();
+
+        expect(writeLocalCoverBinary).toHaveBeenCalledTimes(21);
+        expect(await appDatabase.local_cover_assets.get(records[20].id)).toMatchObject({
+            id: records[20].id,
+            backend: 'opfs',
+        });
+        expect(await appDatabase.local_cover_assets.get(records[20].id)).not.toHaveProperty('blob');
+    });
+
+    it('cancels an in-flight migration and removes the external orphan before clearing data', async () => {
+        const assetId = `sha256:${'c'.repeat(64)}`;
+        const cover = new Blob(['cancelled-cover'], { type: 'image/png' });
+        let finishWrite!: (value: { backend: 'opfs'; mimeType: string; size: number }) => void;
+        const writeStarted = new Promise<void>(resolve => {
+            vi.mocked(writeLocalCoverBinary).mockImplementationOnce(async () => {
+                resolve();
+                return await new Promise(writeResolve => { finishWrite = writeResolve; });
+            });
+        });
+        await appDatabase.local_cover_assets.put({
+            id: assetId,
+            blob: cover,
+            mimeType: cover.type,
+            size: cover.size,
+            createdAt: 1,
+        });
+
+        const migration = migrateLegacyLocalCoverAssetsInBackground();
+        await writeStarted;
+        const cancellation = cancelLocalCoverAssetMigration();
+        finishWrite({ backend: 'opfs', mimeType: cover.type, size: cover.size });
+        await Promise.all([migration, cancellation]);
+
+        expect(removeLocalCoverBinary).toHaveBeenCalledWith(assetId);
+        expect((await appDatabase.local_cover_assets.get(assetId))?.blob).toBeInstanceOf(Blob);
     });
 });

@@ -49,12 +49,19 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
     showSubtitleTranslation: 'options.showSubtitleTranslation',
     subtitleContentMode: 'options.subtitleContentMode',
     subtitleOverlayBackground: 'options.subtitleOverlayBackground',
+    subtitleOverlayOpacity: 'options.subtitleOverlayOpacity',
     showHarmonySubtitle: 'options.showHarmonySubtitle',
     harmonySubtitleBackground: 'options.harmonySubtitleBackground',
     subtitleFontInheritsLyrics: 'options.subtitleFontInheritsLyrics',
     subtitleFontFamily: 'options.subtitleFontFamily',
     visualizerBackgroundMode: 'options.visualizerBackgroundMode',
     backgroundOpacity: 'options.backgroundOpacity',
+    // The cover-color toggle is the one background row whose label lives outside the options
+    // namespace -- the settings card reuses the theme panel's wording for it.
+    useCoverColorBg: 'theme.addCoverColor',
+    disableVisualizerGeometricBackground: 'options.disableVisualizerGeometricBackground',
+    disableVisualizerVignette: 'options.disableVisualizerVignette',
+    staticMode: 'options.staticMode',
     lyricsCustomFontFamily: 'options.customFont',
     songThemeAutoSwitchEnabled: 'options.autoSwitchSongTheme',
     songThemeAutoGenerateEnabled: 'options.autoGenerateSongTheme',
@@ -88,6 +95,7 @@ const TUNING_MODES: Record<string, string> = {
     monetTuning: 'monet',
     pendoloTuning: 'pendolo',
     sonnetTuning: 'sonnet',
+    temperaTuning: 'tempera',
 };
 
 interface BoxTone {

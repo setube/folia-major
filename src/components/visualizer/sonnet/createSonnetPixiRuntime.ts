@@ -58,6 +58,7 @@ export interface SonnetRuntimeOptions {
     audioBands?: AudioBands;
     lyricsFontScale: number;
     staticMode: boolean;
+    transparentBackground: boolean;
     paused: boolean;
     songTitle?: string | null;
     songArtist?: string | null;
@@ -212,6 +213,9 @@ export class SonnetPixiRuntime {
                 kernelSize: 5,
                 resolution: 0.75,
             });
+            // Shares the scene's filter chain with the post-process vignette, so its padding would
+            // grow the shared render frame and drift the vignette outward as the outro blur ramps.
+            this.outroBlurFilter.repeatEdgePixels = true;
             scene.container.filters = [...(scene.container.filters ?? []), this.outroBlurFilter];
             this.outroBlurScene = scene;
         }
@@ -320,6 +324,7 @@ export class SonnetPixiRuntime {
             tuning: this.options.tuning,
             lyricsFontScale: this.options.lyricsFontScale,
             staticMode: this.options.staticMode,
+            transparentBackground: this.options.transparentBackground,
         }, this.iconTextures, this.options.program.paragraphs[index]);
         this.sceneCache.set(index, scene);
         this.sceneContainer.addChild(scene.container);

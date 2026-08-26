@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Settings2, X, Disc, SlidersHorizontal, ListMusic, User as UserIcon, Home as HomeIcon, FileAudio, FileText, Radio, Cloud, Star, Command, ChevronLeft } from 'lucide-react';
+import { Settings, Settings2, X, Disc, SlidersHorizontal, ListMusic, User as UserIcon, Home as HomeIcon, FileAudio, FileText, Radio, Cloud, Star, Command, ChevronLeft, MirrorRectangular } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Album, Artist, SongResult, Theme, PlayerState, ReplayGainMode, LocalPlaylist, ThemeMode, VisualizerMode } from '../types';
 import type { ProviderCollection, ProviderUser } from '../types/onlineMusic';
@@ -18,7 +18,9 @@ import type { OnlineLyricsState, PlayerLoopMode } from '../types';
 import type { AudioQualityPreference } from '../types/onlineMusic';
 import type { ThemeSourceModel } from '../hooks/themeControllerState';
 import { getPlaybackSourceRef, getPlaybackSongSource, hasMixedPlaybackSources } from '../utils/appPlaybackGuards';
+import { getSizedCoverUrl } from '../utils/coverUrl';
 import { omni } from '../services/onlineMusic/omni';
+import { usePlayerPanelTabShortcut } from '../hooks/usePlayerPanelTabShortcut';
 
 const TOUCH_GUIDE_DISPLAY_MS = 1400;
 
@@ -67,6 +69,8 @@ type UnifiedPanelPlaybackProps = {
     replayGainMode: ReplayGainMode;
     onChangeReplayGainMode: (mode: ReplayGainMode) => void;
     isFmMode: boolean;
+    fmModeLabel: string;
+    onOpenFmModePicker?: () => void;
     onFmTrash: () => void;
     onNextTrack: () => void;
     onPrevTrack: () => void;
@@ -85,6 +89,8 @@ type UnifiedPanelPlaybackProps = {
     onOpenSettings?: () => void;
     onOpenCommandPalette?: () => void;
     isCommandPaletteOpen?: boolean;
+    transparentPlayerBackground: boolean;
+    onToggleTransparentPlayerBackground: (enable: boolean) => void;
 };
 
 type UnifiedPanelQueueProps = {
@@ -184,6 +190,8 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
         replayGainMode,
         onChangeReplayGainMode,
         isFmMode,
+        fmModeLabel,
+        onOpenFmModePicker,
         onFmTrash,
         onNextTrack,
         onPrevTrack,
@@ -202,6 +210,8 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
         onOpenSettings,
         onOpenCommandPalette,
         isCommandPaletteOpen = false,
+        transparentPlayerBackground,
+        onToggleTransparentPlayerBackground,
     } = playback;
     const { playQueue, onPlaySong, queueScrollRef, onShuffle, onRemoveSong, onMoveSongToEnd, onMoveSongToNext } = queue;
     const {
@@ -346,6 +356,13 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
     } else if (isOnline) {
         tabs.splice(1, 0, { id: 'onlineLyrics' as PanelTab, label: t('localMusic.lyrics'), icon: FileText });
     }
+
+    usePlayerPanelTabShortcut({
+        isOpen,
+        currentTab,
+        availableTabs: tabs.map(tab => tab.id),
+        onTabChange,
+    });
 
     // Theme Helper
     // const isDaylight = theme.name === 'Daylight Default'; // Deprecated
@@ -698,7 +715,7 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
                                     className={`w-full aspect-square rounded-2xl overflow-hidden shadow-lg relative mb-4 ${placeholderBg} flex items-center justify-center group cursor-pointer`}
                                 >
                                     {coverUrl ? (
-                                        <img src={coverUrl} alt="Art" className="w-full h-full object-cover" />
+                                        <img src={getSizedCoverUrl(coverUrl, 512)} alt="Art" decoding="async" className="w-full h-full object-cover" />
                                     ) : (
                                         <Disc size={40} className="text-white/20" />
                                     )}
@@ -731,6 +748,31 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
                                             </button>
                                         </div>
                                     )}
+
+                                    {/* 右上角：播放页透明。不算高频，所以只占封面的空位，不占面板结构 */}
+                                    <div className={`absolute right-3 top-3 transition-all duration-200 ${
+                                        supportsHover
+                                            ? 'pointer-events-none group-hover:pointer-events-auto opacity-0 group-hover:opacity-100 translate-x-3 -translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0'
+                                            : `${isCoverActionsVisible ? 'pointer-events-auto opacity-100 translate-x-0 translate-y-0' : 'pointer-events-none opacity-0 translate-x-3 -translate-y-3'}`
+                                    }`}>
+                                        <button
+                                            type="button"
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                onToggleTransparentPlayerBackground(!transparentPlayerBackground);
+                                            }}
+                                            className={`w-11 h-11 rounded-full border backdrop-blur-md flex items-center justify-center transition-all ${
+                                                transparentPlayerBackground
+                                                    ? 'border-white/30 bg-white/85 text-zinc-900 hover:bg-white'
+                                                    : 'border-white/15 bg-black/25 text-white/90 hover:bg-black/40 hover:text-white'
+                                            }`}
+                                            title={t('options.transparentPlayerBackground')}
+                                            aria-label={t('options.transparentPlayerBackground')}
+                                            aria-pressed={transparentPlayerBackground}
+                                        >
+                                            <MirrorRectangular size={18} />
+                                        </button>
+                                    </div>
 
                                     <div className={`absolute left-3 bottom-3 transition-all duration-200 ${
                                         supportsHover
@@ -784,6 +826,7 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
                                         <button
                                             key={tab.id}
                                             onClick={() => onTabChange(tab.id)}
+                                            aria-pressed={currentTab === tab.id}
                                             className={`flex-1 py-2 flex items-center justify-center transition-all rounded-lg
                                                 ${currentTab === tab.id ? `${activeTabBg} shadow-sm` : 'opacity-40 hover:opacity-100'}`}
                                             title={tab.label}
@@ -867,6 +910,8 @@ const UnifiedPanel: React.FC<UnifiedPanelProps> = ({
                                         isFmMode ? (
                                             <FmTab
                                                 playerState={playerState}
+                                                modeLabel={fmModeLabel}
+                                                onOpenModePicker={onOpenFmModePicker}
                                                 onTogglePlay={onTogglePlay}
                                                 onNextTrack={onNextTrack}
                                                 onPrevTrack={onPrevTrack}

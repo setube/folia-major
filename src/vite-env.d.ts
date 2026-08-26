@@ -114,6 +114,7 @@ declare global {
     | { type: 'previous' }
     | { type: 'next' }
     | { type: 'seek'; time: number }
+    | { type: 'cycle-loop-mode' }
     | { type: 'resize-main-window'; width: number; height: number }
     | { type: 'set-main-window-border-visible'; visible: boolean }
     | { type: 'set-main-window-always-on-top'; enabled: boolean }
@@ -174,8 +175,11 @@ declare global {
     currentTime: number;
     duration: number;
     playerState: string;
+    loopMode: PlayerLoopMode;
     canGoPrevious: boolean;
     canGoNext: boolean;
+    prevTrackTitle: string | null;
+    nextTrackTitle: string | null;
     controlsDisabled: boolean;
     isStageActive: boolean;
     transparentModeEnabled: boolean;
@@ -499,8 +503,11 @@ declare global {
 
   interface Window {
     electron?: {
+      platform: string;
+      isLinuxX11: boolean;
       getSettings: () => Promise<any>;
       saveSettings: (key: string, value: any) => Promise<any>;
+      onWallpaperModeChanged?: (callback: (settings: Record<string, unknown>) => void) => () => void;
       setPlaybackDisplaySleepBlockingActive: (active: boolean) => Promise<boolean>;
       setAppLocale: (localeKey: 'en' | 'zh-CN' | 'in') => Promise<string>;
       getCacheDirectory: () => Promise<ElectronCacheDirectoryResult>;
@@ -525,6 +532,10 @@ declare global {
       removeCoverCache: (cacheKey: string) => Promise<boolean>;
       getCoverCacheUsage: () => Promise<number>;
       clearCoverCache: () => Promise<boolean>;
+      hasLocalCoverAsset: (assetId: string) => Promise<boolean>;
+      saveLocalCoverAsset: (assetId: string, data: ArrayBuffer, mimeType: string) => Promise<boolean>;
+      removeLocalCoverAsset: (assetId: string) => Promise<boolean>;
+      clearLocalCoverAssets: () => Promise<boolean>;
       generateTheme: (lyricsText: string, options?: { isPureMusic?: boolean; songTitle?: string }) => Promise<any>;
       fetchLyricProxy: (
         url: string,
@@ -564,6 +575,12 @@ declare global {
         callback: (payload: { requestId: string }) => void,
       ) => () => void;
       setNativeTheme: (themeSource: 'system' | 'light' | 'dark') => Promise<void>;
+      getMainWindowClickThroughEnabled: () => Promise<boolean>;
+      setMainWindowClickThroughEnabled: (enabled: boolean) => Promise<boolean>;
+      setMainWindowClickThroughUnlockHover: (active: boolean) => Promise<boolean>;
+      onMainWindowClickThroughChanged: (
+        callback: (state: { enabled: boolean; unlockHoverActive?: boolean }) => void,
+      ) => () => void;
       getMainWindowAlwaysOnTop: () => Promise<boolean>;
       setMainWindowAlwaysOnTop: (enabled: boolean) => Promise<boolean>;
       getObsBrowserSourceStatus: () => Promise<ElectronObsBrowserSourceStatus>;
@@ -574,7 +591,7 @@ declare global {
       publishObsBrowserSourceAudio: (audio: ElectronObsBrowserSourceAudio) => Promise<boolean>;
       getLyricApiStatus: () => Promise<import('./types/lyricApi').LyricApiStatus>;
       setLyricApiEnabled: (enabled: boolean) => Promise<import('./types/lyricApi').LyricApiStatus>;
-      publishLyricApiData: (lyrics: import('./types').LyricData | null) => Promise<boolean>;
+      publishLyricApiData: (lyrics: import('./types').LyricData | null, offset: number) => Promise<boolean>;
       onLyricApiStatusChanged: (callback: (status: import('./types/lyricApi').LyricApiStatus) => void) => () => void;
       getDiscordPresenceStatus: () => Promise<ElectronDiscordPresenceStatus>;
       publishDiscordPresenceSnapshot: (snapshot: ElectronDiscordPresenceSnapshot) => Promise<ElectronDiscordPresenceStatus>;
@@ -607,8 +624,10 @@ declare global {
         extension?: 'mp4' | 'webm',
         displayName?: string,
       ) => Promise<ElectronSaveDialogResult>;
+      reportDevicePixelRatio: (ratio: number) => Promise<void>;
       getMainWindowCaptureSource: () => Promise<ElectronWindowCaptureSource | null>;
-      prepareVideoExportWindow: (size: { width: number; height: number }) => Promise<boolean>;
+      // Returns `false` when the resize could not be prepared, otherwise the resolved DPR.
+      prepareVideoExportWindow: (size: { width: number; height: number }) => Promise<false | { success: boolean; dpr: number }>;
       restoreVideoExportWindow: () => Promise<boolean>;
       writeVideoExportFile: (filePath: string, data: ArrayBuffer) => Promise<boolean>;
       getStageStatus: () => Promise<StageStatus>;

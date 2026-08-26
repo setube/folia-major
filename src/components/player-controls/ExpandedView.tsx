@@ -50,6 +50,12 @@ export interface ExpandedViewProps {
     onToggleTimeline: () => void;
     onNextTrack?: () => void;
     onPrevTrack?: () => void;
+    /** 队列已到首尾且不环绕时为 false，用于把箭头置灰；省略视为可跳转。 */
+    canPrevTrack?: boolean;
+    canNextTrack?: boolean;
+    /** 相邻曲目标题，作为箭头的悬浮提示；未知时回落到通用文案。 */
+    prevTrackTitle?: string | null;
+    nextTrackTitle?: string | null;
     onToggleQueue?: () => void;
     /** 传歌手在 currentSong.artists 中的下标，由上层解析成具体的艺术家详情。 */
     onOpenArtist?: (artistIndex: number) => void;
@@ -79,6 +85,10 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
     onToggleTimeline,
     onNextTrack,
     onPrevTrack,
+    canPrevTrack = true,
+    canNextTrack = true,
+    prevTrackTitle = null,
+    nextTrackTitle = null,
     onToggleQueue,
     onOpenArtist,
     isLiked = false,
@@ -218,9 +228,9 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
 
                 <button
                     onClick={stop(onPrevTrack)}
-                    disabled={!onPrevTrack || controlsDisabled}
+                    disabled={!onPrevTrack || controlsDisabled || !canPrevTrack}
                     aria-label={t('player.controls.previous')}
-                    title={t('player.controls.previous')}
+                    title={prevTrackTitle || t('player.controls.previous')}
                     className={`${ICON_BUTTON_CLASS} opacity-60 hover:opacity-100 hover:bg-(--control-hover-bg) disabled:opacity-25`}
                     style={withHoverVar(tokens.hoverBackground, { color: primaryColor })}
                 >
@@ -241,9 +251,9 @@ const ExpandedView: React.FC<ExpandedViewProps> = ({
 
                 <button
                     onClick={stop(onNextTrack)}
-                    disabled={!onNextTrack || controlsDisabled}
+                    disabled={!onNextTrack || controlsDisabled || !canNextTrack}
                     aria-label={t('player.controls.next')}
-                    title={t('player.controls.next')}
+                    title={nextTrackTitle || t('player.controls.next')}
                     className={`${ICON_BUTTON_CLASS} opacity-60 hover:opacity-100 hover:bg-(--control-hover-bg) disabled:opacity-25`}
                     style={withHoverVar(tokens.hoverBackground, { color: primaryColor })}
                 >

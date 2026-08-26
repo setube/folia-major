@@ -8,6 +8,7 @@ import ObsBrowserSourceApp from './components/obs/ObsBrowserSourceApp';
 import ObsNowPlayingSourceApp from './components/obs/ObsNowPlayingSourceApp';
 import ObsPlayerCapSourceApp from './components/obs/ObsPlayerCapSourceApp';
 import TrayMenuApp from './components/tray/TrayMenuApp';
+import { initializeLocalCoverRuntime } from './services/localCoverRuntime';
 
 // src/bootstrap.tsx
 // Mounts the React app after index.tsx installs runtime-level browser shims.
@@ -24,18 +25,20 @@ const obsSource = searchParams.get('obsSource');
 // obsSource=now-playing / playercap: static OBS overlay that connects directly to NowPlaying / PlayerCap in the browser (no Electron SSE relay).
 const isNowPlayingObsSource = isObsBrowserSource && obsSource === 'now-playing';
 const isPlayerCapObsSource = isObsBrowserSource && obsSource === 'playercap';
-root.render(
-  <React.StrictMode>
-    {isNowPlayingObsSource
-      ? <ObsNowPlayingSourceApp />
-      : isPlayerCapObsSource
-        ? <ObsPlayerCapSourceApp />
-        : isObsBrowserSource
-          ? <ObsBrowserSourceApp />
-          : searchParams.get('remote') === '1'
-            ? <RemoteControlApp />
-            : searchParams.get('trayMenu') === '1'
-              ? <TrayMenuApp />
-              : <App />}
-  </React.StrictMode>
-);
+const renderApp = () => root.render(
+    <React.StrictMode>
+      {isNowPlayingObsSource
+        ? <ObsNowPlayingSourceApp />
+        : isPlayerCapObsSource
+          ? <ObsPlayerCapSourceApp />
+          : isObsBrowserSource
+            ? <ObsBrowserSourceApp />
+            : searchParams.get('remote') === '1'
+              ? <RemoteControlApp />
+              : searchParams.get('trayMenu') === '1'
+                ? <TrayMenuApp />
+                : <App />}
+    </React.StrictMode>
+  );
+
+void initializeLocalCoverRuntime().finally(renderApp);

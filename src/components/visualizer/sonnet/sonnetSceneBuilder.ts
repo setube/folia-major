@@ -23,6 +23,9 @@ import {
     type SonnetDebugShotInfo,
 } from './sonnetDebug';
 import { resolveSonnetGeoVariant } from './sonnetSpatialMgGeometry';
+import { resolveSonnetBackgroundMgVariant } from './sonnetBackgroundMgVariants';
+import { resolveSonnetBackgroundDecorVariant } from './sonnetBackgroundDecor';
+import { resolveSonnetFixedGeoVariant } from './sonnetFixedGeoVariants';
 
 // src/components/visualizer/sonnet/sonnetSceneBuilder.ts
 // Builds one bounded paragraph scene; playback-time mutation remains in the runtime controller.
@@ -63,9 +66,14 @@ export interface SonnetSceneBuildOptions {
     tuning: SonnetTuning;
     lyricsFontScale: number;
     staticMode: boolean;
+    transparentBackground: boolean;
 }
 
 const colorNumber = (pixi: PixiModule, color: string) => pixi.Color.shared.setValue(color).toNumber();
+
+export const shouldDrawSonnetSceneBackdrop = (showBackgroundMg: boolean, transparentBackground: boolean) => (
+    showBackgroundMg && !transparentBackground
+);
 
 export const buildSonnetScene = (
     pixi: PixiModule,
@@ -96,9 +104,11 @@ export const buildSonnetScene = (
     const postProcessFilters: import('pixi.js').Filter[] = [];
     if (showBackgroundMg) {
         const density = Math.round(4 + options.tuning.mgDensity * 5);
-        sceneBackgroundLayer.addChild(new Graphics()
-            .rect(0, 0, width, height)
-            .fill({ color: colorNumber(pixi, options.theme.backgroundColor), alpha: 0.10 }));
+        if (shouldDrawSonnetSceneBackdrop(showBackgroundMg, options.transparentBackground)) {
+            sceneBackgroundLayer.addChild(new Graphics()
+                .rect(0, 0, width, height)
+                .fill({ color: colorNumber(pixi, options.theme.backgroundColor), alpha: 0.10 }));
+        }
 
         for (let index = 0; index < density; index += 1) {
             const x = ((sceneSeed + index * 97) % 997) / 997 * width;
@@ -182,13 +192,14 @@ export const buildSonnetScene = (
             fontFamily,
             fontWeight: manualFontWeight,
         });
+        const shotSeed = sceneSeed + shotIndex * 97;
         const mgLayer = buildSonnetShotMg(
             pixi,
             shot.kind,
             options.theme,
             width,
             height,
-            sceneSeed + shotIndex * 97,
+            shotSeed,
             iconTextures
         );
         shotContainer.addChild(mgLayer);
@@ -242,14 +253,9 @@ export const buildSonnetScene = (
             ));
         });
         const bounds = shotContainer.getLocalBounds();
-        if (shot.kind === 'mask-reveal') {
-            const mask = new Graphics()
-                .rect(bounds.x - 6, bounds.y - 6, bounds.width + 12, bounds.height + 12)
-                .fill(0xffffff);
-            shotContainer.addChild(mask);
-            shotContainer.mask = mask;
-        }
-        // Debug overlay stays above the text and never feeds the bounds/mask math.
+        // `mask-reveal` is revealed by the glyph timeline. A bounds-sized mask would stay
+        // static while camera tracking and parallax move the shot, clipping open MG artwork.
+        // Debug overlay stays above the text and never feeds the bounds/focus math.
         shotContainer.addChild(buildSonnetMeasuredBoundsDebug(pixi, placements));
         const usesGeoMg = shot.kind === 'type-impact' || shot.kind === 'fragment-collage';
         const debugInfo = createSonnetShotDebugInfo({
@@ -261,7 +267,10 @@ export const buildSonnetScene = (
             shotCount: paragraph.shots.length,
             baseFontSize: fontSize,
             wordCount,
-            geoVariant: usesGeoMg ? resolveSonnetGeoVariant(sceneSeed + shotIndex * 97) : null,
+            geoVariant: usesGeoMg ? resolveSonnetGeoVariant(shotSeed) : null,
+            backgroundMgVariant: resolveSonnetBackgroundMgVariant(shotSeed),
+            fixedGeoVariant: usesGeoMg ? resolveSonnetFixedGeoVariant(shotSeed) : null,
+            backgroundDecorVariant: resolveSonnetBackgroundDecorVariant(shotSeed),
             placements,
             segmentTexts: segments.map(segment => segment.text),
         });
@@ -319,6 +328,12 @@ export const buildSonnetScene = (
         ? new pixi.BlurFilter({ strength: 0, quality: 1, kernelSize: 5, resolution: 0.5 })
         : null;
     if (transitionBlurFilter) {
+        // BlurFilter's padding is strength * 2, and Pixi pads the chain's shared render frame
+        // (already clipped to the viewport) by the sum of all enabled filters' padding. A growing
+        // frame rescales the vignette pass's screen coordinates, so ramping the blur brightened the
+        // vignette mid-transition. repeatEdgePixels pins padding at 0; the extra margin was
+        // off-screen anyway.
+        transitionBlurFilter.repeatEdgePixels = true;
         transitionBlurFilter.enabled = false;
         container.filters = [...(container.filters ?? []), transitionBlurFilter];
         postProcessFilters.push(transitionBlurFilter);

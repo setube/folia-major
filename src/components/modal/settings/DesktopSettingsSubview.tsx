@@ -68,6 +68,8 @@ export type DesktopSettingsPreferences = {
     onLaunchAtLoginModeChange: (mode: LaunchAtLoginMode) => void;
     onToggleOpenPlayerOnLaunch: (enabled: boolean) => void;
     openPlayerOnLaunch: boolean;
+    wallpaperMode: boolean;
+    onToggleWallpaperMode: (enabled: boolean) => void;
 };
 
 export type DesktopSettingsModel = {
@@ -78,6 +80,7 @@ export type DesktopSettingsModel = {
     onCheckForUpdates: () => Promise<void> | void;
     onDownloadUpdate: () => Promise<void> | void;
     onInstallUpdate: () => Promise<void> | void;
+    onOpenBaiduDownload: () => Promise<void> | void;
     onOpenChinaDownload: () => Promise<void> | void;
     onUpdateChannelChange: (channel: 'realeco' | 'limo' | 'cielo') => Promise<void> | void;
     onSaveElectronSettings: () => Promise<void> | void;
@@ -126,7 +129,10 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
         onLaunchAtLoginModeChange,
         onToggleOpenPlayerOnLaunch,
         openPlayerOnLaunch,
+        wallpaperMode,
+        onToggleWallpaperMode,
     } = preferences;
+    const isLinux = isElectron && window.electron?.platform === 'linux';
     const {
         canDownloadUpdate,
         canEnableAutoUpdate,
@@ -135,6 +141,7 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
         onCheckForUpdates,
         onDownloadUpdate,
         onInstallUpdate,
+        onOpenBaiduDownload,
         onOpenChinaDownload,
         onUpdateChannelChange,
         onSaveElectronSettings,
@@ -354,6 +361,32 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                 )}
             </section>
 
+            {isLinux && (
+                <section className="space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-2 opacity-60" style={{ color: 'var(--text-secondary)' }}>
+                        <AppWindow size={14} className="opacity-70" /> {t('options.wallpaperMode') || 'Wallpaper Mode'}
+                    </h3>
+                    <div className={`border rounded-2xl overflow-hidden ${borderColor} ${settingsCardClass}`}>
+                        <div className={`flex items-center justify-between p-4 gap-4 hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors border-b ${borderColor}`}>
+                            <div className="flex items-start gap-3 min-w-0">
+                                <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${settingsIconClass}`} style={{ color: 'var(--text-primary)' }}>
+                                    <AppWindow size={16} />
+                                </div>
+                                <div className="space-y-0.5 text-left">
+                                    <h4 className="text-sm font-semibold leading-none" style={{ color: 'var(--text-primary)' }}>
+                                        {t('options.wallpaperMode')}
+                                    </h4>
+                                    <p className="text-xs opacity-50 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                        {t('options.wallpaperModeDesc') || 'Sink the app window to the bottom of the desktop and keep it always visible as a lyrics wallpaper.'}
+                                    </p>
+                                </div>
+                            </div>
+                            {renderToggle(wallpaperMode, () => onToggleWallpaperMode(!wallpaperMode))}
+                        </div>
+                    </div>
+                </section>
+            )}
+
             <section className="space-y-4">
                 <h3 className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center justify-between gap-3 opacity-60" style={{ color: 'var(--text-secondary)' }}>
                     <span className="flex items-center gap-2">
@@ -512,26 +545,6 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                         )}
 
                         <div className="flex flex-wrap gap-2">
-                            <button
-                                type="button"
-                                onClick={() => window.electron?.openUpdateReleasePage(updateStatus.availableVersion)}
-                                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-3.5 py-2 text-xs font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                style={{ color: 'var(--text-primary)' }}
-                            >
-                                <ExternalLink size={14} />
-                                {t('options.openReleasePage') || 'Open Release Page'}
-                            </button>
-                            {electronSettings.UPDATE_CHANNEL === 'realeco' && updateStatus.platform !== 'linux' && (
-                                <button
-                                    type="button"
-                                    onClick={onOpenChinaDownload}
-                                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-3.5 py-2 text-xs font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]"
-                                    style={{ color: 'var(--text-primary)' }}
-                                >
-                                    <ExternalLink size={14} />
-                                    {t('options.downloadChina')}
-                                </button>
-                            )}
                             {!electronSettings.ENABLE_AUTO_UPDATE && (
                                 <button
                                     type="button"
@@ -554,6 +567,47 @@ const DesktopSettingsSubview: React.FC<DesktopSettingsSubviewProps> = ({
                                     {t('options.restartToInstallUpdate') || 'Restart to Install'}
                                 </button>
                             )}
+                        </div>
+
+                        {/* 备用下载入口收拢成可换行的小组，避免与更新主操作争抢视觉层级。 */}
+                        <div
+                            className="flex max-w-full flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1.5"
+                            aria-label={t('options.downloadSources')}
+                        >
+                            <span className="px-1.5 text-[11px] opacity-50" style={{ color: 'var(--text-secondary)' }}>
+                                {t('options.downloadSources')}
+                            </span>
+                            {electronSettings.UPDATE_CHANNEL === 'realeco' && updateStatus.platform !== 'linux' && (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={onOpenChinaDownload}
+                                        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium opacity-70 transition-colors hover:bg-white/10 hover:opacity-100"
+                                        style={{ color: 'var(--text-primary)' }}
+                                    >
+                                        <ExternalLink size={12} />
+                                        {t('options.quarkDrive')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={onOpenBaiduDownload}
+                                        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium opacity-70 transition-colors hover:bg-white/10 hover:opacity-100"
+                                        style={{ color: 'var(--text-primary)' }}
+                                    >
+                                        <ExternalLink size={12} />
+                                        {t('options.baiduDrive')}
+                                    </button>
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => window.electron?.openUpdateReleasePage(updateStatus.availableVersion)}
+                                className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium opacity-70 transition-colors hover:bg-white/10 hover:opacity-100"
+                                style={{ color: 'var(--text-primary)' }}
+                            >
+                                <ExternalLink size={12} />
+                                {t('options.githubRelease')}
+                            </button>
                         </div>
 
                         {updateStatus.platform !== 'linux' && (
