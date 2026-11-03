@@ -1,23 +1,18 @@
-import type React from 'react';
-import type LyricMatchModal from '../../modal/LyricMatchModal';
-import type NaviLyricMatchModal from '../../modal/NaviLyricMatchModal';
-import type OnlineLyricMatchModal from '../../modal/OnlineLyricMatchModal';
+import type { LyricMatchDialogProps } from '../../modal/lyric-match/LyricMatchDialog';
 import type UnavailableReplacementDialog from '../../modal/UnavailableReplacementDialog';
 import type SettingsModal from '../../modal/SettingsModal';
 import type ConfirmDialog from '../../shared/ConfirmDialog';
 import type { StatusMessage, SongResult, LocalSong } from '../../../types';
 import { isLocalPlaybackSong, isNavidromePlaybackSong, isStagePlaybackSong } from '../../../utils/appPlaybackGuards';
+import type React from 'react';
 
 // src/components/app/dialogs/buildAppDialogsModel.ts
 
-type LyricMatchDialogProps = React.ComponentProps<typeof LyricMatchModal>;
-type NaviLyricMatchDialogProps = React.ComponentProps<typeof NaviLyricMatchModal>;
-type OnlineLyricMatchDialogProps = React.ComponentProps<typeof OnlineLyricMatchModal>;
 type UnavailableReplacementDialogProps = React.ComponentProps<typeof UnavailableReplacementDialog>;
 type SettingsDialogProps = React.ComponentProps<typeof SettingsModal>;
 type ConfirmDialogProps = React.ComponentProps<typeof ConfirmDialog>;
 
-type AppStatusToast = StatusMessage & {
+export type AppStatusToast = StatusMessage & {
     isDaylight: boolean;
     toastKey: string;
 };
@@ -25,27 +20,29 @@ type AppStatusToast = StatusMessage & {
 export type AppDialogsModel = {
     statusToast?: AppStatusToast | null;
     lyricMatchDialog?: LyricMatchDialogProps | null;
-    naviLyricMatchDialog?: NaviLyricMatchDialogProps | null;
-    onlineLyricMatchDialog?: OnlineLyricMatchDialogProps | null;
     unavailableReplacementDialog?: UnavailableReplacementDialogProps | null;
     settingsDialog?: SettingsDialogProps | null;
-    providerSwitchConfirmDialog?: ConfirmDialogProps | null;
+    wallpaperEntryConfirmDialog?: ConfirmDialogProps | null;
 };
 
-type BuildAppDialogsModelParams = {
+// What this file can read for itself, so the caller never names it. See useAppDialogsModel below.
+type AppDialogsAmbient = {
     statusMsg: StatusMessage | null;
     isDaylight: boolean;
-    showLyricMatchModal: boolean;
-    showNaviLyricMatchModal: boolean;
-    showOnlineLyricMatchModal: boolean;
     currentSong: SongResult | null;
+    wallpaperEntryConfirmDialog: ConfirmDialogProps;
+};
+
+export type AppDialogsDeps = {
+    /** The window for matching lyrics by hand is open for the playing song. */
+    isLyricMatchOpen: boolean;
     localSongs: LocalSong[];
-    setShowLyricMatchModal: React.Dispatch<React.SetStateAction<boolean>>;
-    setShowNaviLyricMatchModal: React.Dispatch<React.SetStateAction<boolean>>;
-    setShowOnlineLyricMatchModal: React.Dispatch<React.SetStateAction<boolean>>;
-    handleLyricMatchComplete: () => Promise<void>;
-    handleNaviLyricMatchComplete: () => Promise<void>;
-    handleOnlineLyricMatchComplete: () => Promise<void>;
+    closeLyricMatch: () => void;
+    /** Each is given the song its window was opened for: the save may end after another song started. */
+    handleLyricMatchComplete: (matchedFor: SongResult, failureMessage?: string) => Promise<void>;
+    handleLyricMatchPureMusicMarkChanged: (marked: boolean) => Promise<void>;
+    handleNaviLyricMatchComplete: (matchedFor: SongResult) => Promise<void>;
+    handleOnlineLyricMatchComplete: (matchedFor: SongResult) => Promise<void>;
     pendingUnavailableReplacement: {
         originalSong: SongResult;
         replacementSong: SongResult;
@@ -54,29 +51,27 @@ type BuildAppDialogsModelParams = {
     setPendingUnavailableReplacement: React.Dispatch<React.SetStateAction<any>>;
     handleUnavailableReplacementConfirm: () => Promise<void>;
     settingsDialog?: SettingsDialogProps | null;
-    providerSwitchConfirmDialog?: ConfirmDialogProps | null;
 };
+
+type BuildAppDialogsModelParams = AppDialogsAmbient & AppDialogsDeps;
 
 // Builds the centralized dialog model for toast, lyric matching, and unavailable-song replacement.
 export const buildAppDialogsModel = ({
     statusMsg,
     isDaylight,
-    showLyricMatchModal,
-    showNaviLyricMatchModal,
-    showOnlineLyricMatchModal,
+    isLyricMatchOpen,
     currentSong,
+    wallpaperEntryConfirmDialog,
     localSongs,
-    setShowLyricMatchModal,
-    setShowNaviLyricMatchModal,
-    setShowOnlineLyricMatchModal,
+    closeLyricMatch,
     handleLyricMatchComplete,
+    handleLyricMatchPureMusicMarkChanged,
     handleNaviLyricMatchComplete,
     handleOnlineLyricMatchComplete,
     pendingUnavailableReplacement,
     setPendingUnavailableReplacement,
     handleUnavailableReplacementConfirm,
     settingsDialog = null,
-    providerSwitchConfirmDialog = null,
 }: BuildAppDialogsModelParams): AppDialogsModel => ({
     statusToast: statusMsg
         ? {
@@ -85,33 +80,37 @@ export const buildAppDialogsModel = ({
             toastKey: `${statusMsg.type}:${statusMsg.text}:${statusMsg.nonce ?? 0}`,
         }
         : null,
-    lyricMatchDialog: showLyricMatchModal
-        && currentSong
-        && isLocalPlaybackSong(currentSong)
-        && localSongs.some(song => song.id === currentSong.localRef.songId)
-        ? {
-            song: localSongs.find(song => song.id === currentSong.localRef.songId)!,
-            onClose: () => setShowLyricMatchModal(false),
-            onMatch: handleLyricMatchComplete,
-            isDaylight,
-        }
-        : null,
-    naviLyricMatchDialog: showNaviLyricMatchModal && currentSong && (currentSong as SongResult & { isNavidrome?: boolean }).isNavidrome
-        ? {
-            song: (currentSong as SongResult & { navidromeData: any }).navidromeData,
-            onClose: () => setShowNaviLyricMatchModal(false),
-            onMatch: handleNaviLyricMatchComplete,
-            isDaylight,
-        }
-        : null,
-    onlineLyricMatchDialog: showOnlineLyricMatchModal && currentSong && !isLocalPlaybackSong(currentSong) && !isNavidromePlaybackSong(currentSong) && !isStagePlaybackSong(currentSong)
-        ? {
-            song: currentSong,
-            onClose: () => setShowOnlineLyricMatchModal(false),
-            onMatch: handleOnlineLyricMatchComplete,
-            isDaylight,
-        }
-        : null,
+    // The window for matching lyrics by hand is one; the playing song's kind says how it is filled.
+    lyricMatchDialog: !isLyricMatchOpen || !currentSong
+        ? null
+        : isLocalPlaybackSong(currentSong)
+            ? localSongs.some(song => song.id === currentSong.localRef.songId)
+                ? {
+                    kind: 'local',
+                    song: localSongs.find(song => song.id === currentSong.localRef.songId)!,
+                    onClose: closeLyricMatch,
+                    onMatch: failureMessage => handleLyricMatchComplete(currentSong, failureMessage),
+                    onPureMusicMarkChanged: handleLyricMatchPureMusicMarkChanged,
+                    isDaylight,
+                }
+                : null
+            : isNavidromePlaybackSong(currentSong)
+                ? {
+                    kind: 'navidrome',
+                    song: (currentSong as SongResult & { navidromeData: any }).navidromeData,
+                    onClose: closeLyricMatch,
+                    onMatch: () => handleNaviLyricMatchComplete(currentSong),
+                    isDaylight,
+                }
+                : !isStagePlaybackSong(currentSong)
+                    ? {
+                        kind: 'online',
+                        song: currentSong,
+                        onClose: closeLyricMatch,
+                        onMatch: () => handleOnlineLyricMatchComplete(currentSong),
+                        isDaylight,
+                    }
+                    : null,
     unavailableReplacementDialog: {
         isOpen: Boolean(pendingUnavailableReplacement),
         originalSong: pendingUnavailableReplacement?.originalSong || null,
@@ -122,5 +121,5 @@ export const buildAppDialogsModel = ({
         onConfirm: handleUnavailableReplacementConfirm,
     },
     settingsDialog,
-    providerSwitchConfirmDialog,
+    wallpaperEntryConfirmDialog,
 });

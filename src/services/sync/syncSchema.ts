@@ -1,5 +1,8 @@
+import { normalizeRandomVisualizerModes } from '../../utils/randomVisualizerModes';
 import { sanitizeDualTheme } from '../themeSanitizer';
-import { hasVisualizerBackgroundMode } from '../../components/visualizer/backgrounds/registry';
+import { parseSubtitleOverlayLayout } from '../../utils/lyrics/subtitleOverlayLayout';
+// 背景模式没有 mod 投稿通道，静态清单与活注册表在任何时刻都等价。
+import { isBuiltinVisualizerBackgroundMode } from '../../types/visualizerModes';
 import {
     SYNC_SCHEMA_VERSION,
     type SyncLibraryExportBundle,
@@ -37,7 +40,7 @@ const isFontStyle = (value: unknown): value is SyncedVisualSettings['lyricsFontS
 );
 
 const isVisualizerBackgroundMode = (value: unknown): value is NonNullable<SyncedVisualSettings['visualizerBackgroundMode']> => (
-    hasVisualizerBackgroundMode(value)
+    isBuiltinVisualizerBackgroundMode(value)
 );
 
 const parseSyncedVisualSettings = (value: Record<string, unknown>): SyncedVisualSettings => {
@@ -45,16 +48,21 @@ const parseSyncedVisualSettings = (value: Record<string, unknown>): SyncedVisual
 
     if (typeof value.followSystemTheme === 'boolean') settings.followSystemTheme = value.followSystemTheme;
     if (typeof value.visualizerMode === 'string' && value.visualizerMode.trim()) settings.visualizerMode = value.visualizerMode;
+    if (typeof value.randomVisualizerModePerSong === 'boolean') settings.randomVisualizerModePerSong = value.randomVisualizerModePerSong;
+    if (Array.isArray(value.randomVisualizerModes)) settings.randomVisualizerModes = normalizeRandomVisualizerModes(value.randomVisualizerModes);
     if (value.visualizerBackgroundMode === null) settings.visualizerBackgroundMode = null;
     else if (isVisualizerBackgroundMode(value.visualizerBackgroundMode)) settings.visualizerBackgroundMode = value.visualizerBackgroundMode;
     if (isFiniteNumber(value.backgroundOpacity)) settings.backgroundOpacity = value.backgroundOpacity;
     if (isFiniteNumber(value.visualizerOpacity)) settings.visualizerOpacity = value.visualizerOpacity;
     if (typeof value.hidePlayerTranslationSubtitle === 'boolean') settings.hidePlayerTranslationSubtitle = value.hidePlayerTranslationSubtitle;
     if (typeof value.showSubtitleTranslation === 'boolean') settings.showSubtitleTranslation = value.showSubtitleTranslation;
-    if (value.subtitleContentMode === 'translation' || value.subtitleContentMode === 'romanization' || value.subtitleContentMode === 'none') {
+    if (value.subtitleContentMode === 'translation' || value.subtitleContentMode === 'romanization' || value.subtitleContentMode === 'both' || value.subtitleContentMode === 'none') {
         settings.subtitleContentMode = value.subtitleContentMode;
     }
+    const subtitleOverlayLayout = parseSubtitleOverlayLayout(value.subtitleOverlayLayout);
+    if (subtitleOverlayLayout) settings.subtitleOverlayLayout = subtitleOverlayLayout;
     if (typeof value.subtitleOverlayBackground === 'boolean') settings.subtitleOverlayBackground = value.subtitleOverlayBackground;
+    if (typeof value.subtitleUpcomingLyricsBlur === 'boolean') settings.subtitleUpcomingLyricsBlur = value.subtitleUpcomingLyricsBlur;
     if (isFontStyle(value.lyricsFontStyle)) settings.lyricsFontStyle = value.lyricsFontStyle;
     if (isFiniteNumber(value.lyricsFontScale)) settings.lyricsFontScale = value.lyricsFontScale;
     if (value.lyricsFontWeight === null) settings.lyricsFontWeight = null;
@@ -68,6 +76,8 @@ const parseSyncedVisualSettings = (value: Record<string, unknown>): SyncedVisual
     else if (typeof value.subtitleFontFamily === 'string') settings.subtitleFontFamily = value.subtitleFontFamily;
     if (isStringArray(value.subtitleFontFallbackFamilies)) settings.subtitleFontFallbackFamilies = value.subtitleFontFallbackFamilies;
     if (isRecord(value.visualizerTunings)) settings.visualizerTunings = value.visualizerTunings;
+    // Frozen: the 13 lyric-style tunings below predate the visualizerTunings bundle, which carries any
+    // new style. Do not add a lyric style here.
     if (value.classicTuning !== undefined) settings.classicTuning = value.classicTuning;
     if (value.cadenzaTuning !== undefined) settings.cadenzaTuning = value.cadenzaTuning;
     if (value.partitaTuning !== undefined) settings.partitaTuning = value.partitaTuning;
@@ -79,10 +89,12 @@ const parseSyncedVisualSettings = (value: Record<string, unknown>): SyncedVisual
     if (value.monetBackgroundTuning !== undefined) settings.monetBackgroundTuning = value.monetBackgroundTuning;
     if (value.nomandBackgroundTuning !== undefined) settings.nomandBackgroundTuning = value.nomandBackgroundTuning;
     if (value.latentBackgroundTuning !== undefined) settings.latentBackgroundTuning = value.latentBackgroundTuning;
+    if (value.soraBackgroundTuning !== undefined) settings.soraBackgroundTuning = value.soraBackgroundTuning;
     if (value.monetTuning !== undefined) settings.monetTuning = value.monetTuning;
     if (value.pendoloTuning !== undefined) settings.pendoloTuning = value.pendoloTuning;
     if (value.sonnetTuning !== undefined) settings.sonnetTuning = value.sonnetTuning;
     if (value.temperaTuning !== undefined) settings.temperaTuning = value.temperaTuning;
+    if (value.lumiereTuning !== undefined) settings.lumiereTuning = value.lumiereTuning;
     if (Array.isArray(value.urlBackgroundList)) settings.urlBackgroundList = value.urlBackgroundList;
     if (value.urlBackgroundSelectedId === null) settings.urlBackgroundSelectedId = null;
     else if (typeof value.urlBackgroundSelectedId === 'string') settings.urlBackgroundSelectedId = value.urlBackgroundSelectedId;

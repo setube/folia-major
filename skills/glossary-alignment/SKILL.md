@@ -1,100 +1,164 @@
 ---
 name: glossary-alignment
-description: Use when the user refers to repository-specific terms such as home view, grid, player panel, local library, online provider, Stage, OBS, visualizer mode, queue, current song, search state, or another spoken component/state name and you need to map it quickly to current files.
+description: Use when the user refers to repository-specific spoken terms - home view, grid, player panel, local library, online provider, Stage, OBS, visualizer mode, queue, current song, search state, library suite and bravais wall terms (seam, spine, focus card, see-through windows) - and you need to turn that term into a name you can look up. Maps Chinese/English spoken terms to symbol or module names, not paths.
 ---
 
 # Glossary Alignment
 
-把口头术语先映射到当前代码的第一归属，再沿一层调用关系追实现。路径以代码为准；如果文档与代码冲突，直接指出旧映射。
+把口头术语换成**名字**，然后用 `ts-code-map` 的 `search` / `find_symbol` 解析成当前路径。
 
-## App / global state
+这里刻意不写路径。文件会改名、会移动、会拆目录，路径表撑不住；符号名和模块名稳定得多，
+而且真过期时 `search` 会直接告诉你找不到，不会像旧路径那样把你引到一个不存在的地方。
 
-- “主入口 / 播放器主调度 / 当前歌曲 / 主队列” -> `src/App.tsx`；入口 JSX 的区域边界在 `src/components/app/AppShell.tsx`、`Home.tsx`、`PlayerPanel.tsx`、`overlays/AppOverlays.tsx`、`dialogs/AppDialogs.tsx`。
-- “当前歌曲 / 播放队列 / 状态提示” -> `currentSong` / `playQueue` / `statusMsg` in `src/App.tsx`。
-- “home/player 切换 / 最后视图” -> `src/hooks/useAppNavigation.ts`（`last_app_view` 等持久化导航状态）。
-- “搜索词 / 搜索结果 / 搜索来源 tab / 首页 tab” -> `src/stores/useSearchNavigationStore.ts`。
-- “集合导航栈 / 当前集合” -> `src/stores/useCollectionNavigationStore.ts`。
-- “设置 UI 当前页 / quick editor” -> `src/stores/useSettingsUiStore.ts` / `useThemeQuickEditorStore.ts`。
+**用法**：查表拿到名字 → `search` 或 `find_symbol` 拿到当前位置 → 再往下读。
 
-## Home / library
+## App / 全局状态
 
-- “首页 / 网格首页 / 3D 首页” -> `src/components/app/Home.tsx` -> `components/app/home/buildHomeModel.ts`、`GridViewOverlayHost.tsx` -> `src/components/Grid3D.tsx` / `GridView.tsx`。
-- “集合卡片 / 网格导航 / 渐进加载 / 六边形 viewport” -> `src/components/folia-grid/*`。
-- “首页 collection adapter” -> `src/components/app/home/gridViewCollectionAdapters.ts`。
-- “本地库首页面 / 本地 3D 网格” -> `src/components/app/home/LocalGrid3DView.tsx`、`localGrid3DModel.ts`。
-- “Navidrome 首页面 / Navi 3D 网格” -> `src/components/app/home/NavidromeGrid3DView.tsx`、`useNavidromeGridLibrary.ts`。
-- “在线 provider 账号 / 登录 / 切换” -> `src/components/app/home/OnlineProvider*`、`onlineProviderAccountView.ts`，状态在 `src/stores/useOnlineProviderAccountStore.ts`，账号/二维码逻辑在 `src/hooks/useOnlineProvider*.ts`。
-- “本地库扫描 / 索引 / 重扫 / 播放” -> `src/hooks/useLocalLibraryCatalog.ts` -> `src/services/localLibraryCatalogService.ts`、`localLibraryCatalogInternals.ts`、`localMusicService.ts`、`src/utils/localLibraryIndex.ts`。
-- “本地文件夹 / 本地歌单 / 实体编辑 / artist split” -> `src/components/local-library-entity/*` -> `src/services/localLibraryEntityMutations.ts`、`localLibraryEntityRepository.ts`。
-- 旧路径 `src/components/LocalMusicView.tsx`、`src/components/local/LocalPlaylistView.tsx`、`src/components/navidrome/*` 不是当前入口。
+| 口头说法 | 名字 |
+| --- | --- |
+| 主入口 / 总装配 | `App`，区域边界看 `AppShell`、`Home`、`PlayerPanel`、`AppOverlays`、`AppDialogs` |
+| 当前歌曲 / 播放队列 | `usePlaybackStore` 的 `currentSong` / `playQueue`（`App` 从这里读） |
+| 状态提示 | `useStatusMessageStore`、`setStatusMessage` |
+| home/player 切换 / 最后视图 | `useAppNavigation` |
+| 搜索词 / 搜索结果 / 搜索来源 tab / 首页 tab | `useSearchNavigationStore` |
+| 集合导航栈 / 当前集合 | `useCollectionNavigationStore` |
+| 设置弹窗当前页 | `useSettingsModalStore`（只管 UI 状态，不存设置值） |
+| 某一项具体设置的值 | 按领域找 `use*SettingsStore`：`useAudioSettingsStore`、`useLyricSettingsStore`、`useThemeSettingsStore`、`useTypographySettingsStore`、`useVisualizerSettingsStore`、`useDesktopSettingsStore`、`useInteractionSettingsStore` 等 |
+| 主题快速编辑器 | `useThemeQuickEditorStore` |
 
-## Search / panel / dialogs
+## 首页 / 库
 
-- “搜索工作台 / 搜索结果页” -> `src/components/app/search/SearchWorkspace.tsx`、`SearchResultsList.tsx`、`SearchResultRow.tsx`；总 overlay 在 `src/components/app/overlays/AppOverlays.tsx`。
-- “右侧播放器面板 / unified panel” -> app entry `src/components/app/PlayerPanel.tsx` -> `player-panel/buildPlayerPanelModel.ts`；旧的实现仍在 `src/components/UnifiedPanel.tsx`。
-- “封面 / 控制 / 队列 / 本地 / Navi / FM / 账号 tab” -> `src/components/panelTab/{Cover,Controls,Queue,Local,Navi,Fm,Account}Tab.tsx`。
-- “overlay 总装配” -> `src/components/app/overlays/AppOverlays.tsx` + `buildAppOverlaysModel.ts`。
-- “dialog 总装配 / 设置 dialog” -> `src/components/app/dialogs/AppDialogs.tsx` + `buildAppDialogsModel.ts` / `buildSettingsDialogModel.ts`。
-- “设置弹窗 / 帮助 / 选项中心” -> `src/components/modal/SettingsModal.tsx`、`UserGuideModal.tsx`；设置分区在 `src/components/modal/settings/*`。
-- “本地歌词匹配 / Navi 歌词匹配” -> `src/components/modal/LyricMatchModal.tsx` / `NaviLyricMatchModal.tsx`。
-- “命令面板 / 快捷命令” -> `src/components/command-palette/commandRegistry.ts`、`types.ts`、`CommandPalette.tsx`。
+| 口头说法 | 名字 |
+| --- | --- |
+| 首页 / 网格首页 / 3D 首页 | `Home` → `buildHomeModel` / `useHomeModel` → `Grid3D` / `GridView` |
+| 集合卡片 / 网格导航 / 六边形 viewport | `folia-grid` 目录 |
+| 首页 collection adapter | `gridViewCollectionAdapters` |
+| 本地库首页面 / 本地 3D 网格 | `LocalGrid3DView`、`localGrid3DModel` |
+| Navidrome 首页面 | `NavidromeGrid3DView`、`useNavidromeGridLibrary` |
+| 本地库扫描 / 索引 / 重扫 | `useLocalLibraryCatalog` → `localLibraryCatalogService`、`localMusicService`、`localLibraryIndex` |
+| 本地文件夹 / 本地歌单 / 实体编辑 | `entityEditorModel`、`localPlaylistService` |
+| 在线 provider 账号 / 登录 | `useOnlineProviderAccountStore`、`useOnlineProviderPlatform`；登录窗口 `LoginHost`（`App.tsx` 挂一次）、`openLoginWindow`（`loginWindowStore`）；账户 controller `useLibraryAccountController` |
 
-## Playback / external surfaces
+## 资料库 suite / bravais 墙
 
-- “播放 transport / queue / audio bridge / visualizer bridge” -> `src/hooks/usePlaybackTransportController.ts`、`usePlaybackQueueController.ts`、`usePlaybackAudioBridge.ts`、`usePlaybackVisualizerBridge.ts`。
-- “在线播放 / 播放源适配 / 预取” -> `src/services/onlinePlayback.ts`、`playbackAdapters.ts`、`prefetchService.ts`。
-- “播放恢复 / 在线回退 / 播放缓存” -> `src/components/app/playback/*`。
-- “Stage 模式 / 外部播放器控制 / Stage session” -> `src/hooks/useStagePlaybackController.ts`、`src/utils/appStageHelpers.ts`、`src/utils/stageClientDemo.ts`、`src/utils/stagePlayerSnapshot.ts`、`electron/stageApi.cjs`。
-- “Now Playing / PlayerCap” -> `src/hooks/useNowPlayingSource.ts`、`usePlayerCapSource.ts`、`src/services/nowPlayingProvider.ts`、`playerCapProvider.ts`、`src/types/playerCap.ts`。
-- “OBS browser source / OBS lyrics / OBS web source” -> `src/components/obs/*`、`src/hooks/useObsBrowserSourcePublisher.ts`、`src/utils/obsBrowserSource.ts`、`src/types/obsBrowserSource.ts`。
-- “Remote 控制 / 远程歌词 / 视频导出” -> `src/components/remote/*`、`src/types/remoteControl.ts`、`src/hooks/useElectronVideoExportController.ts`、`src/services/electronVideoExport.ts`。
+资料库（Library）按 headless core 与 UI suite 分开：grid（默认、回退）、bravais（正式新 UI，「一面墙 + 一道缝」）、tui（开发验证）。
+bravais 的口头说法大多来自它的设计稿（不在仓库里，常用的说法已收进下表）。
 
-## Online music and data
+| 口头说法 | 名字 |
+| --- | --- |
+| 资料库界面 / UI suite / 换 suite | `useLibrarySuiteStore`（存的是选择）、`resolveActiveLibrarySuiteId` / `useActiveLibrarySuiteId`（生效的那套）、`chooseLibrarySuite` → `switchLibrarySuite`、设置节 `LibrarySuiteSection`；「是不是 bravais」用 `useIsBravaisLibraryActive` |
+| 初始选择 / 回退 suite | `LIBRARY_SUITE_INITIAL_CHOICE`（开发阶段 bravais）、`DEFAULT_LIBRARY_SUITE_ID`（grid） |
+| 舞台 / stage / 常驻墙 | `BravaisStage`；宿主侧 `LibrarySuiteStageSlot`、`resolveLibraryStage`、`LibrarySuiteStageProps` |
+| 层 / 层描述 | `BravaisLayer`，由 surface 经 `useBravaisLayerRegistration` 推进 `bravaisStageStore` |
+| 墙 / 磁贴 / 窗位以外的空画框 | `BravaisWall`、`BravaisTile`（种类 `BravaisTileKind`：content / wall / window） |
+| 共享 wall 引擎 / 墙面几何 | `wall` 目录：`wallSlots`、`rankSlots`、`finiteWall`、`seamPlan`、`flipPlan`、`startTile`、`blockReservedSlots`、`WallTitle` |
+| 块 / slot / rank（严格 rank） | `WallSlot`、`rankSlots`；12×8 块的模板 `blockTemplates` |
+| 有限墙 / 有限拼贴 / 退化（过滤中） | `planFiniteWall`、`planBravaisFinite`；层的 `mode: 'finite'` |
+| 无限墙 / 无限拼贴 / 循环偏移 | `getInfiniteSlotItem`、`getStartWrapOffset`；层的 `mode: 'infinite'` |
+| 翻牌 | `planFlip`、`diffDisplays`、`resolveTileTransition`；磁贴只转内容层 |
+| 起点磁贴 | `setBravaisPendingOrigin` / `takeBravaisPendingOrigin`、`recordPushOrigin`（`beforePush`）、`resolveStartSlotKey` |
+| 聚焦卡 / 块内让位 | `useBravaisFocus`、`BravaisFocusCardBody`、`layoutFocusedBlock`（`blockReflows`）、`revealRect` |
+| 缝 / 裂缝 | `BravaisSeam`、`useBravaisSeam`、`BravaisSeamContent`；开口目标 `resolveSeamTarget` / `resolveStageSeamTarget` |
+| 信息条 / 书脊 / 折叠（缝的开口等级） | `BravaisSeamLevel` 的 `full` / `spine` / `hidden`，全局 store `useBravaisSeamStore`；外观动作 `bravais-seam-full` / `-seam-spine` / `-seam-hide` |
+| 首页窄缝 / 缝里的搜索框 | `BravaisSeamHome`、`BravaisSeamSearch` |
+| 缝只开在块边界 / 相机让位 / 边缘收起、就地重开 | `blockSeamPlan`、`getSeamGeometry`、`getSeamSplitOffsets`；外观动作 `bravais-seam-here` |
+| 播放条安全区 | `useBravaisPlayerSafeArea` |
+| 面板（列表面板 / 目录树面板） | `BravaisListPanel`、`BravaisDirectoryPanel`（`useBravaisDirectoryPanel`、`BravaisHomeDirectory`）；面板 history `openBravaisPanel` / `bravaisPanelHistory`（记录标记 `bravaisPanel`） |
+| 批量模式 | 目录树面板开着时的首页本地层；core 侧 `useLibraryDirectorySelection` |
+| 管理隐藏视图 | `useLibraryDirectoryVisibility`（`browse` / `manage` / `manage-hidden-only`） |
+| 表单态（改名、删除确认、加入歌单） | `reduceBravaisForm`、`BravaisSeamFormView` |
+| 缝里的账户入口（点了打开登录窗口） | `BravaisSeamAccountSwitcher`（`useBravaisHomeAccount`）；窗口本身 `src/components/login/LoginHost`，`openLoginWindow` |
+| 移除的两段翻牌 | `detectRemovedEntries`、`maskRemovedEntries` |
+| 整墙出场 / 入场（换页签、从搜索 / 播放页进出） | `planWallWave`、`BravaisEntrance`；换层种类 `resolveShiftKind`（push / back / replace / enter / exit） |
+| 降低动态效果（bravais） | `resolveBravaisReducedTransitions` |
+| 面包屑 / 跳层 | `BravaisSeamCrumbs`、`buildBravaisCrumbs`、`useBravaisPopTo`；契约 `onPopTo`、`trail`（`projectNavigationTrail`）；导航层 `popCollectionTo` |
+| 紧邻往返折叠（N1）/ 去环 | `resolveCollectionPush`（push / back / noop）、`popCollectionLayer`、`findLayerBaseIndex` |
+| 布局记忆 / 忘掉布局 | `readBravaisLayout` / `writeBravaisLayout`；manifest 的 `layout.forget` |
+| 外观动作 / suite-chrome | manifest 的 `chromeActions`、`useLibrarySuiteChromeRegistration`、`useBravaisChromeActions`；命令 `bravais-<id>` |
+| 透光 / 透光档位（实色 / 部分透明 / 全透明）/ 每块窗数 | `useLibraryWallLookStore`、`LibraryWallLook`、`LibraryWallLookSettings`、`useBravaisWallLook`；外观动作 `bravais-wall-look` |
+| 叠页边 / 集合叠页边（集合磁贴右下错开的页边） | `bravaisTileForm` 的 `stack`、`.bravais-tile-face.is-stack`、根节点 `has-stack-edges`；设置 `useLibraryWallLookStore.collectionStackEdges` |
+| Bravais 分组 / Bravais 墙面设置 | `BravaisSettingsSection`、锚点 `bravaisSettings`、命令 `settings-bravais` |
+| 窗 | 保留位 `blockReservedSlots`、`resolveReservedPerBlock`；磁贴种类 `window` |
+| 底板（按块 SVG） | `BravaisBlockPlates`、`useBravaisBlockPlates`、`bravaisBlockPlate`；让位逐帧重画 `useBravaisReflowPlate` |
+| 遮挡播放页 / 实色档卸载 visualizer | `reportPlayerOcclusion`、`useLibraryPlayerOcclusionStore`、`shouldMountPlayerVisualizer` |
+| 墙后的画面（透出的 visualizer 画不画歌词、模糊） | `reportPlayerBackdrop`、`selectLibraryPlayerBackdrop`、`playerVisualizerBackdrop` |
+| 信息条样式 / 透明信息条（缝的材质、预设） | `seamStyle`、`seamClear`、`libraryWallSeamStyle`、`bravaisSeamLooks.css` |
+| 队列墙 / Lattice | `Lattice`、`PosterWall`（独立的 app 视图，只和 bravais 共享 wall 引擎） |
 
-- “在线歌曲、搜索、歌词、音频、歌单、专辑、歌手、推荐、点赞、账户” -> public boundary `src/services/onlineMusic/omni.ts` + `src/types/onlineMusic.ts`。
-- “网易云 provider / 酷狗 provider” -> adapter `neteaseProvider.ts` / `kugouProvider.ts`，transport `kugouTransport.ts`；普通 UI、hook、store、app service 不应直连它们。
-- “provider 注册 / 账号缓存 / provider storage” -> `providerRegistry.ts`、`providerAccountCache.ts`、`providerStorage.ts`。
-- “Navidrome / Subsonic” -> `src/services/navidromeService.ts` + `src/types/navidrome.ts`；它不是在线歌曲 Omni provider。
-- “本地音乐 service / local playlist” -> `src/services/localMusicService.ts`、`localPlaylistService.ts`。
-- “统一歌曲 / 本地歌曲 / 播放身份” -> `src/types.ts`、`src/types/appPlayback.ts`、`src/utils/appPlaybackGuards.ts`、`appPlaybackHelpers.ts`。
+## 面板 / 搜索 / 弹窗
 
-## Lyrics / visualizer
+| 口头说法 | 名字 |
+| --- | --- |
+| 搜索工作台 / 搜索结果页 | `SearchWorkspace` |
+| 右侧播放器面板 / unified panel | 入口 `PlayerPanel` → `buildPlayerPanelModel`；旧实现仍在 `UnifiedPanel` |
+| 封面 / 控制 / 队列 tab 等 | `panelTab` 目录下的 `*Tab` |
+| overlay / dialog 总装配 | `AppOverlays` + `buildAppOverlaysModel`、`AppDialogs` + `buildAppDialogsModel` |
+| 设置弹窗 | `SettingsModal`；外观导入导出在 `ConfigTransferRows`、`visualConfigTransfer` |
+| 命令面板 | `commandRegistry`、`CommandPalette`、`useCommandPaletteContext` |
+| 加入歌单 | `AddToPlaylistHost` |
 
-- “歌词解析 / 原始歌词格式” -> `src/utils/lyrics/parserCore.ts`、`src/workers/lyricsParser.worker.ts` / `metadataParser.worker.ts`；visualizer 不负责 `.lrc/.vtt/.yrc/.qrc` 解析。
-- “短句 / render end / fast reveal” -> `src/utils/lyrics/renderHints.ts`。
-- “CJK 语义分组 / sticky 标点 / contraction” -> `src/utils/lyrics/cjkSemanticLayout.ts`。
-- “逐字 / grapheme timing” -> `src/utils/lyrics/graphemeTiming.ts`。
-- “visualizer 统一入口 / 当前行 / 背景” -> `src/components/visualizer/VisualizerRenderer.tsx`、`runtime.ts`、`backgrounds/VisualizerBackgroundRenderer.tsx`。
-- “visualizer shared props / tuning 类型” -> `src/components/visualizer/definition.ts`、`tuningRegistry.ts`、`src/types.ts`。
-- 模式入口统一为 `src/components/visualizer/<mode>/entry.tsx`：`classic`、`cadenza`、`partita`、`fume`、`cappella`、`tilt`、`claddagh`、`monet`、`diorama`、`pendolo`、`sonnet`。
-- “Partita layout / 预热” -> `src/components/visualizer/partita/VisualizerPartita.tsx` + `src/components/visualizer/partita/README.md`；共享 layout 工具仍在 `src/utils/lyrics/cjkSemanticLayout.ts`。
-- “Pendolo” -> `src/components/visualizer/pendolo/VisualizerPendolo.tsx`、`pendoloTextLayout.ts`、`pendoloTimeline.ts`、`PendoloClockworkCanvas.tsx`。
-- “Sonnet / Pixi” -> `src/components/visualizer/sonnet/VisualizerSonnet.tsx`、`createSonnetPixiRuntime.ts`、`sonnet*` helpers。
-- “字体栈 / 字重 / 颜色混合” -> `src/utils/fontStacks.ts`、`src/components/visualizer/colorMix.ts`。
+## 播放 / 外部界面
 
-## Settings / persistence / deployment
+| 口头说法 | 名字 |
+| --- | --- |
+| 播放 transport / queue / audio bridge | `usePlaybackTransportController`、`usePlaybackQueueController`、`usePlaybackAudioBridge`、`usePlaybackVisualizerBridge` |
+| 在线播放 / 播放源适配 / 预取 | `onlinePlayback`、`playbackAdapters`、`prefetchService` |
+| Stage 模式 / 外部播放器控制 | `useStagePlaybackController`、`appStageHelpers`、`stagePlayerSnapshot` |
+| Now Playing / PlayerCap | `useNowPlayingSource`、`usePlayerCapSource`、`nowPlayingProvider`、`playerCapProvider` |
+| OBS 浏览器源 | `useObsBrowserSourcePublisher`、`obsBrowserSource` |
+| 远程控制 / 视频导出 | `useElectronVideoExportController`、`electronVideoExport` |
 
-- “外观配置导入导出” -> `src/components/modal/settings/AppearanceSettingsSubview.tsx`；配置 schema 与状态 -> `src/types.ts` / `src/stores/useSettingsUiStore.ts`。
-- “播放 / 通用 / 集成 / 存储 / 桌面 / 实验室设置” -> `PlaybackSettingsSubview.tsx`、`GeneralSettingsSubview.tsx`、`IntegrationSettingsSubview.tsx`、`StorageSettingsSection.tsx`、`DesktopSettingsSubview.tsx`、`LabSettingsModal.tsx`。
-- “同步 / R2 / 主题 registry” -> `src/services/sync/syncCoordinator.ts`、`syncClient.ts`、`syncRepository.ts`、`settingsSnapshot.ts`、`themeSyncRegistry.ts`。
-- “IndexedDB / 主题、封面、二进制缓存” -> `src/services/db.ts`、`appDatabase.ts`、`repositories/*`、`binaryAssetStore.ts`、`coverCache.ts`、`themeCache.ts`。
-- “Electron 主进程 / API bridge” -> `electron/main.cjs`、`preload.cjs`、`stageApi.cjs`、`kugouApiBridge.cjs`、`updateChannels.cjs`；Web API 源码在 `api/`、`api-ts/`。
-- “Sync Server” -> `sync-server/src/app.ts`（路由/协议）、`src/node.ts`、`src/cloudflare.ts`、`src/d1-emulator.ts`；Worker 包装入口是 `worker/index.ts`。
-- “Docker Web stack” -> `deploy/docker/compose.yaml`、`compose.sync.yaml`、`compose.build.yaml`、`scripts/smoke-test.sh`。
+## 在线音乐
 
-## Fast lookup rules
+| 口头说法 | 名字 |
+| --- | --- |
+| 在线歌曲的一切（搜索/歌词/音频/歌单/账户） | `omni` —— 这是公共边界，普通调用只经过它 |
+| 某个平台的 provider | `neteaseProvider`、`kugouProvider`、`qqProvider`、`bodianProvider`、`ytmProvider`、`spotifyProvider`；请求在各自的 `*Transport`（网易云是 `neteaseApi`）—— 实现边界，UI/hook/store 不应直连 |
+| provider 注册 / 账号缓存 | `providerRegistry`（唯一的平台清单）、`providerAccountCache`、`providerStorage` |
+| 探索页 | `ExploreSurface`、`useExploreFeedStore`；平台那边是 `*Explore`（`createNeteaseExplore` 等）和 `exploreReads` |
+| Navidrome / Subsonic | `navidromeService` —— **不是** Omni provider |
 
-1. 术语带“页面 / 视图 / 弹窗 / tab”时，先找 `components/app/*`，再找具体展示组件。
-2. 术语带“状态 / 导航 / 偏好 / 当前模式”时，先找 `hooks/*` 和 `stores/*`。
-3. 术语带“模型 / 装配 / 派生 / 入口透传”时，先找相邻 `build*.ts` / `create*.ts`。
-4. 术语带“接口 / provider / 缓存 / 导入 / 播放流程”时，先找 `services/*`；在线歌曲先读 `onlineMusic/omni.ts`。
-5. 术语带“类型 / 模式枚举 / 共享结构”时，先找 `types.ts`、领域类型文件和 `visualizer/definition.ts`。
-6. 找到文档里的路径后先用 `git ls-files -- <path>` 验证；不存在的路径按旧文档处理，不要继续追。
+## 歌词 / Visualizer
 
-## What to avoid
+| 口头说法 | 名字 |
+| --- | --- |
+| 歌词解析 / 原始格式 | `parserCore` 和 `src/workers` 下的 parser worker；visualizer 不负责解析 |
+| 短句 / render end / fast reveal | `renderHints` |
+| CJK 语义分组 / sticky 标点 | `cjkSemanticLayout` |
+| 逐字 / grapheme timing | `graphemeTiming` |
+| visualizer 统一入口 / 背景 | `VisualizerRenderer`、`VisualizerBackgroundRenderer` |
+| visualizer shared props / tuning | `tuningRegistry`，以及 visualizer 目录下的 `definition` |
+| 某个模式 | 模式目录下的 `entry.tsx`；内建模式的 id 清单是 `BUILTIN_VISUALIZER_MODES`（registry 启动时和目录核对），别信文档里抄的列表 |
+| 字体栈 / 颜色混合 | `fontStacks`、`colorMix` |
 
-- 把所有首页逻辑都归到 `Home.tsx`，忽略 `buildHomeModel`、collection adapters、grid surface 和导航 store。
-- 把“右侧面板”只理解成某个 panel tab，忽略 `PlayerPanel` 和 `buildPlayerPanelModel`。
-- 把 Navidrome 当作 Omni provider，或让普通在线歌曲调用绕过 `omni`。
-- 把 `VisualizerMode` 当成 `App.tsx` 中的 switch；当前 registry 从每个模式的 `entry.tsx` 自动发现。
-- 把当前精确播放时间当 React state；连续值由 MotionValue / ref / canvas 等运行时路径处理。
+## 持久化 / 同步 / 部署
+
+| 口头说法 | 名字 |
+| --- | --- |
+| 同步 / R2 / 主题 registry | `syncCoordinator`、`syncClient`、`syncRepository`、`settingsSnapshot`、`themeSyncRegistry` |
+| IndexedDB / 各类缓存 | `appDatabase`、`binaryAssetStore`、`coverCache`、`themeCache` |
+| Electron 主进程 / bridge | `electron/` 下的 `main.cjs`、`preload.cjs`、`stageApi.cjs`；各平台的桥 `kugouApiBridge`、`bodianApiBridge`、`ytmApiBridge`、`spotifyApiBridge` |
+| Sync Server | `sync-server/src/` 下的 `app.ts`（路由/协议）、`node.ts`、`cloudflare.ts`、`d1-emulator.ts`；Worker 包装在 `worker/index.ts` |
+| Docker Web stack | `deploy/docker/` |
+
+## 名字对不上时的判断顺序
+
+0. 说的是一个功能（某个平台、登录、探索页、某个歌词样式）→ 先找这个功能自己的目录，新代码按功能放在一起。
+1. 带“页面 / 视图 / 弹窗 / tab” → 先看 `components/app/*`，再看具体展示组件。
+2. 带“状态 / 导航 / 偏好 / 当前模式” → 先看 `hooks` 和 `stores`。
+3. 带“模型 / 装配 / 派生” → 找相邻的 `build*` / `create*`。
+4. 带“接口 / provider / 缓存 / 播放流程” → 先看 `services`；在线歌曲一律先看 `omni`。
+5. 带“类型 / 枚举 / 共享结构” → 先看 `types`。
+6. 以上都不中 → 直接 `search`，让它退回全文搜索。
+
+## 容易搞错的几个
+
+- 别把首页逻辑都归给 `Home`，`buildHomeModel`、collection adapters、导航 store 各有分工。
+- 别把“右侧面板”只理解成某个 tab，入口是 `PlayerPanel` + `buildPlayerPanelModel`。
+- 别把 Navidrome 当成 Omni provider，也别让普通在线调用绕开 `omni`。
+- 别以为 `App.tsx` 里有 visualizer 模式的 switch，registry 从 `entry.tsx` 自动发现。
+- 别把精确播放时间当 React state，连续值走 MotionValue / ref / canvas。
+- 别找“统一的设置 store”，它已经按领域拆开了。
+- 别把 bravais 的「面板」当成右侧播放器面板：前者是缝展开成的列表 / 目录树（`BravaisListPanel` / `BravaisDirectoryPanel`），后者是 `PlayerPanel`。
+- 别把 bravais 的「过滤」和「全局搜索」混为一谈：过滤是命令面板内联框（`useGridCommandFilter`，会话里的过滤词），全局搜索提交后去 `SearchWorkspace`，离开墙。
+- 别在 `useLibrarySuiteStore` 的原始值上判断「当前是哪套 suite」，它可能是本构建没有的 id；用 `resolveActiveLibrarySuiteId`。

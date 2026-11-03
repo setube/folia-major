@@ -41,7 +41,9 @@ const sampleConfig = {
     hidePlayerTranslationSubtitle: true,
     showSubtitleTranslation: false,
     subtitleContentMode: 'romanization' as const,
+    subtitleOverlayLayout: 'current+next' as const,
     subtitleOverlayBackground: true,
+    subtitleUpcomingLyricsBlur: false,
     subtitleOverlayOpacity: 0.45,
     showHarmonySubtitle: false,
     harmonySubtitleBackground: false,
@@ -68,7 +70,9 @@ describe('buildObsAppearanceFromShortcode', () => {
         expect(a.hideTranslationSubtitle).toBe(true); // hidePlayerTranslationSubtitle → hideTranslationSubtitle
         expect(a.showSubtitleTranslation).toBe(false);
         expect(a.subtitleContentMode).toBe('romanization');
+        expect(a.subtitleOverlayLayout).toBe('current+next');
         expect(a.subtitleOverlayBackground).toBe(true);
+        expect(a.subtitleUpcomingLyricsBlur).toBe(false);
         expect(a.background.mode).toBe('monet');
         expect(a.background.common?.opacity).toBe(0.85);
         expect(a.background.transparent).toBe(true);

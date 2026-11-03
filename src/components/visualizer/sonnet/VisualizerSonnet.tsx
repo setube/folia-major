@@ -4,12 +4,23 @@ import { useTranslation } from 'react-i18next';
 import { DEFAULT_SONNET_TUNING } from '../../../types';
 import type { Line } from '../../../types';
 import { resolveThemeFontStack, resolveThemeFontWeight } from '../../../utils/fontStacks';
+import { resolveLyricAntialias } from '../../../utils/lyricRenderQuality';
 import { getLineRenderEndTime } from '../../../utils/lyrics/renderHints';
 import type { VisualizerSharedProps } from '../definition';
+import { useVisualizerPixiHost } from '../pixi/pixiRuntimeHost';
+import { useLyricRenderQuality } from '../renderQuality/useLyricRenderQuality';
 import { useVisualizerRuntime } from '../runtime';
+import { useVisualizerSongCommit } from '../songHandover';
+import { useFoliumTunings } from '@/mods/folium/registries/tunings';
+import { useVisualizerSettingsStore } from '../../../stores/useVisualizerSettingsStore';
+import { smartBeatActive } from '../../../services/beatFx/beatEffects';
 import VisualizerShell from '../VisualizerShell';
 import VisualizerSubtitleOverlay from '../VisualizerSubtitleOverlay';
-import type { SonnetPixiRuntime, SonnetSongMetadata } from './createSonnetPixiRuntime';
+import type {
+    SonnetPixiRuntime,
+    SonnetSongContext,
+    SonnetSongMetadata,
+} from './createSonnetPixiRuntime';
 import { compileSonnetProgram } from './sonnetProgram';
 
 // src/components/visualizer/sonnet/VisualizerSonnet.tsx
@@ -34,21 +45,39 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         songAlbum,
         isPlayerChromeHidden = false,
         hideTranslationSubtitle = false,
-        showSubtitleTranslation = true,
-        subtitleContentMode,
+        subtitleOverlayLayout,
         subtitleTheme,
         subtitleFontScale,
         subtitleOverlayOpacity,
         subtitleOverlayBackground,
+        subtitleUpcomingLyricsBlur,
         background,
+        isPreviewMode = false,
         sonnetTuning = DEFAULT_SONNET_TUNING,
     } = props;
     const transparentBackground = background?.transparent ?? false;
     const { t } = useTranslation();
+    // Mod-driven per-frame multipliers (K3Panel etc.). Read once per render; the
+    // runtime hot-swaps them via setModulation so the Pixi context is never rebuilt.
+    // Keys are the Folium tunables declared in ./entry.tsx.
+    const modulation = useFoliumTunings('sonnet');
     const hostRef = useRef<HTMLDivElement>(null);
-    const runtimeRef = useRef<SonnetPixiRuntime | null>(null);
     const pausedRef = useRef(paused);
     pausedRef.current = paused;
+    const sonnetTuningRef = useRef(sonnetTuning);
+    sonnetTuningRef.current = sonnetTuning;
+    // 分辨率与抗锯齿（#929）：全局挡位叠上本样式的覆盖。倍数乘在 textureResolution 上；抗锯齿「自动」是原来的
+    // !postProcessEnabled（开了后处理画面画进滤镜自己的多重采样目标，画布 MSAA 只剩画框边缘受益）。
+    // 预览（样式架小图、样式窗口、主题乐园）保持原来的密度和抗锯齿，不跟这两个设置。
+    const renderQuality = useLyricRenderQuality(sonnetTuning.render);
+    const renderScale = isPreviewMode ? 1 : renderQuality.scale;
+    const antialias = resolveLyricAntialias(isPreviewMode ? 'auto' : renderQuality.antialias, !sonnetTuning.postProcessEnabled);
+    const renderScaleRef = useRef(renderScale);
+    renderScaleRef.current = renderScale;
+    // 智能动感模式 is one setting for every visualizer, so it is not part of the Sonnet tuning prop.
+    const smartBeatEnabled = useVisualizerSettingsStore(state => smartBeatActive(state.smartBeat));
+    const smartBeatEnabledRef = useRef(smartBeatEnabled);
+    smartBeatEnabledRef.current = smartBeatEnabled;
     const latestSongMetadataRef = useRef<SonnetSongMetadata>({
         title: songTitle,
         artist: songArtist,
@@ -60,37 +89,18 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         album: songAlbum,
     };
     const [runtimeFailed, setRuntimeFailed] = useState(false);
-    const [isInstrumental, setIsInstrumental] = useState(false);
-    const lyricsSig = lines.length === 0 ? '' : `${lines.length}|${lines[0]?.fullText ?? ''}`;
-    const seedRef = useRef(seed);
 
-    useEffect(() => {
-        if (lyricsSig !== '') {
-            setIsInstrumental(false);
-            seedRef.current = seed;
-            return undefined;
-        }
-        if (seed !== seedRef.current) {
-            setIsInstrumental(false);
-            seedRef.current = seed;
-        }
-
-        let raf = 0;
-        let sawReset = false;
-        const startWall = performance.now();
-        const watch = () => {
-            const t = currentTime.get();
-            const capped = performance.now() - startWall >= 3000;
-            if (!sawReset && t < 1) sawReset = true;
-            if ((sawReset && t >= 2) || capped) {
-                setIsInstrumental(true);
-                return;
-            }
-            raf = requestAnimationFrame(watch);
-        };
-        raf = requestAnimationFrame(watch);
-        return () => cancelAnimationFrame(raf);
-    }, [seed, lyricsSig, currentTime]);
+    // The song actually on screen. It lags the props across a switch so the scene is never
+    // rebuilt against lyrics that have not arrived yet - see songHandover.ts.
+    const committedSong = useVisualizerSongCommit({
+        seed,
+        lines,
+        currentTime,
+        readyGraceMs: 3000,
+    });
+    const committedSeed = committedSong.seed;
+    const committedLines = committedSong.lines;
+    const isInstrumental = committedSong.isInstrumental;
 
     const virtualLines = useMemo(() => {
         if (!isInstrumental) return EMPTY_SONNET_LINES;
@@ -108,10 +118,12 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         return generated;
     }, [isInstrumental]);
 
-    const programLines = showText ? (lines.length > 0 ? lines : virtualLines) : EMPTY_SONNET_LINES;
+    const programLines = showText
+        ? (committedLines.length > 0 ? committedLines : virtualLines)
+        : EMPTY_SONNET_LINES;
     const program = useMemo(
-        () => compileSonnetProgram(programLines, seed),
-        [programLines, seed],
+        () => compileSonnetProgram(programLines, committedSeed),
+        [programLines, committedSeed],
     );
     const { activeLine, recentCompletedLine, nextLines } = useVisualizerRuntime({
         currentTime,
@@ -120,71 +132,70 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         getLineEndTime: getLineRenderEndTime,
     });
 
-    useEffect(() => {
-        const host = hostRef.current;
-        if (!host) return undefined;
-        let disposed = false;
-        let createdRuntime: SonnetPixiRuntime | null = null;
-        const abortController = new AbortController();
-        setRuntimeFailed(false);
-        void import('./createSonnetPixiRuntime')
-            .then(({ SonnetPixiRuntime }) => {
-                const metadata = latestSongMetadataRef.current;
-                return SonnetPixiRuntime.create({
-                    host,
-                    program,
-                    theme,
-                    tuning: sonnetTuning,
-                    currentTime,
-                    audioPower,
-                    audioBands,
-                    lyricsFontScale,
-                    staticMode,
-                    transparentBackground,
-                    paused: pausedRef.current,
-                    songTitle: metadata.title,
-                    songArtist: metadata.artist,
-                    songAlbum: metadata.album,
-                    signal: abortController.signal,
-                });
-            })
-            .then(runtime => {
-                if (disposed) {
-                    runtime.destroy();
-                    return;
-                }
-                createdRuntime = runtime;
-                runtimeRef.current = runtime;
-                runtime.setSongMetadata(latestSongMetadataRef.current);
-                // The pause state may have changed while Pixi was importing or initializing.
-                runtime.setPaused(pausedRef.current);
-            })
-            .catch(error => {
-                if (error instanceof DOMException && error.name === 'AbortError') return;
-                console.error('[Sonnet] Pixi runtime initialization failed', error);
-                if (!disposed) setRuntimeFailed(true);
+    // Song-scoped inputs, kept as one object so a track change is a single identity change.
+    const songContext = useMemo<SonnetSongContext>(
+        () => ({ seed: committedSeed, program, theme }),
+        [committedSeed, program, theme],
+    );
+
+    const runtimeRef = useVisualizerPixiHost<SonnetPixiRuntime, SonnetSongContext>({
+        hostRef,
+        label: 'Sonnet',
+        // Only inputs that genuinely need a new WebGL context. The song is handed to the live
+        // runtime instead - see SonnetPixiRuntime.swapSong.
+        // Of the tuning, only what shapes the canvas or the icon textures (whether the canvas is
+        // antialiased - post-processing decides that unless the 抗锯齿 setting forces it); the rest
+        // goes through setTuning, which rebuilds the scenes on the live context. The 分辨率 multiplier
+        // is pushed in place through setRenderScale.
+        rebuildKey: [
+            currentTime,
+            lyricsFontScale,
+            sonnetTuning.textureResolution,
+            antialias,
+            sonnetTuning.showOnlyText,
+            sonnetTuning.showBackgroundDecor,
+            staticMode,
+            transparentBackground,
+        ],
+        song: songContext,
+        create: async (host, song, signal) => {
+            const { SonnetPixiRuntime } = await import('./createSonnetPixiRuntime');
+            const metadata = latestSongMetadataRef.current;
+            const runtime = await SonnetPixiRuntime.create({
+                host,
+                songSeed: song.seed,
+                program: song.program,
+                theme: song.theme,
+                tuning: sonnetTuningRef.current,
+                renderScale: renderScaleRef.current,
+                antialias,
+                smartBeatEnabled: smartBeatEnabledRef.current,
+                currentTime,
+                audioPower,
+                audioBands,
+                lyricsFontScale,
+                staticMode,
+                transparentBackground,
+                paused: pausedRef.current,
+                songTitle: metadata.title,
+                songArtist: metadata.artist,
+                songAlbum: metadata.album,
+                signal,
+                modulation,
             });
-        return () => {
-            disposed = true;
-            abortController.abort();
-            if (createdRuntime) {
-                createdRuntime.destroy();
-                if (runtimeRef.current === createdRuntime) runtimeRef.current = null;
-            } else if (runtimeRef.current) {
-                runtimeRef.current.destroy();
-                runtimeRef.current = null;
-            }
-            host.replaceChildren();
-        };
-    }, [
-        currentTime,
-        lyricsFontScale,
-        program,
-        sonnetTuning,
-        staticMode,
-        theme,
-        transparentBackground,
-    ]);
+            runtime.setSongMetadata(latestSongMetadataRef.current);
+            // The tuning may have moved on while Pixi was importing or initializing.
+            runtime.setTuning(sonnetTuningRef.current);
+            runtime.setRenderScale(renderScaleRef.current);
+            runtime.setSmartBeatEnabled(smartBeatEnabledRef.current);
+            // The pause state may have changed while Pixi was importing or initializing.
+            runtime.setPaused(pausedRef.current);
+            return runtime;
+        },
+        swap: (runtime, song, signal) => runtime.swapSong(song, signal),
+        destroy: runtime => runtime.destroy(),
+        onFailedChange: setRuntimeFailed,
+    });
 
     useEffect(() => {
         runtimeRef.current?.setSongMetadata(latestSongMetadataRef.current);
@@ -193,6 +204,22 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
     useEffect(() => {
         runtimeRef.current?.setPaused(paused);
     }, [paused]);
+
+    useEffect(() => {
+        runtimeRef.current?.setTuning(sonnetTuning);
+    }, [sonnetTuning]);
+
+    useEffect(() => {
+        runtimeRef.current?.setRenderScale(renderScale);
+    }, [renderScale]);
+
+    useEffect(() => {
+        runtimeRef.current?.setSmartBeatEnabled(smartBeatEnabled);
+    }, [smartBeatEnabled]);
+
+    useEffect(() => {
+        runtimeRef.current?.setModulation(modulation);
+    }, [modulation]);
 
     useEffect(() => currentTime.on('change', () => {
         if (paused) runtimeRef.current?.renderOnce();
@@ -241,10 +268,10 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
                 subtitleFontScale={subtitleFontScale}
                 subtitleOverlayOpacity={subtitleOverlayOpacity}
                 subtitleOverlayBackground={subtitleOverlayBackground}
+                subtitleUpcomingLyricsBlur={subtitleUpcomingLyricsBlur}
                 isPlayerChromeHidden={isPlayerChromeHidden}
                 hideTranslationSubtitle={hideTranslationSubtitle}
-                showSubtitleTranslation={showSubtitleTranslation}
-                subtitleContentMode={subtitleContentMode}
+                subtitleOverlayLayout={subtitleOverlayLayout}
             />
         </VisualizerShell>
     );

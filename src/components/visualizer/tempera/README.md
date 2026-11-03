@@ -8,6 +8,7 @@
 
 - React shell / subtitle：`VisualizerTempera.tsx`；tuning 与 registry entry：`tuning.ts`、`entry.tsx`
 - Pixi runtime（scene cache ±1、绝对时间驱动、无外部纹理）：`createTemperaPixiRuntime.ts`
+  - runtime 只管生命周期、段落场景缓存、换歌交接和每帧调度；shot 逐帧姿态 `temperaShotFrame.ts`，段落转场选择 / 当前 shot / 是否重建场景 `temperaSceneFrame.ts`，片尾海报 `temperaCreditsLayer.ts`，角标与擦除块 `temperaOverlay.ts`，用户图片纹理池 `temperaImageTextures.ts`
 - 段落 / shot / slice 编译：`temperaProgram.ts`，类型与 `TEMPERA_SHOT_KINDS` 在 `types.ts`
 - 排版区域 / 入场向量 / 镜头位移 / mood（纯数据，无 pixi）：`temperaShotProfiles.ts`
 - 构图绘制：`compositions/*` 按族分文件，`temperaCompositions.ts` 注册聚合
@@ -15,15 +16,16 @@
 - 运动求解：`temperaMotion.ts`、`temperaMotionEasing.ts`、`temperaEnterStyles.ts`
 - 图形语汇：`temperaHatch.ts`（纯生成器）、`temperaShapes.ts`（Pixi Graphics 工厂）、`temperaBlocks.ts`（运动状态）
 - 文字反色：`temperaDifferenceFilter.ts`；scene 级 filter 挂载：`temperaSceneFilters.ts`；调色板：`temperaPalette.ts`；镜头：`temperaCamera.ts`
-- 画布图片池：`temperaImageLayer.ts`、`TemperaImageLayerControls.tsx`、`TemperaImageLayerDialog.tsx`、`useTemperaLayerImageThumbnails.ts`、`src/services/temperaLayerImages.ts`
+- 画布图片池：`temperaImageLayer.ts`、`TemperaImageLayerControls.tsx`、`TemperaImageLayerDialog.tsx`、`useTemperaLayerImageThumbnails.ts`、`src/services/temperaLayerImages.ts`；整组 zip 导入导出 `src/services/temperaImageArchive.ts`
+- 智能动感模式「墨染奥行」：墨 `temperaInkFlash.ts`，景深与运镜 `temperaDepth.ts`（见下面「墨染奥行」）
 
 ## 编译期：段落、shot、slice
 
-`tempera/VisualizerTempera.tsx` 负责 React shell/subtitle，`createTemperaPixiRuntime.ts` 创建 Pixi runtime（scene cache ±1、绝对时间驱动、无外部纹理）。与 sonnet 同族但视觉路线不同：`temperaProgram.ts` 编译段落/shot；镜头共 121 种，分十三族：分割/色带/框窗/海报/稀疏，加上 **cinema-shot**（各种画幅比例的遮幅窗口，中间镂空、按真实像素比例 aspect-fit，所以「正方形」在任何显示比例下都是方的）、**charm**（圆滑族，见下面「圆滑构图族」）、**aperture / signal / corridor**（镂空与几何构架三族，见下面「镂空族」）、**monolith / terrain**（粗野主义巨构两族，见下面「巨构族」）和 **monogatari-blank**（物语系过场卡：整屏单色平涂 + 大字，profile 上标 `sharedDecor: false` 跳过贯穿线与 motif 叠加，否则那层装饰会毁掉「留白卡」本身），定义在 `types.ts` 的 `TEMPERA_SHOT_KINDS`，排版区域/入场向量/镜头位移/mood 在 `temperaShotProfiles.ts`（纯数据、无 pixi），绘制在 `compositions/*` 按族分文件、由 `temperaCompositions.ts` 注册聚合；mood（quiet/neutral/loud）决定换气段只取安静构图、副歌不取安静构图；**一个 shot 只放半句**——每行按词边界切成 2~4 词或 ~2.2s 的 `TemperaShotSlice`，所以一句歌词会横跨多个 shot，shot 之间由 runtime 直接交接（上一个 shot 沿 flowAngle 继续推出画面、下一个从上游推进来，两者在 handoff 窗口内同屏重叠）；handoff 时长为 shot 时长的 0.3（钳在 0.4~1.1s），不再有 shot 级的场景转场；flowAngle 以垂直为主轴，交接因此读作纵向长镜头而非切换。段落转场为 `block-wipe`/`camera-pan`/`shape-carry`。间隙（≥1.2s）会被编译成 **bridge shot**：无歌词、只有构图的 shot，按 ≤5s 切成 1~3 个，走和普通 shot 完全相同的交接/镜头/装饰机制，所以器乐段落一直在动，段落转场的出画侧也始终有内容。此外平移类转场需要「另一头」有东西接：段落边界经常落在没有歌词的间隙里，所以转场窗口内会**预卷**下一个段落的 scene（`block-wipe` 除外——它的 enter 阶段是揭开遮罩，必须在边界之后），同时 `compileTemperaProgram` 把每段首个 shot 的 startTime 提前到上一段的转场起点（不越过上一段的 endTime），让新构图在间隙里就开始搭建；逐字时序完全不受影响。scene 容器开 `sortableChildren` 并按段落序号排 zIndex。转场边缘仍可能短暂露出 shell 背景，这是已知且**接受**的取舍，运动感优先于边缘覆盖，不要为了补边去掉平移。
+`tempera/VisualizerTempera.tsx` 负责 React shell/subtitle，`createTemperaPixiRuntime.ts` 创建 Pixi runtime（scene cache ±1、绝对时间驱动、无外部纹理）。与 sonnet 同族但视觉路线不同：`temperaProgram.ts` 编译段落/shot；镜头共 121 种，分十三族：分割/色带/框窗/海报/稀疏，加上 **cinema-shot**（各种画幅比例的遮幅窗口，中间镂空、按真实像素比例 aspect-fit，所以「正方形」在任何显示比例下都是方的）、**charm**（圆滑族，见下面「圆滑构图族」）、**aperture / signal / corridor**（镂空与几何构架三族，见下面「镂空族」）、**monolith / terrain**（粗野主义巨构两族，见下面「巨构族」）和 **monogatari-blank**（物语系过场卡：整屏单色平涂 + 大字，profile 上标 `sharedDecor: false` 跳过贯穿线与 motif 叠加，否则那层装饰会毁掉「留白卡」本身），定义在 `types.ts` 的 `TEMPERA_SHOT_KINDS`，排版区域/入场向量/镜头位移/mood 在 `temperaShotProfiles.ts`（纯数据、无 pixi），绘制在 `compositions/*` 按族分文件、由 `temperaCompositions.ts` 注册聚合；mood（quiet/neutral/loud）决定换气段只取安静构图、副歌不取安静构图。默认每行按词边界切成 2~4 词或 ~2.2s 的 `TemperaShotSlice`，所以一句歌词会横跨多个 shot；但两个紧挨着的单字中文词之间不切（否则「我/想/你」三个单字词会被 2~4 词的目标拆到两个 shot 里），这种粘连最多把 shot 撑到 3.2s；开启 `wholeLineLyrics` 后则以完整 `Line.fullText` 为单位构建 shot，代价是极长歌词会由现有 fit loop 自动缩小字号；此时单行段落整行都在镜头里，边角碎字与水印改从全曲其他行取，绝不重复画面上已有的字，全曲只有这一行时就不画装饰。shot 之间由 runtime 直接交接（上一个 shot 沿 flowAngle 继续推出画面、下一个从上游推进来，两者在 handoff 窗口内同屏重叠）；handoff 时长为 shot 时长的 0.3（钳在 0.4~1.1s），不再有 shot 级的场景转场；flowAngle 以垂直为主轴，交接因此读作纵向长镜头而非切换。段落转场为 `block-wipe`/`camera-pan`/`shape-carry`。间隙（≥1.2s）会被编译成 **bridge shot**：无歌词、只有构图的 shot，按 ≤5s 切成 1~3 个，走和普通 shot 完全相同的交接/镜头/装饰机制，所以器乐段落一直在动，段落转场的出画侧也始终有内容。此外平移类转场需要「另一头」有东西接：段落边界经常落在没有歌词的间隙里，所以转场窗口内会**预卷**下一个段落的 scene（`block-wipe` 除外——它的 enter 阶段是揭开遮罩，必须在边界之后），同时 `compileTemperaProgram` 把每段首个 shot 的 startTime 提前到上一段的转场起点（不越过上一段的 endTime），让新构图在间隙里就开始搭建；逐字时序完全不受影响。scene 容器开 `sortableChildren` 并按段落序号排 zIndex。转场边缘仍可能短暂露出 shell 背景，这是已知且**接受**的取舍，运动感优先于边缘覆盖，不要为了补边去掉平移。
 
 ## 排版
 
-`temperaLayout.ts` + `temperaMeasure.ts` 做拼贴式排版：Intl.Segmenter 分词**只用来定字号层级**，不影响字间距——词间只有在原文确实有空白（比对 `startOffset`/`endOffset`）时才给一个空格宽，CJK 的分词边界只留 0.035em 视觉微距；每行一个 hero 词放大到 1.34~1.6×、其余压到 0.7~0.86×，形成视觉重心，行高 1.02~1.12 保持紧凑，每字有独立入场向量，并按词从 `temperaEnterStyles.ts` 的 7 种入场方式里选一种——以**方向变体**为主（slide 用镜头自身向量，from-left/right/above/below 换来向，swing 额外带旋转，stamp 是唯一的原地样式）；所有变体共用排版算好的同一段位移距离、且等比缩放，长距离飞入和单轴拉伸都刻意去掉了——整词同一种，相邻词不同，所以一句话是被「拼」上去而不是统一滑入；有位移的样式还会拖出 2 层运动浮影（`echoLayer`，不参与反色）；`decor.watermark` 是编译期选出的超大装饰词，取自本 shot 没在排的词，放在**反色层之下**，于是歌词压过它的笔画时会翻色；关键字着色走共享的 `wordColoring.ts`（`theme.wordColors`，无独立开关），命中的字带 `color` 并渲染到 textLayer 之上的 **keywordLayer**——那层不挂 difference filter，否则主题色会被反色抹掉。
+`temperaLayout.ts` + `temperaMeasure.ts` 做拼贴式排版：分词（走 `utils/lyrics/wordSegmentation.ts`，用户为这首歌存过精细分词就用那份，否则 icu-folia 的默认分词——Intl.Segmenter 打底、中文换成 jieba、日文换成 BudouX，切出的是「实词＋后面粘着的虚词」这一级，见 `utils/lyrics/icuFolia`）**只用来定字号层级**，不影响字间距——词间只有在原文确实有空白（比对 `startOffset`/`endOffset`）时才给一个空格宽，CJK 的分词边界只留 0.035em 视觉微距；每行一个 hero 词放大到 1.34~1.6×、其余压到 0.7~0.86×，形成视觉重心，行高 1.02~1.12 保持紧凑，每字有独立入场向量，并按词从 `temperaEnterStyles.ts` 的 7 种入场方式里选一种——以**方向变体**为主（slide 用镜头自身向量，from-left/right/above/below 换来向，swing 额外带旋转，stamp 是唯一的原地样式）；所有变体共用排版算好的同一段位移距离、且等比缩放，长距离飞入和单轴拉伸都刻意去掉了——整词同一种，相邻词不同，所以一句话是被「拼」上去而不是统一滑入；有位移的样式还会拖出 2 层运动浮影（`echoLayer`，不参与反色）；`decor.watermark` 是编译期选出的超大装饰词，取自本 shot 没在排的词，放在**反色层之下**，于是歌词压过它的笔画时会翻色；关键字着色走共享的 `wordColoring.ts`（`theme.wordColors`，无独立开关），命中的字带 `color` 并渲染到 textLayer 之上的 **keywordLayer**——那层不挂 difference filter，否则主题色会被反色抹掉。
 
 ## 大面积色块与镜头
 
@@ -43,7 +45,7 @@
 
 ### 入场窗口与 `glyphSettleStretch`
 
-运动统一走 `temperaMotion.ts`（cubic-bezier 缓动 + 逐字 solver）。逐字入场窗口 = `0.34s + (本 shot 歌词结束 − 该字 startTime − 0.34) × SETTLE_STRETCH`。`SETTLE_STRETCH` 是唯一的旋钮，已经开放成 tuning `glyphSettleStretch`（默认 0.5），两端都实测过：**0** 等于每个字都拿同样的短窗口（快歌里每字 0.09s 内走完 80% 行程然后停住，很有打击感；但慢歌整句在第一秒内全部落位，之后彻底静止）；**1** 等于整个 shot 精确落在歌词结束那一刻（慢歌全程都在动；但快歌的平均「落位后静止时长」归零，全部字一直在飞，读起来是糊的）。默认 0.5：快歌里过半的字在切镜前已经静止，慢歌的入场仍然铺到句子深处；歌单节奏差异大的时候用户可以自己拨。注意它和 `glyphMotion` 不同——后者求解器每帧现读，这个是在排版阶段烘进 `settleTime` 的，所以必须进 `requiresSceneRebuild`。窗口对 startTime 单调递减，落位时刻也保持递增，所以是一道扫过去并收住的波，不会来回。目标是 **shot 内的歌词结束时间，不是源歌词行的**：一个 shot 只显示半句 slice，一行常常横跨好几个 shot（`shot.slices`），传进 `resolveTemperaLayout` 的 `lines` 本来就是这个 shot 自己的 slice 集合；照源行末尾去拉，shot 都交接完了字还在往里飘。同 shot 内的多个 slice 因此按同一个末端排期。入场曲线极度前重，所以长句是「一记果断的开场 + 长时间的慢爬」而不是慢吞吞地飘进来。**但透明度和残影不能跟着拉长**（`MAX_REVEAL_WINDOW`，1.35s）：字在移动过程中必须是可读的，残影拖过整句会变成糊而不是动感；短到够不着这个上限的入场行为完全不变。
+运动统一走 `temperaMotion.ts`（cubic-bezier 缓动 + 逐字 solver）。逐字入场窗口 = `0.34s + (本 shot 歌词结束 − 该字 startTime − 0.34) × SETTLE_STRETCH`。`SETTLE_STRETCH` 是唯一的旋钮，已经开放成 tuning `glyphSettleStretch`（默认 0.5），两端都实测过：**0** 等于每个字都拿同样的短窗口（快歌里每字 0.09s 内走完 80% 行程然后停住，很有打击感；但慢歌整句在第一秒内全部落位，之后彻底静止）；**1** 等于整个 shot 精确落在歌词结束那一刻（慢歌全程都在动；但快歌的平均「落位后静止时长」归零，全部字一直在飞，读起来是糊的）。默认 0.5：快歌里过半的字在切镜前已经静止，慢歌的入场仍然铺到句子深处；歌单节奏差异大的时候用户可以自己拨。注意它和 `glyphMotion` 不同——后者求解器每帧现读，这个是在排版阶段烘进 `settleTime` 的，所以必须进 `requiresSceneRebuild`。窗口对 startTime 单调递减，落位时刻也保持递增，所以是一道扫过去并收住的波，不会来回。目标是 **shot 内的歌词结束时间**：默认切分模式下不能照源行末尾去拉，否则 shot 都交接完了字还在往里飘；整句模式下 shot 的歌词结束时间自然就是该行末尾。传进 `resolveTemperaLayout` 的 `lines` 始终是这个 shot 自己的 slice 集合，同 shot 内的多个 slice 按同一个末端排期。入场曲线极度前重，所以长句是「一记果断的开场 + 长时间的慢爬」而不是慢吞吞地飘进来。**但透明度和残影不能跟着拉长**（`MAX_REVEAL_WINDOW`，1.35s）：字在移动过程中必须是可读的，残影拖过整句会变成糊而不是动感；短到够不着这个上限的入场行为完全不变。
 
 ### 唱完之后的 release
 
@@ -99,12 +101,38 @@
 
 ## 画布图片池
 
-用户可以往画布上放自己的图片（立绘/logo/纹理），它们构成一个**图片池**：每个 shot 由 seed 随机取一张（`resolveTemperaShotImage`，相邻 shot 不重复，`layerImageFrequency` 控制出现频率），位置由横纵两个轴的**对齐倾向**加 seed 抖动算出（`resolveTemperaImagePlacement`）。九宫格固定两个轴；纵向随机、横向随机分别只释放一个轴；不限会释放两个轴。翻转、微旋转、尺寸抖动也一并随机——逐张手摆坐标会让「池」失去意义。文件走仓库已有的 `visualizerImageAsset` 存进 IndexedDB，tuning 里只留 id + 横纵倾向 + 大小 + 不透明度，仍然能同步和导入导出。设置面板里只放一条**缩略图条 + 数量**的入口，增删改全部集中在 `TemperaImageLayerDialog`（走仓库的 `ThemedDialog` + `createPortal`，所以在 VisPlayground 和设置弹窗里都不会被祖先 transform 顶偏）——**代价是弹窗挂在 `document.body` 上，拿不到 AppShell 那个 div 上的 `--text-primary/--text-secondary/--text-accent`**：`color: var(--text-primary)` 在这里是无效声明，会回落到 body 的近白色，在 isDaylight 的白底面板上等于字全看不见，所以弹窗内的文字、描边、九宫格标记统一走 `temperaDialogTokens`（按 `ThemedDialog` 的两种面板底色给值，不跟专辑主题走），并在滚动容器上把这三个变量重新声明一遍，`TemperaRangeControl` 这类共用控件才能继续按 `var(--text-*)` 取色——图片池是「选图」，只列文件名等于没法选。**预览资源和实际资源是分开的**：上传时顺手用 canvas 压到最长边 256px 存成 `thumbnail`（webp），`loadTemperaLayerImageThumbnails` 优先取它、缺了才回落到原图；渲染器和 OBS 内联走的仍然是 `loadTemperaLayerImageBlobs` 的原分辨率。立绘常常是印刷级尺寸，池里又能放 16 张，拿原图去喂一排 80px 的预览框等于白解码几千万像素。缩略图 URL 由 `useTemperaLayerImageThumbnails` 按 **id 集合**（而不是数组引用）生成并负责 revoke：拖一次滑块就重读 IndexedDB、重新签发 URL 会让每张缩略图闪一下。弹窗里的所有编辑都只改 `TemperaImageLayerControls` 持有的 **draft**，**关窗时一次性提交**（保存按钮就是关窗）：`handleSetTemperaTuning` 一次写入 = 一次同步 localStorage 序列化 + 一次全局 store 更新，按 pointermove 的频率跑会直接把一个核吃满。编辑期间的反馈由 `TemperaImagePlacementEditor` 承担；它把图片 id 转成稳定 seed，并直接复用 `resolveTemperaImagePlacement`，所以 16:9 画面缩影与 Pixi 使用相同的横纵随机带、尺寸抖动、裁切、翻转和旋转。单张删除与清空全部都只记进 `removedIds`，提交时才真的从 IndexedDB 抹掉；卸载时若弹窗仍开着会补一次提交（effect 依赖必须为空数组，挂 `isDialogOpen` 会让每次正常关闭都提交两遍），否则刚上传的文件会变成没人引用的孤儿记录。**OBS 源由本地服务器以 `127.0.0.1:PORT` 提供，与主窗口不同源，读不到那个 IndexedDB**——所以图片池和 monet 背景/portrait、cappella 表情包一样，由 `useObsBrowserSourcePublisher` 解析成 data URL 随 SSE config 一起下发（`ObsBrowserSourceConfig.temperaLayerImageAssets`）；收到内联资源时 `VisualizerTempera` 完全不查存储。层次是全局设置：`back` 排在**反色 filter 之下**，立绘于是和色块一样会把歌词切开；`front` 压在歌词之上。纹理在 runtime 创建时一次性建好、由所有段落 scene 共用（scene 会随播放不断重建，逐 scene 加载会抖）；**不能用 `Assets.load`**——它按 URL 后缀选 parser，而 blob URL 没有后缀，会直接拒绝加载。改为把 Blob 交给 runtime 自己 `createImageBitmap`（SVG 回落到 `Image` 元素）再 `Texture.from`，顺带连 object URL 的生命周期都不用管了。
+用户可以往画布上放自己的图片（立绘/logo/纹理），它们构成一个**图片池**：每个 shot 由 seed 随机取一张（`resolveTemperaShotImage`，相邻 shot 不重复，`layerImageFrequency` 控制出现频率），位置由横纵两个轴的**对齐倾向**加 seed 抖动算出（`resolveTemperaImagePlacement`）。文件走 `visualizerImageAsset` 存进 IndexedDB，tuning 只保留 id、对齐、大小和不透明度；预览缩略图与渲染原图分开加载。编辑集中在 `TemperaImageLayerDialog` 的 draft 中，关窗时一次性提交。整组图片通过 `src/services/temperaImageArchive.ts` 导入导出 zip：`meta.json`、仅含 `layerImages` 的 `pool.json`，以及按 MIME 添加明确扩展名的 `images/<id>.<ext>`。导入会校验并钳制 placement，逐张写入失败或取消时回滚本次已写 blob；替换模式只把旧 id 记入待删除集合，直到新 draft 正式提交才删除旧文件。添加和导入期间禁止内层关闭；若外层设置页按 Esc 卸载，则 AbortSignal 会取消流程并回滚，不能破坏 live tuning。底部只有“添加图片”“导入备份”“导出备份”三个文件操作；“导入备份”在原地菜单中选择“追加到当前图片池”或“替换当前图片池”，拖入 zip 默认追加。压缩与解压使用 fflate 异步入口，结果通过 toast 汇报。
+
+**OBS 源由本地服务器以 `127.0.0.1:PORT` 提供，与主窗口不同源，读不到那个 IndexedDB**——所以图片池和 monet 背景/portrait、cappella 表情包一样，由 `useObsBrowserSourcePublisher` 解析成 data URL 随 SSE config 一起下发（`ObsBrowserSourceConfig.temperaLayerImageAssets`）；收到内联资源时 `VisualizerTempera` 完全不查存储。层次是全局设置：`back` 排在**反色 filter 之下**，立绘于是和色块一样会把歌词切开；`front` 压在歌词之上。纹理在 runtime 创建时一次性建好、由所有段落 scene 共用（scene 会随播放不断重建，逐 scene 加载会抖）；**不能用 `Assets.load`**——它按 URL 后缀选 parser，而 blob URL 没有后缀，会直接拒绝加载。改为把 Blob 交给 runtime 自己 `createImageBitmap`（SVG 回落到 `Image` 元素）再 `Texture.from`，顺带连 object URL 的生命周期都不用管了。
+
+## 渲染分辨率与纹理池
+
+`textureResolution`（默认 1.5）不是直接交给 pixi 的，先过 `../pixi/pixiTextureBudget.ts` 的 `snapResolutionToTexturePool`。原因是 pixi 的 `TexturePool.getOptimalTexture` 把每个 render target 逐轴向上取整到 2 的幂（`nextPow2(ceil(frame * resolution - 1e-6))`）并按这对尺寸做池 key，**一个 pass 是按「档位」计费而不是按画幅计费的**：781x850 的视口在 1.5x 下光栅化成 1172x1275，落进 2048x2048 的档，16MB 的纹理里 71% 从来没画过东西。Tempera 同时挂着若干这样的全屏 pass，加上反色 filter 的 backdrop 拷贝，浪费是成倍的。
+
+代价因此是**阶梯式而不是线性的**，这一点最容易估错：Intel 核显实测，窗口从 640x640 放大到 700x700（面积 +18%）会把常驻 GEM 从 628MB 抬到 822MB（+31%），只因为 1.5x700 越过了 1024，所有池化目标同时在两个轴上翻倍——画面本身没有任何变化配得上这个涨幅。
+
+所以吸附**只让出能换到更小档位的那部分分辨率**，而不是全局调低（全局调低哪儿都变糊，还是会落在原来那一档）。同一个 781x850 视口上它返回 1.2047 而不是 1.5：糊 20%，但池化目标从 2048x2048 降到 1024x1024（四分之一的显存），画幅对纹理的填充率从 29% 升到 92%——**每字节换到的清晰度是升的**。实测 tempera 在该视口下 GEM 978 -> 689MB（-30%），且 640/700 两档之间的跳变消失。
+
+三条约束：
+
+- 吸附**每轴只考虑降一档**，且只接受落在 `TEXTURE_POOL_MAX_RESOLUTION_DROP`（25%）以内的候选。边界太远的视口（2000x1200 在 1.5x 下要降到 1.024，砍 32%）保持原样——那种情况下多付一个档位比把整幅画糊掉三分之一划算。
+- 吸附值**随视口变化**，不只随设置变化，所以 `resizeToHost` 每次都要重算并跟着 `renderer.resize(w, h, resolution)` 一起下发；`setTuning` 比的也是吸附后的值，两个相邻滑块位置共用一个档位时不该白白重建 surface。
+- runtime 里那些**写死数值的 filter pass 一律从吸附后的 `renderResolution` 派生，不能读 `tuning.textureResolution`**（`resolveTemperaPassResolution` / `resolveTemperaTransitionBlurResolution` 的第二个参数就是它）。读设置的话，pass 会去要一个比它实际落地的 surface 更大的档位，正好是吸附想消掉的那部分浪费。
+
+吸附出来的画面与「用户手动把滑块拨到同一个值」**逐像素一致**（实测最大差 1/255），所以它不是一种新的渲染模式；`requiresSceneRebuild` 早就把 `textureResolution` 当作改变 scene 内容的字段，构图随分辨率轻微重排是这个模式一直以来的行为。
 
 ## tuning 的下发与重建
 
-tuning 变化通过 `runtime.setTuning()` **就地下发**，不重建 runtime：滑块拖动时每次 pointermove 都会产出新 tuning，而重建意味着重新初始化 WebGL、重新解码所有图片、重新测量所有行。只有真正改变 scene *内容* 的字段（色彩模式、显示开关、后处理、图片增删或层次变化）才清空 scene 缓存；cameraIntensity/glyphMotion 每帧现读，图片的位置/大小/旋转/透明度直接重设到已有 sprite 上。图片 blob 的加载按 **id 集合**（字符串 key）而不是数组引用触发，否则拖一次滑块就会把 IndexedDB 全读一遍。
+tuning 变化通过 `runtime.setTuning()` **就地下发**，不重建 runtime：滑块拖动时每次 pointermove 都会产出新 tuning，而重建意味着重新初始化 WebGL、重新解码所有图片、重新测量所有行。只有真正改变 scene *内容* 的字段（色彩模式、显示开关、后处理、图片增删或层次变化）才清空 scene 缓存；cameraIntensity/glyphMotion 每帧现读，墨染奥行的 depthPan/glyphDepth 也是；depthOfField 一半现读（视差幅度）、一半烘焙在 scene 里（模糊），所以它不进 `requiresSceneRebuild`，而是滑块停住 250ms 后重建一次 scene（`scheduleDepthBlurRebake`），拖动过程中只有视差跟手；图片的位置/大小/旋转/透明度直接重设到已有 sprite 上（开着景深时，只有大小、翻转变了才重新烘焙那张图的模糊，见下面「墨染奥行」）。图片 blob 的加载按 **id 集合**（字符串 key）而不是数组引用触发，否则拖一次滑块就会把 IndexedDB 全读一遍。
+
+## 墨染奥行（智能动感模式）
+
+凝彩的动感效果（`entry.tsx` 的 `beatEffects`，id `tempera.inkFlash`，读 htdemucs 的鼓点）。一个开关管两件事，关着时凝彩和没有这个效果时一样：
+
+- **墨**（`temperaInkFlash.ts`）：纸面平时一层浅灰水渍，底鼓、军鼓打下时漫过一片凝彩强调色的墨渍、水渍同时退掉，约 0.4 秒淡回。一张全屏 mesh、一个 GLSL ES 3.0 pass 画水渍和前后两次墨渍；每帧只由当前时间之前最近的鼓点决定，不累积状态，拖进度条、暂停后画面一致。只在 WebGL2 下开；静态模式、这首歌还没有鼓点时整层隐藏。四张噪声纹理每个进程生成一次，在效果打开后用 `requestIdleCallback` 分批生成，不占帧循环，齐之前墨不显示。
+- **景深与运镜**（`temperaDepth.ts`，逐帧部分在 `temperaShotFrame.ts`）：水印和背景图片在后、略虚、走得慢；前景图片在前、更虚、走得快；歌词层不模糊也不跟着视差动（反色滤镜要读它下面的像素）。模糊在建 scene 时按一半渲染分辨率烘焙成图（`createTemperaBlurBaker`），之后只平移这张图；图片的烘焙只在大小、翻转或半径变了时重做（`temperaImageLayer.ts` 的 bake key）。每个 shot 沿上下左右之一移镜头；字号即远近：大字在前、领先镜头，小字在后、落后并变淡，位移有上限，不会被带出画面。
+- 三个强度 tuning：`depthOfField`（景深：模糊半径和视差，模糊部分停手 250ms 后重建 scene）、`depthPan`（移镜头）、`glyphDepth`（歌词远近）。开关切换时运行时重建 scene（模糊是烘焙的），镜头和字的远近在 0.6 秒内缓入缓出（`depthMix`）。
 
 ## 音频
 
-Tempera 渲染层不消费音频（`audioPower`/`audioBands` 只传给共享背景层）。
+Tempera 渲染层不消费音频（`audioPower`/`audioBands` 只传给共享背景层）；「墨染奥行」读的是鼓点，见上一节。

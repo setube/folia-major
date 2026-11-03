@@ -1,27 +1,139 @@
-const { app, BrowserWindow, ipcMain, session, screen, dialog, shell, nativeImage, desktopCapturer, Menu, Tray, nativeTheme, powerSaveBlocker, safeStorage, protocol, net: electronNet } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, session, screen, dialog, shell, nativeImage, webContents: electronWebContents, Menu, Tray, nativeTheme, powerSaveBlocker, safeStorage, protocol, crashReporter, net: electronNet } = require('electron');
+// 必须先于其它模块加载：TEMP / TMP 里没展开的 %USERPROFILE% 会让 os.tmpdir() 变成相对路径（#690）。
+for (const repair of require('./tempDirEnvironment.cjs').repairTempDirEnvironment()) {
+  console.warn(`[TempDir] expanded ${repair.key}: ${repair.from} -> ${repair.to}`);
+}
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const Store = require('electron-store').default || require('electron-store');
 const crypto = require('crypto');
 const { createStageApi } = require('./stageApi.cjs');
+const { createModSystem } = require('./modSystem/modSystem.cjs');
+const { MOD_PROTOCOL_PRIVILEGED_SCHEME } = require('./modSystem/modProtocol.cjs');
 const { createWindowPlaybackHandoffStore } = require('./windowPlaybackHandoff.cjs');
-const wallpaperWatchdogModule = require('./wallpaperWatchdog.cjs');
-const { createKugouApiBridge } = require('./kugouApiBridge.cjs');
-const { createQqAuthSessionRepository } = require('./qqAuthSessionRepository.cjs');
+const { applyTileMemoryBudget } = require('./tileMemoryBudget.cjs');
+const { BACKGROUND_THROTTLING_SETTING_KEY, createBackgroundThrottling } = require('./backgroundThrottling.cjs');
+const {
+  GPU_PREFERENCE_SETTING_KEY,
+  applyGpuPreference,
+  createActiveGpuReader,
+  logGpuPreference,
+  normalizeGpuPreference,
+} = require('./gpuPreference.cjs');
+const {
+  REMOTE_CONTROL_HIDE_TITLEBAR_SETTING_KEY,
+  REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY,
+  REMOTE_CONTROL_EXPAND_COVER_SETTING_KEY,
+  REMOTE_CONTROL_TEXT_SHADE_SETTING_KEY,
+  REMOTE_CONTROL_WINDOW_POSITION_SETTING_KEY,
+  readRemoteControlWindowSettings,
+  shouldShowRemoteUnlockTrayItem,
+  applyRemoteControlMouseIgnore,
+} = require('./remoteControlWindowSettings.cjs');
+const {
+  REMOTE_CONTROL_WINDOW_WIDTH,
+  REMOTE_CONTROL_WINDOW_HEIGHT,
+  getInitialRemoteControlWindowPosition,
+  isPointOverRemoteControlStrip,
+  clampRemoteControlWindowX,
+  resolveRemoteControlWindowPosition,
+  getRemoteControlQueueExpansion,
+  getRemoteControlWindowBounds,
+  getRemoteControlCardPosition,
+} = require('./remoteControlWindowGeometry.cjs');
+const wallpaperWatchdogModule = require('./wallpaper/wallpaperWatchdog.cjs');
+const { requestWallpaperEntryConfirmation } = require('./wallpaper/wallpaperEntryRequest.cjs');
+const windowsWallpaperModule = require('./wallpaper/windowsWallpaperController.cjs');
+const { createWindowsWallpaperTargetResolver } = require('./wallpaper/windowsWallpaperTarget.cjs');
+const { createWindowsWallpaperMouseInjector } = require('./wallpaper/windowsWallpaperMouse.cjs');
+const macWallpaperModule = require('./wallpaper/macWallpaperController.cjs');
+const {
+  MAX_HIT_PANELS,
+  coversWholeWallpaper,
+  createMacWallpaperHitPanels,
+  readStageManagerDesktop,
+  toScreenHitRects,
+} = require('./wallpaper/macWallpaperHitPanels.cjs');
+const { createMacDesktopClickGuard, isAccessibilityTrusted } = require('./wallpaper/macDesktopClickGuard.cjs');
+const {
+  WALLPAPER_DISPLAY_SETTING_KEY,
+  normalizeWallpaperDisplayChoice,
+  resolveWallpaperDisplay,
+  isSameDisplay,
+  shouldMoveWallpaper,
+  describeWallpaperDisplays,
+} = require('./wallpaper/wallpaperDisplay.cjs');
+const { createKugouApiBridge } = require('./kugou/kugouApiBridge.cjs');
+const { createExternalUrlOpener } = require('./externalUrlPolicy.cjs');
+const { createSenderGuardedHandler } = require('./ipcAccessGuard.cjs');
+const { createQishuiApiBridge } = require('./qishui/qishuiApiBridge.cjs');
+const { createQishuiMediaPolicy } = require('./qishui/mediaCors.cjs');
+const { createBodianApiBridge } = require('./bodian/bodianApiBridge.cjs');
+const { createBodianMediaPolicy } = require('./bodian/mediaCors.cjs');
+const { createYtmApiBridge } = require('./ytm/ytmApiBridge.cjs');
+const { createYtmSandbox } = require('./ytm/sandbox.cjs');
+const { YTM_AUDIO_PRIVILEGED_SCHEME, YTM_AUDIO_SCHEME } = require('./ytm/audio.cjs');
+const { createSpotifyApiBridge } = require('./spotify/spotifyApiBridge.cjs');
+const { SPOTIFY_AUDIO_PRIVILEGED_SCHEME, SPOTIFY_AUDIO_SCHEME } = require('./spotify/audio.cjs');
+const { createQqAuthSessionRepository } = require('./qq/qqAuthSessionRepository.cjs');
 const { DEFAULT_DISCORD_APPLICATION_ID, createDiscordPresenceController } = require('./discordPresence.cjs');
 const { createVoiceInputPauseMonitor } = require('./voiceInputPause.cjs');
 const { createDisplaySleepBlocker } = require('./displaySleepBlocker.cjs');
+const { createVideoExportFileWriter } = require('./videoExportFileWriter.cjs');
+const { finalizeVideoExportFile } = require('./videoExportMp4.cjs');
 const { createLyricApi } = require('./lyricApi.cjs');
 const { createLocalCoverAssetStore, getLocalCoverAssetDirectory } = require('./localCoverAssets.cjs');
-const { getReleaseUrl, getUpdateProviderConfig, resolveReleaseChannel } = require('./updateChannels.cjs');
+const {
+  compareVersions,
+  getReleaseUrl,
+  getUpdateDiscoveryConfig,
+  getUpdateProviderConfig,
+  parseUpdateMetadataVersion,
+  resolveReleaseChannel,
+} = require('./updateChannels.cjs');
+const { resolveCacheLimit, selectEvictions } = require('./audioCachePrune.cjs');
+const { removeAudioCacheFileOfSize } = require('./audioCacheRemove.cjs');
+const { createAnalysisHost } = require('./analysis/host.cjs');
+const { createDebugHost, runtimeLine } = require('./debug/debugHost.cjs');
+const { createCrashLog, installCrashHandlers, flushPageStorage } = require('./debug/crashLog.cjs');
+const { measureLeftovers, removeDownloadedLeftovers } = require('./analysis/modelPaths.cjs');
 const { shouldHideMainWindowOnClose: resolveHideMainWindowOnClose } = require('./trayWindowBehavior.cjs');
-const { execFileSync } = require('child_process');
 const { LAUNCH_AT_LOGIN_MODES, LEGACY_APP_USER_MODEL_IDS, isLaunchAtLoginSupported, isSilentLaunch, buildLoginItemQuery, buildLoginItemSettings } = require('./launchAtLogin.cjs');
-const { getAiProviderAdapter, pickProviderCredentials, resolveAdapterEndpoint, resolveAdapterModel, stripJsonFence } = require('./aiProviderAdapters.cjs');
 const { resolveLinuxPasswordStore } = require('./linuxPasswordStore.cjs');
+const { resolveLinuxVulkanChoice, logLinuxVulkanChoice } = require('./linuxVulkan.cjs');
+const { isWindowAlwaysOnTopSupported } = require('./windowAlwaysOnTopSupport.cjs');
+const { createGlobalShortcutController, usesGlobalShortcutsPortal } = require('./globalShortcuts.cjs');
+const { createTranscodeService } = require('./transcode/service.cjs');
+const { TRANSCODE_PROTOCOL_SCHEME } = require('./transcode/protocol.cjs');
+const { createMpvRuntime } = require('./hifi/mpvRuntime.cjs');
+const { createMpvRuntimeInstaller } = require('./hifi/mpvRuntimeInstaller.cjs');
+const { createSourceBridge } = require('./hifi/sourceBridge.cjs');
+const { createMpvSession } = require('./hifi/mpvSession.cjs');
+const { registerHifiIpc } = require('./hifi/hifiIpc.cjs');
+const { createPipewireProbe, collectOwnPids } = require('./hifi/pipewireProbe.cjs');
+const { createApprovedMpvPathStore, isReservedHifiSettingKey } = require('./hifi/approvedMpvPath.cjs');
+const { registerMprisIpc } = require('./hifi/mpris/mprisIpc.cjs');
 const { sanitizeDualTheme: sanitizeGeneratedDualTheme } = require('../shared/themeSanitizer.cjs');
+const {
+  aiProviderLabel,
+  runAiConnectionTest,
+  runAiJsonCompletion,
+  runGeminiThemeCompletion,
+} = require('./aiTextClient.cjs');
+const { registerAiModelDiscovery } = require('./ai/modelDiscoveryIpc.cjs');
+const { createAiCredentialStore, isAiCredentialKey, isReservedAiCredentialKey } = require('./aiCredentialStore.cjs');
+const { migrateLegacyAiProviderCredentials } = require('./legacyAiProviderCredentials.cjs');
+const {
+  SEGMENTATION_GEMINI_SCHEMA,
+  SEGMENTATION_JSON_SCHEMA,
+  SEGMENTATION_MAX_OUTPUT_TOKENS,
+  SEGMENTATION_SCHEMA_NAME,
+  buildSegmentationSourcePrompt,
+  buildSegmentationSystemPrompt,
+  parseSegmentationResponse,
+} = require('../shared/lyricSegmentationPrompt.cjs');
 const useLinuxGraphicsDebugMode = process.env.ELECTRON_LINUX_PACKAGED_GRAPHICS === 'true';
 const isAppImageRuntime =
   process.platform === 'linux' &&
@@ -31,16 +143,35 @@ const linuxGraphicsMode =
     ? 'system'
     : (process.env.FOLIA_LINUX_GRAPHICS_MODE || (isAppImageRuntime ? 'swiftshader' : 'system'));
 
-protocol.registerSchemesAsPrivileged([{
-  scheme: 'folia-cover',
-  privileges: {
-    standard: true,
-    secure: true,
-    supportFetchAPI: true,
-    corsEnabled: true,
-    stream: true,
+// Every custom scheme must be registered in this one call: each
+// registerSchemesAsPrivileged call overwrites the fetch/secure/cors scheme
+// command-line switches, so a second call silently strips those privileges
+// from the schemes registered earlier.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'folia-cover',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
   },
-}]);
+  {
+    scheme: TRANSCODE_PROTOCOL_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+  MOD_PROTOCOL_PRIVILEGED_SCHEME,
+  YTM_AUDIO_PRIVILEGED_SCHEME,
+  SPOTIFY_AUDIO_PRIVILEGED_SCHEME,
+]);
 
 // Trusts only the known KuGou media CDN hostname mismatch while preserving TLS checks elsewhere.
 app.on('certificate-error', (event, _webContents, requestUrl, error, _certificate, callback) => {
@@ -64,6 +195,12 @@ app.on('certificate-error', (event, _webContents, requestUrl, error, _certificat
   callback(false);
 });
 
+// Logged once the debug host captures the console, so the decision also reaches the in-app log.
+const linuxVulkan = resolveLinuxVulkanChoice({
+  ozonePlatform: app.commandLine.getSwitchValue('ozone-platform'),
+  graphicsMode: linuxGraphicsMode,
+});
+
 // Fix for Arch Linux / Wayland & Vulkan compatibility issues
 if (process.platform === 'linux') {
   // Must run before the ready event: Chromium reads the password backend once while initialising
@@ -73,10 +210,20 @@ if (process.platform === 'linux') {
     app.commandLine.appendSwitch('password-store', linuxPasswordStore);
   }
 
-  app.commandLine.appendSwitch('disable-vulkan');
-  app.commandLine.appendSwitch('disable-features', 'Vulkan');
+  if (linuxVulkan.enabled) {
+    appendChromiumFeature('Vulkan');
+  } else {
+    app.commandLine.appendSwitch('disable-vulkan');
+    appendChromiumFeature('Vulkan', 'disable-features');
+  }
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
   app.commandLine.appendSwitch('log-level', '3');
+
+  // Native Wayland cannot grab keys, so the global playback shortcuts go through the desktop's
+  // GlobalShortcuts portal; the listener binds them in their desktop's settings (globalShortcuts.cjs).
+  if (usesGlobalShortcutsPortal({ ozonePlatform: app.commandLine.getSwitchValue('ozone-platform') })) {
+    appendChromiumFeature('GlobalShortcutsPortal');
+  }
 
   if (linuxGraphicsMode === 'software') {
     // Hard fallback: safest, but usually slower.
@@ -89,7 +236,7 @@ if (process.platform === 'linux') {
     app.commandLine.appendSwitch('use-angle', 'swiftshader');
     app.commandLine.appendSwitch('enable-unsafe-swiftshader');
   } else {
-    app.commandLine.appendSwitch('enable-features', 'WaylandWindowDecorations');
+    appendChromiumFeature('WaylandWindowDecorations');
   }
 }
 
@@ -104,13 +251,14 @@ if (process.platform === 'linux') {
 // therefore subscribes to `devicechange` while the device picker is open and unsubscribes when it
 // closes, purely to trigger the timer -- see src/hooks/useAudioOutputDevices.ts. Removing that
 // subscription re-pins the capture service for the lifetime of the process.
-function appendChromiumFeature(featureName) {
+// Pass 'disable-features' as switchName to turn a feature off the same way.
+function appendChromiumFeature(featureName, switchName = 'enable-features') {
   // base::CommandLine keeps one value per switch, so a plain appendSwitch would drop features the
   // user passed on the command line, or any appended earlier here.
-  const enabledFeatures = app.commandLine.getSwitchValue('enable-features');
+  const listedFeatures = app.commandLine.getSwitchValue(switchName);
   app.commandLine.appendSwitch(
-    'enable-features',
-    enabledFeatures ? `${enabledFeatures},${featureName}` : featureName,
+    switchName,
+    listedFeatures ? `${listedFeatures},${featureName}` : featureName,
   );
 }
 
@@ -126,20 +274,175 @@ if (process.platform === 'darwin' && process.arch === 'x64') {
 }
 
 const store = new Store({ projectName: 'Folia' });
+// Before ready: the GPU process reads its switches when it starts.
+const gpuPreferenceApplied = applyGpuPreference({ app, store });
+const readActiveGpu = createActiveGpuReader(app);
+const transcodeService = createTranscodeService({
+  app,
+  protocol,
+  net: electronNet,
+  onCacheWrite: pruneMediaCache,
+});
+// HiFi: an mpv child plays local and Navidrome songs bit-perfectly. Main only spawns it, relays the
+// main window's commands and pushes state back, with error codes and no text of its own. The
+// 127.0.0.1 source bridge starts on the first load, mpv on the first load or device listing.
+let hifiIpc = null;
+const hifiRuntimeManifest = require('../shared/mpvRuntimeManifest.json');
+const getHifiUserDataPath = () => app.getPath('userData');
+const hifiSystemVersion = process.platform === 'darwin' ? process.getSystemVersion() : null;
+const hifiInstaller = createMpvRuntimeInstaller({
+  manifest: hifiRuntimeManifest,
+  getUserDataPath: getHifiUserDataPath,
+  fetchFn: (url, options) => electronNet.fetch(url, options),
+  systemVersion: hifiSystemVersion,
+  onProgress: progress => hifiIpc?.broadcastInstallProgress(progress),
+});
+const hifiRuntime = createMpvRuntime({
+  manifest: hifiRuntimeManifest,
+  getUserDataPath: getHifiUserDataPath,
+  isInstalling: () => hifiInstaller.isInstalling(),
+  systemVersion: hifiSystemVersion,
+});
+const hifiBridge = createSourceBridge({
+  http,
+  fetchFn: (url, options) => electronNet.fetch(url, options),
+  requestRead: (ownerId, request) => hifiIpc.requestRead(ownerId, request),
+  randomBytes: crypto.randomBytes,
+});
+const hifiSession = createMpvSession({
+  resolveRuntime: () => hifiIpc.resolveRuntime(),
+  bridge: hifiBridge,
+  randomBytes: crypto.randomBytes,
+  onState: state => hifiIpc?.broadcastState(state),
+  onClock: update => hifiIpc?.broadcastClock(update),
+  onError: event => hifiIpc?.broadcastError(event),
+});
+// The manual mpv path main itself got from the system file dialog. The renderer can only use or
+// clear it through hifi:configure, never name a program for main to run. It lives in a file of its
+// own under userData/hifi-runtime/, out of the shared store that save-settings writes.
+const hifiApprovedMpvPath = createApprovedMpvPathStore({ getUserDataPath: getHifiUserDataPath });
+// Linux: what PipeWire reports (pw-dump) about mpv's stream on its way to the device. Only what
+// PipeWire says; whether the DAC really gets that rate is for a person to confirm on the hardware.
+// Folia's own processes (main plus every Electron child) mark its own streams, such as the web
+// engine's.
+const hifiOutputProbe = createPipewireProbe({
+  getOwnPids: () => collectOwnPids(process.pid, app.getAppMetrics()),
+});
+hifiIpc = registerHifiIpc({
+  ipcMain,
+  isTrustedSender: event => isTrustedMainWindowContents(event.sender),
+  session: hifiSession,
+  runtime: hifiRuntime,
+  installer: hifiInstaller,
+  outputProbe: hifiOutputProbe,
+  dialog,
+  getMainWindow: () => mainWindow,
+  webContentsFromId: id => electronWebContents.fromId(id),
+  getApprovedMpvPath: () => hifiApprovedMpvPath.get(),
+  setApprovedMpvPath: value => hifiApprovedMpvPath.set(value),
+});
+// Linux: while HiFi plays, main registers MPRIS on the session bus itself. A silent keep-alive in
+// the page would be a Chromium stream on the same PipeWire device, and PipeWire switches the
+// device's sample rate only while nothing else plays on it (#835). Windows and macOS keep the
+// keep-alive: their shared outputs never switch rates.
+const hifiMpris = process.platform === 'linux'
+  ? registerMprisIpc({
+    ipcMain,
+    isTrustedSender: event => isTrustedMainWindowContents(event.sender),
+    getMainWindow: () => mainWindow,
+    getArtworkDirectory: () => path.join(app.getPath('userData'), 'mpris-artwork'),
+  })
+  : null;
+// Last resort for every way out, app.exit() included: an mpv left behind would keep playing.
+process.on('exit', () => hifiSession.killSync());
 // KuGou credentials stay inside the main process and are encrypted lazily after Electron is ready.
 // The bridge refuses Linux's plaintext `basic_text` fallback and degrades to an in-memory session.
 const kugouApiBridge = createKugouApiBridge({ store, safeStorage });
+const qishuiMediaPolicy = createQishuiMediaPolicy();
+const qishuiApiBridge = createQishuiApiBridge({ store, safeStorage, fetch: (url, options) => electronNet.fetch(url, options),
+  onAudioSource: url => qishuiMediaPolicy.register(url),
+});
+const bodianMediaPolicy = createBodianMediaPolicy();
+const bodianApiBridge = createBodianApiBridge({ store, safeStorage,
+  onAudioSource: url => bodianMediaPolicy.register(url),
+  requestFactory: (options, onResponse) => {
+    const request = electronNet.request(options);
+    request.on('response', onResponse);
+    return request;
+  },
+});
+// YouTube Music talks to Google from its own network partition and without a cookie jar: the
+// account is carried by a request header, and stored cookies would tie the guest sessions to it.
+// (The library sends one cookie of its own making, a random visitor id and the time zone, on the
+// request that opens each session; nothing Google sets is kept or sent back.) Sessions exist only
+// after app ready, hence the lazy lookup; like the update check, the partition follows the system
+// proxy.
+const ytmSandbox = createYtmSandbox({ BrowserWindow, session, isAllowed: () => Boolean(mainWindow && !mainWindow.isDestroyed()) });
+let ytmNetwork = null;
+const getYtmNetwork = () => {
+  if (!ytmNetwork) {
+    const ses = session.fromPartition('folia-ytm');
+    ytmNetwork = ses.setProxy({ mode: 'system' }).catch(() => {}).then(() => ses);
+  }
+  return ytmNetwork;
+};
+const ytmApiBridge = createYtmApiBridge({ store, safeStorage,
+  fetch: async (input, init) => (await getYtmNetwork()).fetch(input instanceof URL ? input.href : input, { ...init, credentials: 'omit' }),
+  evaluate: code => ytmSandbox.evaluate(code),
+  language: () => getMainLocaleKey(),
+  // The browser window of the web sign-in runs on this folder; the bridge removes it when a
+  // sign-in ends.
+  signInFolder: () => path.join(app.getPath('userData'), 'ytm-sign-in'),
+});
+let spotifyNetwork = null;
+const getSpotifyNetwork = () => {
+  if (!spotifyNetwork) {
+    const ses = session.fromPartition('folia-spotify');
+    spotifyNetwork = ses.setProxy({ mode: 'system' }).catch(() => {}).then(() => ses);
+  }
+  return spotifyNetwork;
+};
+const spotifyApiBridge = createSpotifyApiBridge({ store, safeStorage,
+  fetch: async (input, init) => (await getSpotifyNetwork()).fetch(input instanceof URL ? input.href : input, { ...init, credentials: 'omit' }),
+  openExternal: url => shell.openExternal(url),
+  language: () => getMainLocaleKey(),
+  audioDirectory: () => path.join(getConfiguredCacheDirectory(), 'spotify'),
+  onAudioKept: limitBytes => pruneMediaCache(limitBytes),
+});
 const qqAuthSessionRepository = createQqAuthSessionRepository({ store, safeStorage });
+// AI API keys are sealed with safeStorage instead of sitting in config.json as plaintext, and never
+// leave the main process: the renderer only sees AI_API_KEYS_CONFIGURED (#586).
+const aiCredentials = createAiCredentialStore({ store, safeStorage });
 
 // --- Desktop wallpaper mode (Wayland layer-shell via windowtolayer / X11 desktop window) ---
 // Settings keys follow the existing electron-store key/value chain; values are normalized here in
 // the main process so stale or dirty stored values never reach the windowtolayer CLI.
 const WALLPAPER_MODE_SETTING_KEY = 'wallpaper_mode';
+// Renderer-recorded: the one-time "entering wallpaper mode" warning has been accepted. The tray
+// reads it to skip asking the renderer for a confirmation dialog that would not be shown anyway.
+const WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY = 'wallpaper_entry_confirmed';
+// Windows-only helper switches; both default to on (missing = enabled).
+const WALLPAPER_FORWARD_MOUSE_SETTING_KEY = 'wallpaper_forward_mouse';
+const WALLPAPER_ZGUARD_SETTING_KEY = 'wallpaper_zguard';
+// macOS-only: auto-hide the Dock while a wallpaper session is active. Hiding only ever applies to a
+// bottom-edge Dock (side Docks stay untouched); the on/off switch is the override — turning it off
+// disables even a bottom Dock. Exiting wallpaper mode or quitting restores the user's original Dock
+// state either way.
+const WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY = 'wallpaper_mac_autohide_dock';
+// Set once Folia has asked macOS for the Accessibility grant (issue #698), so a user who declined
+// is not asked again on every launch.
+const WALLPAPER_MAC_ACCESSIBILITY_ASKED_KEY = 'wallpaper_mac_accessibility_asked';
 
-// Thin wrappers over electron/wallpaperWatchdog.cjs so the call sites across the file keep their
+// Thin wrappers over electron/wallpaper/wallpaperWatchdog.cjs so the call sites across the file keep their
 // existing signatures while the predicates stay a single source of truth in the module.
 function isWallpaperModeEnabled() {
   return wallpaperWatchdogModule.isWallpaperModeEnabled(store);
+}
+
+// Wallpaper mode ships only where the window can be sunk into a desktop layer
+// (X11/Wayland/Windows/macOS desktop-level sink); tray/settings surfaces gate on this.
+function isWallpaperModeSupportedPlatform() {
+  return process.platform === 'linux' || process.platform === 'win32' || process.platform === 'darwin';
 }
 
 // X11 wallpaper mode: the main window is a _NET_WM_WINDOW_TYPE_DESKTOP window. It shares the
@@ -173,6 +476,19 @@ function resolveWindowToLayerPath() {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
+// app.exit() does not wait for the pages' storage (localStorage, a sign-in among it) to reach the
+// disk: it is asked to be written first (crashLog.cjs `flushPageStorage`). That only asks, so the
+// exit is not held. `what` names the exit in the line that says the asking failed.
+const exitAfterAskingStorageWritten = (code, what) => {
+  try {
+    flushPageStorage();
+  } catch (error) {
+    console.error(`[Wallpaper] Failed to ask for the pages' storage to be written before the ${what}`, error);
+  }
+  hifiSession.killSync();
+  app.exit(code);
+};
+
 // Enables wallpaper mode on Wayland: spawn windowtolayer wrapping a fresh Folia child, then the
 // old process exits once the wrapper has spawned. Spawn failure (ENOENT/EACCES) arrives on the
 // async 'error' event, never as a synchronous throw, so we revert the setting instead of crashing.
@@ -200,12 +516,19 @@ function launchWrappedSelf({ onError } = {}) {
     });
     child.once('spawn', () => {
       resolve('spawned');
-      app.exit(0);
+      // app.exit() skips `before-quit`. For the mods' start note this restart is a normal way
+      // out: taken up here, or the wrapped copy would find it and ask about a start that failed.
+      try {
+        modSystem?.noteNormalQuit();
+      } catch (error) {
+        console.error('[Mods] Failed to take up the start note', error);
+      }
+      exitAfterAskingStorageWritten(0, 'restart');
     });
   });
 }
 
-// Watchdog: liveness probe + recovery-to-normal-window live in electron/wallpaperWatchdog.cjs
+// Watchdog: liveness probe + recovery-to-normal-window live in electron/wallpaper/wallpaperWatchdog.cjs
 // (dependency-injected here so the same logic is unit-testable and simulatable headless).
 const wallpaperWatchdog = wallpaperWatchdogModule.createWallpaperWatchdog({
   store,
@@ -214,14 +537,248 @@ const wallpaperWatchdog = wallpaperWatchdogModule.createWallpaperWatchdog({
   execPath: () => process.execPath,
   argv: () => process.argv.slice(1),
   getPpid: () => process.ppid,
-  exit: (code) => app.exit(code),
+  // As at the restart above: the pages' storage is asked to be written before app.exit().
+  exit: (code) => exitAfterAskingStorageWritten(code, 'relaunch'),
   killFn: process.kill.bind(process),
   probeIntervalMs: 2000,
 });
 
+// --- Windows wallpaper mode (WorkerW parenting via folia-wallpaper-helper.exe) ---
+// Unlike the Linux paths there is no relaunch: the helper parents the existing window into the
+// WorkerW layer at runtime. Mode toggles recreate the window in place with a playback handoff.
+
+// Windows wallpaper mode: the main window is parented below the desktop icons. Click-through
+// is refused here as well — after SetParent the clicks never reach the window anyway, so an
+// ignore-mouse state would only leave the UI answering clicks that cannot happen.
+function isWindowsWallpaperMode() {
+  return process.platform === 'win32' && wallpaperWatchdogModule.isWallpaperModeEnabled(store);
+}
+
+// Desktop architecture the wallpaper helper last attached to, as reported by its `attached`
+// event ('raised' = Win11 24H2+ layered shell view, 'classic' = Win10/early Win11). Persisted
+// because it is a per-machine property: the window builder needs it before the first attach.
+// A transparent Electron window only keeps presenting after SetParent on the raised desktop —
+// on classic the WS_EX_LAYERED redirection surface dies with the re-parent and the wallpaper
+// presents black (renderer keeps painting; only the window surface is lost, verified on
+// Win10 17763), so classic-mode wallpaper windows are always built opaque.
+const WALLPAPER_WINDOWS_ATTACH_MODE_KEY = 'wallpaper_windows_attach_mode';
+let wallpaperWindowsAttachMode = store.get(WALLPAPER_WINDOWS_ATTACH_MODE_KEY) === 'raised' ? 'raised' : 'classic';
+
+function isWindowsWallpaperTransparentSupported() {
+  return wallpaperWindowsAttachMode === 'raised';
+}
+
+// The user preference (TRANSPARENT_PLAYER_BACKGROUND) is independent of what the current
+// window can render: wallpaper mode on the classic desktop derives an opaque window. After an
+// attach reports a different architecture than the window was built for, bring them back in
+// sync with one rebuild.
+function reconcileWindowsWallpaperWindowTransparency() {
+  if (process.platform !== 'win32' || !isWindowsWallpaperMode() || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  const desiredTransparent = isTransparentPlayerBackgroundEnabled() && isWindowsWallpaperTransparentSupported();
+  if (mainWindow.__wallpaperWindowTransparent === desiredTransparent) {
+    return;
+  }
+  recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), null);
+}
+
+// The helper ships as resources/folia-wallpaper-helper.exe (built by
+// packaging/windows/build-wallpaper-helper.mjs). FOLIA_WALLPAPER_HELPER_PATH overrides it for
+// non-packaged (dev) runs, mirroring FOLIA_WINDOWTOLAYER_PATH. A missing binary just disables
+// wallpaper mode (attach reports 'missing' and the renderer learns via wallpaper-mode-changed).
+function resolveWallpaperHelperPath() {
+  const override = process.env.FOLIA_WALLPAPER_HELPER_PATH;
+  if (override) {
+    return fs.existsSync(override) ? override : null;
+  }
+  const candidate = path.join(process.resourcesPath, 'folia-wallpaper-helper.exe');
+  return fs.existsSync(candidate) ? candidate : null;
+}
+function refreshWindowsDesktopWallpaper() {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  const helperPath = resolveWallpaperHelperPath();
+  if (!helperPath) {
+    return;
+  }
+  try {
+    const child = spawn(helperPath, ['refresh'], { stdio: 'ignore', detached: true });
+    child.on('error', (err) => {
+      console.warn('[WallpaperWin] desktop wallpaper refresh failed:', err.message);
+    });
+    child.unref();
+  } catch (err) {
+    console.warn('[WallpaperWin] desktop wallpaper refresh could not be spawned:', err?.message);
+  }
+}
+
+function getMainWindowNativeHwnd() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+  try {
+    const handle = mainWindow.getNativeWindowHandle();
+    return handle.length >= 8 ? Number(handle.readBigUInt64LE(0)) : handle.readUInt32LE(0);
+  } catch {
+    return null;
+  }
+}
+
+// Target display of the wallpaper session: the monitor the wallpaper window fills. Resolution
+// order (display chosen in Settings → live ordinary window → session target → WINDOW_BOUNDS →
+// primary) lives in electron/wallpaper/windowsWallpaperTarget.cjs.
+const windowsWallpaperTarget = createWindowsWallpaperTargetResolver({
+  screen,
+  getStoredBounds: () => getStoredWindowState().bounds,
+  getMainWindow: () => mainWindow,
+  getDisplayChoice: () => getWallpaperDisplayChoice(),
+});
+
+// Bounds of the display the wallpaper fills. The primary display is the last resort so a window is
+// never created with an unusable geometry.
+function getWallpaperTargetBounds() {
+  return (windowsWallpaperTarget.resolve() ?? screen.getPrimaryDisplay()).bounds;
+}
+
+// --- Windows wallpaper mode mouse injection (sendInputEvent) ---
+// The helper reports desktop mouse input (move + left button) as JSONL events in *physical* screen
+// pixels (it is per-monitor DPI aware, see the helper's main.rs); the injector converts them into
+// Chromium's DIP space with screen.screenToDipPoint, makes them window-relative and injects them at
+// the Chromium input-pipeline level. Posting WM_MOUSEMOVE/WM_LBUTTONDOWN to the window directly is
+// not an option: Chromium arms TrackMouseEvent on the first processed WM_MOUSEMOVE, but the real
+// cursor physically sits on the desktop icon layer above the wallpaper window, so the system
+// instantly answers WM_MOUSELEAVE and hover is torn down between every forwarded move (measured
+// 300–500 enter/leave pairs per second). See electron/wallpaper/windowsWallpaperMouse.cjs.
+const windowsWallpaperMouse = createWindowsWallpaperMouseInjector({
+  screen,
+  getMainWindow: () => mainWindow,
+});
+
+// Injects one helper mouse event into the main window's renderer.
+function forwardWallpaperMouseInput(event) {
+  windowsWallpaperMouse.forward(event);
+}
+
+// Helper process lifecycle + heartbeat watchdog + crash-loop breaker. The recovery callbacks
+// rebuild the main window when the helper cannot keep it (window destroyed with its WorkerW,
+// renderer crash, repeated failures) — degrade clears wallpaper_mode and comes back as a
+// normal window without an app relaunch.
+const windowsWallpaper = windowsWallpaperModule.createWindowsWallpaperController({
+  store,
+  helperPath: () => resolveWallpaperHelperPath(),
+  getHwnd: getMainWindowNativeHwnd,
+  onDegrade: () => {
+    refreshWindowsDesktopWallpaper();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+    }
+    recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), null);
+  },
+  onReattachNeeded: () => {
+    rebuildWindowsWallpaperSession();
+  },
+  onAttachMode: (mode) => {
+    if (mode !== 'raised' && mode !== 'classic') {
+      return;
+    }
+    if (mode === wallpaperWindowsAttachMode) {
+      return;
+    }
+    wallpaperWindowsAttachMode = mode;
+    store.set(WALLPAPER_WINDOWS_ATTACH_MODE_KEY, mode);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+    }
+    reconcileWindowsWallpaperWindowTransparency();
+  },
+  onMouseInput: forwardWallpaperMouseInput,
+});
+
+// Renderer crash / WorkerW teardown broke the wallpaper session: attach the helper to a live
+// window, or rebuild one first when the Folia window was destroyed together with the WorkerW.
+function rebuildWindowsWallpaperSession() {
+  if (process.platform !== 'win32' || !isWindowsWallpaperMode()) {
+    return;
+  }
+  windowsWallpaper.killHelper();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = null;
+    createWindow();
+  }
+  windowsWallpaper.attach();
+}
+
 // Runtime change (save-settings IPC): relaunch the whole process so the new mode takes effect.
 // The store value is already written by the save-settings handler before this runs.
-function relaunchForWallpaperModeChange(nextEnabled) {
+async function relaunchForWallpaperModeChange(nextEnabled, expectedGeneration = null) {
+  // macOS: in-place toggle — the live window is sunk/raised with no relaunch and no window
+  // rebuild, so the renderer (and its audio / visualizer state) survives untouched.
+  if (process.platform === 'darwin') {
+    if (expectedGeneration !== null && expectedGeneration !== wallpaperModeRelaunchGeneration) {
+      return;
+    }
+    if (nextEnabled) {
+      // A window whose level was ever touched through Electron's setAlwaysOnTop cannot
+      // present simple full screen correctly anymore (measured: content 33pt low, empty
+      // menu-bar strip above the wallpaper — sticky for the life of the window). Rebuild
+      // it so the entry runs on a fresh window, like the always-correct startup path.
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.__macAlwaysOnTopElectronTouched === true) {
+        await rebuildMainWindowForMacWallpaper();
+      }
+      enterMacWallpaperMode();
+    } else {
+      exitMacWallpaperMode();
+    }
+    return;
+  }
+  // Windows: the window must be RECREATED with the wallpaper option set, not just re-parented.
+  // A normal window is built with thickFrame:true; once the helper parents it into the WorkerW,
+  // Chromium keeps the client-frame compensation it computed at creation, and the rendered
+  // content sits inside a ~10px gap (measured at 150% scaling). Startup with the setting on
+  // creates the window borderless (thickFrame:false) and has no gap — so the runtime toggle
+  // recreates the window to match, and the playback handoff carries the session across the
+  // renderer reload.
+  if (process.platform === 'win32') {
+    const handoff = await requestWindowPlaybackHandoff();
+    if (expectedGeneration !== null && expectedGeneration !== wallpaperModeRelaunchGeneration) {
+      return;
+    }
+    if (!nextEnabled) {
+      // Release the helper before its hwnd is destroyed (the recreate path would only kill it).
+      await new Promise((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        const safety = setTimeout(done, 500);
+        if (typeof safety?.unref === 'function') {
+          safety.unref();
+        }
+        const hadHelper = windowsWallpaper.detach({
+          onDetached: () => {
+            clearTimeout(safety);
+            done();
+          },
+        });
+        if (!hadHelper) {
+          clearTimeout(safety);
+          done();
+        }
+      });
+    }
+    if (!nextEnabled) {
+      // The session is over: the next entry re-derives its monitor from wherever the app window
+      // then is, rather than from where this wallpaper session ran.
+      windowsWallpaperTarget.clear();
+    }
+    recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), handoff);
+    return;
+  }
   if (nextEnabled) {
     if (isWallpaperWrapped()) {
       return; // already a wallpaper session, nothing to do
@@ -243,6 +800,24 @@ function relaunchForWallpaperModeChange(nextEnabled) {
   }
 }
 
+// Rebuilds the main window before a mac wallpaper entry (or after a session exits) so the
+// wallpaper always runs on a window that has never had its level touched through Electron's
+// setAlwaysOnTop — such a window cannot present simple full screen correctly anymore
+// (measured: content presented 33pt below the window top). The playback handoff carries
+// audio/visualizer state across the renderer reload; if wallpaper mode was turned back on
+// before the new window is ready, the recreate path re-sinks it.
+async function rebuildMainWindowForMacWallpaper() {
+  try {
+    const handoff = await requestWindowPlaybackHandoff();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), handoff);
+  } catch (error) {
+    console.warn('[WallpaperMac] window rebuild for wallpaper failed:', error && error.message);
+  }
+}
+
 // Coalesce rapid UI toggles into one relaunch. The generation check also prevents a stale
 // handoff request from launching an older mode after the user changes the switch again.
 function scheduleWallpaperModeRelaunch(nextEnabled) {
@@ -254,6 +829,23 @@ function scheduleWallpaperModeRelaunch(nextEnabled) {
 
   wallpaperModeRelaunchTimer = setTimeout(async () => {
     wallpaperModeRelaunchTimer = null;
+    // Windows detaches/recreates the window in place (no process relaunch); the playback
+    // handoff inside keeps the session alive across the renderer reload.
+    if (process.platform === 'win32') {
+      if (generation !== wallpaperModeRelaunchGeneration) {
+        return;
+      }
+      await relaunchForWallpaperModeChange(nextEnabled, generation);
+      return;
+    }
+    if (process.platform === 'darwin') {
+      // macOS switches in place — no handoff, no relaunch; the window is never destroyed.
+      if (generation !== wallpaperModeRelaunchGeneration) {
+        return;
+      }
+      await relaunchForWallpaperModeChange(nextEnabled, generation);
+      return;
+    }
     await requestWindowPlaybackHandoff();
     if (generation !== wallpaperModeRelaunchGeneration) {
       return;
@@ -262,11 +854,1295 @@ function scheduleWallpaperModeRelaunch(nextEnabled) {
   }, 300);
 }
 
+// --- Wallpaper display choice (Settings → Desktop; the rules are in electron/wallpaper/wallpaperDisplay.cjs) ---
+
+// The display the user chose for wallpaper mode; null is the automatic rule.
+function getWallpaperDisplayChoice() {
+  return normalizeWallpaperDisplayChoice(store.get(WALLPAPER_DISPLAY_SETTING_KEY));
+}
+
+// macOS and X11: the chosen display while it is connected, else the primary display, which is
+// where the wallpaper went before there was a choice. Windows has its own order
+// (windowsWallpaperTarget.cjs).
+function getChosenOrPrimaryWallpaperDisplay() {
+  const choice = getWallpaperDisplayChoice();
+  if (choice) {
+    try {
+      const chosen = resolveWallpaperDisplay(screen.getAllDisplays(), choice);
+      if (chosen) {
+        return chosen;
+      }
+    } catch (error) {
+      // The display list is changing; the primary display is the answer for now.
+    }
+  }
+  return screen.getPrimaryDisplay();
+}
+
+// X11: { id, bounds } of the display the desktop window was built on, kept to tell later whether
+// the wallpaper has to move (applyWallpaperDisplayChoice).
+let x11WallpaperDisplay = null;
+
+function getX11WallpaperBounds() {
+  const display = getChosenOrPrimaryWallpaperDisplay();
+  x11WallpaperDisplay = { id: display.id, bounds: display.bounds };
+  return display.bounds;
+}
+
+// What the settings page draws: the connected displays, the stored choice, and the display the
+// wallpaper is on, or would be on if it were entered now.
+function getWallpaperDisplaysState() {
+  const choice = getWallpaperDisplayChoice();
+  try {
+    const active = process.platform === 'win32'
+      ? (windowsWallpaperTarget.peek() ?? screen.getPrimaryDisplay())
+      : getChosenOrPrimaryWallpaperDisplay();
+    return describeWallpaperDisplays({
+      displays: screen.getAllDisplays(),
+      primaryId: screen.getPrimaryDisplay().id,
+      choice,
+      active,
+    });
+  } catch (error) {
+    // Screen lookups can throw while the display topology is changing; the change event that
+    // follows sends the list again.
+    return describeWallpaperDisplays({ displays: [], primaryId: null, choice, active: null });
+  }
+}
+
+function notifyWallpaperDisplaysChanged() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wallpaper-displays-changed', getWallpaperDisplaysState());
+  }
+  // The tray lists the same choice, so it follows every change the settings page is told of.
+  refreshTrayMenu();
+}
+
+// The tray's copy of the settings row: the same choice, offered under the same rule (more than
+// one display, on Windows, macOS or Linux X11; Wayland places the layer itself), and the displays
+// named and numbered as the settings map does (left to right, then top to bottom). null when there
+// is nothing to choose.
+function buildWallpaperDisplayTrayItem(locale) {
+  const offered = process.platform === 'win32' || process.platform === 'darwin'
+    || (process.platform === 'linux' && !process.env.WAYLAND_DISPLAY);
+  if (!offered) {
+    return null;
+  }
+  const state = getWallpaperDisplaysState();
+  if (state.displays.length < 2) {
+    return null;
+  }
+  const ordered = [...state.displays].sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y);
+  return {
+    label: locale.trayWallpaperDisplay,
+    submenu: [
+      {
+        label: locale.trayWallpaperDisplayAuto,
+        type: 'radio',
+        checked: state.choice === null,
+        click: () => setWallpaperDisplayChoice(null),
+      },
+      ...ordered.map((display, index) => ({
+        label: [
+          index + 1,
+          `${Math.round(display.bounds.width * display.scaleFactor)} × ${Math.round(display.bounds.height * display.scaleFactor)}`,
+          display.primary ? locale.trayWallpaperDisplayPrimary : '',
+          display.label,
+        ].filter(Boolean).join(', '),
+        type: 'radio',
+        // A chosen display that is not connected leaves every entry unchecked, as on the settings map.
+        checked: state.choice !== null && state.chosenId === display.id,
+        click: () => setWallpaperDisplayChoice(display.id),
+      })),
+    ],
+  };
+}
+
+// Moves a running wallpaper after the choice or the display list changed, each platform through
+// the path it already has for putting its wallpaper window on a display: macOS re-runs the frame
+// step; Windows rebuilds the window on the new display and re-attaches the helper (the helper
+// fills the display the window is on when it attaches, so the window has to be built there
+// first); X11 relaunches. Resolves true when it did that, false when the wallpaper is not up or
+// is where it belongs.
+//
+// Where it belongs depends on what changed. A newly chosen display (`choiceChanged`) gets the
+// wallpaper at once. Back to "automatic", macOS and X11 return to the primary display; on Windows
+// "automatic" follows the app window, so a wallpaper that is up stays where it is. A display change moves the
+// wallpaper only for a chosen display that was unplugged or came back (shouldMoveWallpaper);
+// without a choice it leaves the wallpaper where it is, as before.
+let wallpaperDisplayApplyGeneration = 0;
+async function applyWallpaperDisplayChoice({ choiceChanged = false } = {}) {
+  if (process.platform === 'darwin') {
+    // A deferred entry owns the frame until the full-screen exit lands, and reads the choice then.
+    if (!isMacWallpaperActive || macWallpaperPendingEnter || !mainWindow || mainWindow.isDestroyed()) {
+      return false;
+    }
+    applyMacWallpaperFrame(); // no-op when the window already fills the display it belongs on
+    applyMacAmbientLevel();
+    return true;
+  }
+  const onWindows = isWindowsWallpaperMode();
+  if (!onWindows && !isX11WallpaperMode()) {
+    return false;
+  }
+  const hasToMove = () => {
+    try {
+      const current = onWindows ? windowsWallpaperTarget.current() : x11WallpaperDisplay;
+      if (choiceChanged) {
+        // Windows, back to automatic: that rule follows the app window, and with the wallpaper up
+        // there is no app window to follow. The wallpaper stays where it is; the next entry
+        // follows the window again.
+        if (onWindows && !getWallpaperDisplayChoice()) {
+          return false;
+        }
+        const target = onWindows ? windowsWallpaperTarget.peek() : getChosenOrPrimaryWallpaperDisplay();
+        return Boolean(current && target) && !isSameDisplay(target, current);
+      }
+      return shouldMoveWallpaper(screen.getAllDisplays(), getWallpaperDisplayChoice(), current);
+    } catch (error) {
+      return false;
+    }
+  };
+  if (!hasToMove()) {
+    return false;
+  }
+  wallpaperDisplayApplyGeneration += 1;
+  const generation = wallpaperDisplayApplyGeneration;
+  const handoff = await requestWindowPlaybackHandoff();
+  // The page took a moment to answer: a newer change, a mode toggle or another rebuild may have
+  // settled this one meanwhile.
+  if (generation !== wallpaperDisplayApplyGeneration || !hasToMove()) {
+    return false;
+  }
+  if (onWindows) {
+    if (!isWindowsWallpaperMode()) {
+      return false;
+    }
+    console.log('[WallpaperWin] the wallpaper belongs on another display now, rebuilding its window there');
+    recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), handoff);
+    return true;
+  }
+  if (!isX11WallpaperMode()) {
+    return false;
+  }
+  console.log('[Wallpaper] the wallpaper belongs on another display now, relaunching');
+  wallpaperWatchdog.relaunchSelfNormal();
+  return true;
+}
+
+// Stores the display the settings page picked (null: automatic) and applies it to a running
+// wallpaper. The page names the display by id only: geometry and label are taken from the
+// connected display itself, and an id that is not connected changes nothing.
+function setWallpaperDisplayChoice(displayId) {
+  let nextChoice = null;
+  if (displayId !== null) {
+    try {
+      nextChoice = normalizeWallpaperDisplayChoice(screen.getAllDisplays().find((display) => display.id === displayId));
+    } catch (error) {
+      nextChoice = null;
+    }
+    if (!nextChoice) {
+      console.warn('[Wallpaper] display choice refused: no connected display has id', displayId);
+      return getWallpaperDisplaysState();
+    }
+  }
+  store.set(WALLPAPER_DISPLAY_SETTING_KEY, nextChoice);
+  console.log('[Wallpaper] display choice:', nextChoice
+    ? `display ${nextChoice.id}, ${nextChoice.bounds.width}x${nextChoice.bounds.height} at ${nextChoice.bounds.x},${nextChoice.bounds.y}`
+    : 'automatic');
+  applyWallpaperDisplayChoice({ choiceChanged: true }).catch((error) => {
+    console.warn('[Wallpaper] applying the display choice failed:', error && error.message);
+  });
+  notifyWallpaperDisplaysChanged();
+  return getWallpaperDisplaysState();
+}
+
+// --- macOS wallpaper mode (in-place desktop-level sink; no helper / no relaunch) ---
+// Unlike Windows (helper re-parent) and Linux (windowtolayer / X11 desktop window), macOS sinks
+// the LIVE main window below the Finder icons with a koffi NSWindow setLevel: call, then uses a
+// listen-only CGEventTap to forward clicks that macOS routes to the bare desktop into the
+// renderer. All of the FFI + Dock logic lives in macWallpaperController.cjs; this file only wires
+// it to the Electron window and to the same wallpaper_mode setting the other platforms use.
+let macWallpaperControllerInstance = null;
+let isMacWallpaperActive = false;
+let isMacWallpaperInteractionEnabled = false;
+let macWallpaperTapFailures = 0;
+let macWallpaperTapRetryTimer = null;
+let macWallpaperSavedState = null; // { bounds, resizable, movable, maximizable, nativeBlurEnabled }
+let macWallpaperMouseDownAt = { at: 0, x: 0, y: 0 };
+let macWallpaperPendingDrag = null;
+let macWallpaperDragTimer = null;
+// Deferred-entry state: entering wallpaper mode while the window is in native (Space-based)
+// full screen must wait for the exit animation to land before sinking the window (see
+// deferMacWallpaperEnterUntilFullScreenExit). These timers/flags are single-flight and bounded
+// so they can never reschedule themselves off resize events (that looped once before).
+let macWallpaperPendingEnter = false; // posture deferred until a full-screen exit has landed
+let macWallpaperEnterPollElapsed = 0;
+let macWallpaperEnterPollTimer = null;
+let macWallpaperSettleTimer = null;
+let macWallpaperSettleAttempts = 0;
+// Click catchers over the wallpaper's controls, so a click on them never reaches Finder's desktop
+// and Stage Manager does not react to it (issue #698; macWallpaperHitPanels.cjs). The renderer
+// reports the controls' rects (viewport CSS px).
+let macWallpaperHitPanelsInstance = null;
+let macWallpaperHitRects = [];
+// Stage Manager (issue #698). With the desktop items hidden while it is on: one catcher over the
+// whole wallpaper (macWallpaperHitPanels.cjs), no grant needed. With the icons shown: the click
+// guard library (macDesktopClickGuard.cjs) once Folia holds the Accessibility grant, else the
+// catchers over the controls only and a one-time hint. Stage Manager's settings and the grant are
+// re-read on a slow timer while the wallpaper takes input, so changes apply without a restart.
+let macWallpaperStageState = { enabled: false, hidesDesktopItems: false, trusted: false };
+let macWallpaperStageManagerTimer = null;
+let macWallpaperClickGuardInstance = null;
+let macWallpaperAccessibilityHinted = false;
+const MAC_WALLPAPER_STAGE_MANAGER_POLL_MS = 3000;
+const MAC_WALLPAPER_TAP_RETRY_DELAY_MS = 2000;
+const MAC_WALLPAPER_TAP_FAILURE_THRESHOLD = 3;
+const MAC_WALLPAPER_DRAG_FLUSH_MS = 16;
+const MAC_WALLPAPER_FULLSCREEN_EXIT_POLL_MS = 250;
+const MAC_WALLPAPER_FULLSCREEN_EXIT_MAX_WAIT_MS = 6000;
+const MAC_WALLPAPER_FRAME_SETTLE_DELAY_MS = 1000;
+const MAC_WALLPAPER_FRAME_SETTLE_MAX_ATTEMPTS = 4;
+
+function isMacWallpaperMode() {
+  return process.platform === 'darwin' && isWallpaperModeEnabled();
+}
+
+// The controller needs app.getPath('userData') (Dock crash marker), which is only available
+// after app ready; it is created lazily on first use.
+function getMacWallpaperController() {
+  if (process.platform !== 'darwin') {
+    return null;
+  }
+  if (!macWallpaperControllerInstance) {
+    try {
+      macWallpaperControllerInstance = macWallpaperModule.createMacWallpaperController({
+        store,
+        userDataPath: () => app.getPath('userData'),
+      });
+    } catch (error) {
+      console.warn('[WallpaperMac] controller init failed:', error && error.message);
+      macWallpaperControllerInstance = null;
+    }
+  }
+  return macWallpaperControllerInstance;
+}
+
+function isMacSimpleFullScreen(win) {
+  if (!win || win.isDestroyed() || typeof win.isSimpleFullScreen !== 'function') {
+    return false;
+  }
+  try {
+    return win.isSimpleFullScreen();
+  } catch (error) {
+    return false;
+  }
+}
+
+// Ambient wallpaper posture: present on every Space, sunk below the Finder icons, click-through.
+// The all-spaces + FullScreenAuxiliary collection bits come from Electron's own API here; a raw
+// koffi setCollectionBehavior(81) would clobber the FullScreenAuxiliary bit (controller note).
+function applyMacAmbientLevel() {
+  const controller = getMacWallpaperController();
+  if (!controller || !mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  try {
+    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } catch (error) {
+    // ignore
+  }
+  controller.setLevel(mainWindow, controller.desktopLevel());
+  try {
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  } catch (error) {
+    // ignore
+  }
+  return true;
+}
+
+// True full-bleed: a plain setBounds(display.bounds) is clamped to the workArea on macOS, so a
+// menu-bar strip and dock gap would leak the real wallpaper. Simple full screen covers the whole
+// display. The caller re-asserts the ambient level afterwards (the presentation change rewrites
+// it). NOTE: simple full screen must be entered FIRST — setBounds(display.bounds) beforehand is
+// clamped by macOS to (0, menuBarHeight, displayW, displayH) (full height, bottom off-screen),
+// and the origin-shift animation into simple full screen can leave the web-contents view offset
+// by the menu-bar height inside the window (measured: the page paints full height, the screen
+// shows an empty menu-bar strip of the desktop behind it).
+function applyMacWallpaperFrame() {
+  const controller = getMacWallpaperController();
+  if (!controller || !mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  try {
+    // The display chosen in Settings while it is connected, else the primary display.
+    const target = getChosenOrPrimaryWallpaperDisplay().bounds;
+    const current = mainWindow.getBounds();
+    const frameChanged = current.x !== target.x
+      || current.y !== target.y
+      || current.width !== target.width
+      || current.height !== target.height;
+    if (!isMacSimpleFullScreen(mainWindow)) {
+      // Enters simple full screen in ONE animation straight from the current frame: Electron
+      // frames the window to the full display itself, so no workArea-clamped intermediate
+      // frame exists for the content view to get stuck on.
+      mainWindow.setSimpleFullScreen(true);
+    }
+    if (frameChanged && isMacSimpleFullScreen(mainWindow)) {
+      // The window is in simple full screen at another frame than the target display's (a
+      // display chosen in Settings, or a changed display): re-framing it is safe (setBounds is
+      // not blocked in simple full screen).
+      mainWindow.setBounds(target, false);
+    }
+    return true;
+  } catch (error) {
+    console.warn('[WallpaperMac] apply wallpaper frame failed:', error && error.message);
+    return false;
+  }
+}
+
+// Drops every deferred-entry / settle timer the entry may have left behind. Called from the
+// exit path (toggle off, rollback, window closed) so a cancelled entry can never sink the
+// window after the fact.
+function clearMacWallpaperDeferredState() {
+  macWallpaperPendingEnter = false;
+  macWallpaperEnterPollElapsed = 0;
+  if (macWallpaperEnterPollTimer) {
+    clearTimeout(macWallpaperEnterPollTimer);
+    macWallpaperEnterPollTimer = null;
+  }
+  if (macWallpaperSettleTimer) {
+    clearTimeout(macWallpaperSettleTimer);
+    macWallpaperSettleTimer = null;
+  }
+  macWallpaperSettleAttempts = 0;
+}
+
+// One bounded, timer-driven re-assert of the full-bleed frame after the wallpaper posture
+// lands: the simple-full-screen entry animates, and any residual clamping shows up a beat
+// later. Single-flight and capped so it can never loop (a resize-event-driven re-assert was
+// an infinite loop once — never schedule this off events).
+function scheduleMacWallpaperFrameSettleVerify() {
+  if (macWallpaperSettleTimer) {
+    clearTimeout(macWallpaperSettleTimer);
+    macWallpaperSettleTimer = null;
+  }
+  if (macWallpaperSettleAttempts >= MAC_WALLPAPER_FRAME_SETTLE_MAX_ATTEMPTS) {
+    return;
+  }
+  macWallpaperSettleTimer = setTimeout(() => {
+    macWallpaperSettleTimer = null;
+    if (!isMacWallpaperActive || macWallpaperPendingEnter || !mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    if (mainWindow.isFullScreen()) {
+      return; // a full-screen transition owns the frame; nothing to settle
+    }
+    macWallpaperSettleAttempts += 1;
+    try {
+      const target = getChosenOrPrimaryWallpaperDisplay().bounds;
+      const current = mainWindow.getBounds();
+      const frameMatches = current.x === target.x
+        && current.y === target.y
+        && current.width === target.width
+        && current.height === target.height;
+      if (!frameMatches) {
+        applyMacWallpaperFrame(); // no-op when the frame already matches
+        applyMacAmbientLevel(); // the presentation change rewrites the level
+        scheduleMacWallpaperFrameSettleVerify();
+      }
+    } catch (error) {
+      // ignore
+    }
+    // The window may have moved to another display at the same size: the renderer reports no new
+    // rects then, so the catchers follow the frame here.
+    syncMacWallpaperHitPanels();
+  }, MAC_WALLPAPER_FRAME_SETTLE_DELAY_MS);
+}
+
+// The wallpaper posture part of the entry: window locks, vibrancy drop, ambient level +
+// full-bleed frame, Dock auto-hide, interaction tap, stored flag + renderer notify. Runs
+// inline for an already-normal window, or exactly once after a full-screen exit has landed
+// (see enterMacWallpaperMode / deferMacWallpaperEnterUntilFullScreenExit) — never while the
+// exit animation is still in flight.
+function applyMacWallpaperPosture(controller) {
+  if (!controller || !isMacWallpaperActive || !mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  try {
+    if (mainWindow.isFullScreen() || isMacSimpleFullScreen(mainWindow)) {
+      return false; // the full-screen exit has not landed yet; the caller retries later
+    }
+    if (!macWallpaperSavedState) {
+      // Deferred entry: capture the true normal state only now, once the full-screen exit
+      // restored the window's own frame (capturing earlier, while native-fullscreen, records
+      // the full-screen Space frame that exitMacWallpaperMode would then restore).
+      macWallpaperSavedState = {
+        bounds: mainWindow.getBounds(),
+        resizable: mainWindow.isResizable(),
+        movable: mainWindow.isMovable(),
+        maximizable: mainWindow.isMaximizable(),
+        nativeBlurEnabled: store.get('enable_player_page_native_blur') === true,
+      };
+    }
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    }
+    mainWindow.setResizable(false);
+    mainWindow.setMovable(false);
+    // Wallpaper geometry is dictated by the display; stop persisting window bounds while it
+    // spans the screen (same guard the Windows/X11 geometry windows use).
+    mainWindow.__wallpaperGeometry = true;
+    // vibrancy at the desktop layer renders behind the icons (the "wallpaper stuck" AppKit trap);
+    // drop it for the session and restore it on exit if the user had native blur on.
+    if (macWallpaperSavedState.nativeBlurEnabled) {
+      try {
+        mainWindow.setVibrancy(null);
+      } catch (error) {
+        // ignore
+      }
+    }
+    // Enter the full-bleed simple-full-screen frame BEFORE sinking the window: the
+    // all-spaces + FullScreenAuxiliary collection behavior applied by applyMacAmbientLevel
+    // makes macOS treat the window as a full-screen auxiliary surface whose content the
+    // system insets below the menu bar (measured: an empty menu-bar strip on top of the
+    // wallpaper) when it is set while the window is already in simple full screen.
+    applyMacWallpaperFrame();
+    applyMacAmbientLevel();
+    // Hide the Dock while the wallpaper is up when the decision says so (default: only a bottom
+    // Dock, overridable by an explicit user on/off). The window already spans the full display and
+    // a visible Dock draws above it either way.
+    if (shouldMacWallpaperAutohideDock(controller)) {
+      void controller.setDockAutohide(true);
+    }
+    isMacWallpaperInteractionEnabled = store.get(WALLPAPER_FORWARD_MOUSE_SETTING_KEY) !== false;
+    startMacWallpaperInteraction();
+    store.set(WALLPAPER_MODE_SETTING_KEY, true);
+    notifyMacWallpaperModeChanged();
+    scheduleMacWallpaperFrameSettleVerify();
+    return true;
+  } catch (error) {
+    console.warn('[WallpaperMac] enter wallpaper mode failed:', error && error.message);
+    try {
+      exitMacWallpaperMode();
+    } catch (exitError) {
+      // ignore
+    }
+    return false;
+  }
+}
+
+// Entering wallpaper mode while the window is in native (Space-based) full screen used to
+// sink the window while the exit animation was still in flight; Electron's simple-full-screen
+// frame then gets overridden by the tail of the native exit, leaving the window stuck at the
+// visible frame (a menu-bar strip of the real desktop shows through the translucent menu bar)
+// with the simple-full-screen flag already set and no later event to re-assert it — measured
+// on-device. The posture is therefore deferred until the exit has fully landed.
+// 'leave-full-screen' is the primary signal; a bounded poller is the fallback when the event
+// never arrives (e.g. an exit the system cancelled mid-flight).
+function deferMacWallpaperEnterUntilFullScreenExit() {
+  if (!isMacWallpaperActive || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  macWallpaperPendingEnter = true;
+  macWallpaperEnterPollElapsed = 0;
+  let leftFullScreenSeen = false;
+  let masksClearSince = 0; // timestamp once both full-screen kinds report off
+  const applyPosture = () => {
+    if (!macWallpaperPendingEnter || !isMacWallpaperActive || !mainWindow || mainWindow.isDestroyed()) {
+      return false;
+    }
+    if (mainWindow.isFullScreen() || isMacSimpleFullScreen(mainWindow)) {
+      return false;
+    }
+    macWallpaperPendingEnter = false;
+    if (macWallpaperEnterPollTimer) {
+      clearTimeout(macWallpaperEnterPollTimer);
+      macWallpaperEnterPollTimer = null;
+    }
+    macWallpaperEnterPollElapsed = 0;
+    const controller = getMacWallpaperController();
+    return applyMacWallpaperPosture(controller);
+  };
+  const onLeftFullScreen = () => {
+    if (!macWallpaperPendingEnter || !mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    leftFullScreenSeen = true;
+    applyPosture();
+  };
+  mainWindow.once('leave-full-screen', onLeftFullScreen);
+  if (mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+  }
+  if (isMacSimpleFullScreen(mainWindow)) {
+    mainWindow.setSimpleFullScreen(false);
+  }
+  const poll = () => {
+    macWallpaperEnterPollTimer = null;
+    if (!macWallpaperPendingEnter || !isMacWallpaperActive || !mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    const nativeOn = mainWindow.isFullScreen();
+    const simpleOn = isMacSimpleFullScreen(mainWindow);
+    if (nativeOn || simpleOn) {
+      masksClearSince = 0;
+    } else if (masksClearSince === 0) {
+      masksClearSince = Date.now();
+    }
+    // Apply once the exit has fully landed: the leave event, or masks clear AND stable for a
+    // beat (the native exit animation can outlive the mask flip by a few hundred ms — applying
+    // during it is exactly the stuck-frame state this deferral exists to avoid).
+    if (!nativeOn && !simpleOn) {
+      if (leftFullScreenSeen || Date.now() - masksClearSince >= 1000) {
+        applyPosture();
+      }
+    }
+    if (!macWallpaperPendingEnter) {
+      return; // the posture ran (or rolled back); stop polling
+    }
+    macWallpaperEnterPollElapsed += MAC_WALLPAPER_FULLSCREEN_EXIT_POLL_MS;
+    if (macWallpaperEnterPollElapsed >= MAC_WALLPAPER_FULLSCREEN_EXIT_MAX_WAIT_MS) {
+      // The exit never settled: do not sink the window mid-transition (the exact failure this
+      // deferral exists to avoid) — roll the mode back instead of leaving it half-entered.
+      console.warn('[WallpaperMac] full-screen exit did not settle, wallpaper mode rolled back');
+      macWallpaperPendingEnter = false;
+      try {
+        exitMacWallpaperMode();
+      } catch (error) {
+        // ignore
+      }
+      return;
+    }
+    macWallpaperEnterPollTimer = setTimeout(poll, MAC_WALLPAPER_FULLSCREEN_EXIT_POLL_MS);
+  };
+  macWallpaperEnterPollTimer = setTimeout(poll, MAC_WALLPAPER_FULLSCREEN_EXIT_POLL_MS);
+}
+
+function notifyMacWallpaperModeChanged() {
+  refreshTrayMenu();
+  // macOS switches wallpaper mode in place, not always through save-settings: every change ends here.
+  backgroundThrottling.refresh();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+  }
+}
+
+// Input Monitoring is required to forward desktop clicks/hover into the wallpaper window. When it
+// is missing the renderer shows a toast pointing at System Settings (mirrors the Windows
+// wallpaper-transparent-refused prompt pattern).
+function notifyMacWallpaperInputMonitoringNeeded() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wallpaper-input-monitor-requested', null);
+  }
+}
+
+// Dock auto-hide during a wallpaper session is position-aware: the Dock is hidden only while it
+// sits at the bottom edge (where it overlaps the wallpaper's lower content); side Docks are never
+// touched. The stored on/off switch is the override — off disables even a bottom Dock. Whatever
+// the decision, exit/quit restore the user's original Dock state.
+function shouldMacWallpaperAutohideDock(controller) {
+  if (!controller) {
+    return false;
+  }
+  if (store.get(WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY) === false) {
+    return false;
+  }
+  try {
+    return controller.isDockAtBottom();
+  } catch (error) {
+    return false;
+  }
+}
+
+function enterMacWallpaperMode() {
+  if (process.platform !== 'darwin' || !mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  if (isMacWallpaperActive) {
+    return true;
+  }
+  // Every failure path below rolls the setting back: the renderer keys its chrome off of the
+  // stored wallpaper_mode, so leaving a stale true would strip the titlebar controls from a
+  // window that is not actually acting as a wallpaper.
+  const revertStoredWallpaperMode = () => {
+    store.set(WALLPAPER_MODE_SETTING_KEY, false);
+    notifyMacWallpaperModeChanged();
+  };
+  const controller = getMacWallpaperController();
+  if (!controller || !controller.isAvailable()) {
+    console.warn('[WallpaperMac] FFI bridge unavailable, wallpaper mode stays off');
+    revertStoredWallpaperMode();
+    return false;
+  }
+  // Interactivity is the point of the mac wallpaper (the sunk window can only be reached through
+  // the tap); refuse entry instead of leaving a dead, unclickable wallpaper behind the icons.
+  if (!controller.hasPermission()) {
+    try {
+      controller.requestPermission(); // surfaces the macOS Input Monitoring prompt
+    } catch (error) {
+      // ignore
+    }
+    notifyMacWallpaperInputMonitoringNeeded();
+    revertStoredWallpaperMode();
+    return false;
+  }
+  try {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    if (!mainWindow.isVisible()) {
+      // The toggle can come from the tray while the window is hidden-to-tray; the wallpaper must
+      // still appear. showInactive keeps focus on whatever the user is doing (the sunk window
+      // never takes key focus anyway).
+      try {
+        mainWindow.showInactive();
+      } catch (error) {
+        mainWindow.show();
+      }
+    }
+    // Mark active BEFORE the mutating calls so a mid-setup throw is rolled back by
+    // exitMacWallpaperMode (which clears the flag and restores whatever it can).
+    isMacWallpaperActive = true;
+    setMainWindowClickThroughEnabled(false);
+    // Wallpaper mode owns the z-order (FFI level sink below the icons), so an always-on-top
+    // preference cannot survive the session. Flip the STORED flag only — calling Electron's
+    // setAlwaysOnTop here (or from the tray before the entry) poisons the simple-full-screen
+    // presentation of this window (measured: content presented 33pt low, empty menu-bar
+    // strip above the wallpaper).
+    if (mainWindowAlwaysOnTop) {
+      mainWindowAlwaysOnTop = false;
+      store.set(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, false);
+    }
+    if (mainWindow.isFullScreen() || isMacSimpleFullScreen(mainWindow)) {
+      // Leaving native (Space-based) full screen is async, and any geometry we set while the
+      // exit animation is in flight gets overwritten by it — leaving the window stuck at the
+      // visible frame (measured: menu-bar strip of real desktop above the wallpaper, no later
+      // event to re-assert). Defer the whole posture until the exit has fully landed.
+      deferMacWallpaperEnterUntilFullScreenExit();
+      return true;
+    }
+    macWallpaperSavedState = {
+      bounds: mainWindow.getBounds(),
+      resizable: mainWindow.isResizable(),
+      movable: mainWindow.isMovable(),
+      maximizable: mainWindow.isMaximizable(),
+      nativeBlurEnabled: store.get('enable_player_page_native_blur') === true,
+    };
+    return applyMacWallpaperPosture(controller);
+  } catch (error) {
+    console.warn('[WallpaperMac] enter wallpaper mode failed:', error && error.message);
+    try {
+      exitMacWallpaperMode();
+    } catch (exitError) {
+      // ignore
+    }
+    return false;
+  }
+}
+
+// Electron's simple-full-screen entry sets APP-LEVEL AutoHideDock|AutoHideMenuBar options
+// (they apply whenever this app is frontmost) and its exit restores the value captured at
+// entry. When a window is destroyed while still in simple full screen (window close /
+// transparent-toggle rebuild), no exit runs and the bits survive; the next session then
+// captures them as "the value to restore", stranding macOS in auto-hide every time this app
+// is focused. After every wallpaper teardown, clear exactly those two bits. Only ever called
+// once the window is restored/gone — never during a full-screen transition, and never with
+// the FullScreen bit (clearing that mid-transition made an earlier fix loop).
+function clearMacWallpaperAutoHideLeftovers() {
+  const controller = getMacWallpaperController();
+  if (!controller || typeof controller.clearAutoHidePresentationOptions !== 'function') {
+    return false;
+  }
+  try {
+    return controller.clearAutoHidePresentationOptions();
+  } catch (error) {
+    return false;
+  }
+}
+
+function exitMacWallpaperMode() {
+  if (process.platform !== 'darwin') {
+    return false;
+  }
+  const controller = getMacWallpaperController();
+  // These are system/process state: they must be restored even when the window is already gone.
+  if (macWallpaperTapRetryTimer) {
+    clearTimeout(macWallpaperTapRetryTimer);
+    macWallpaperTapRetryTimer = null;
+  }
+  if (macWallpaperDragTimer) {
+    clearTimeout(macWallpaperDragTimer);
+    macWallpaperDragTimer = null;
+  }
+  macWallpaperPendingDrag = null;
+  isMacWallpaperInteractionEnabled = false;
+  macWallpaperTapFailures = 0;
+  // A deferred entry (full-screen exit still in flight) must not sink the window after a
+  // toggle-off / rollback / window close; stop its timers and pending latch.
+  clearMacWallpaperDeferredState();
+  if (controller) {
+    try {
+      controller.stop();
+    } catch (error) {
+      // ignore
+    }
+    try {
+      void controller.restoreDock();
+    } catch (error) {
+      // ignore
+    }
+  }
+  const wasActive = isMacWallpaperActive;
+  isMacWallpaperActive = false;
+  macWallpaperHitRects = [];
+  syncMacWallpaperHitPanels(); // takes the click catchers down
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    macWallpaperSavedState = null;
+    if (wasActive) {
+      store.set(WALLPAPER_MODE_SETTING_KEY, false);
+      notifyMacWallpaperModeChanged();
+    }
+    // A destroyed window never ran Electron's simple-full-screen exit, so the app-level
+    // AutoHide bits it set on entry survive unless cleared here.
+    clearMacWallpaperAutoHideLeftovers();
+    return wasActive;
+  }
+  if (!wasActive) {
+    clearMacWallpaperAutoHideLeftovers();
+    return false;
+  }
+  try {
+    if (controller) {
+      controller.setLevel(mainWindow, controller.normalLevel());
+    }
+    try {
+      mainWindow.setVisibleOnAllWorkspaces(false);
+    } catch (error) {
+      // ignore
+    }
+    try {
+      mainWindow.setIgnoreMouseEvents(false);
+    } catch (error) {
+      // ignore
+    }
+    // Resolve the frame to restore BEFORE leaving simple full screen: Electron's simple-full-
+    // screen exit animates the window back to the frame that was current when it ENTERED —
+    // which is the clamped pre-wallpaper display frame (setBounds is clamped to the workArea
+    // on macOS), not the user's window. Restoring the bounds after the exit call races and
+    // loses to that animation, leaving the window at the clamped full-display frame (measured
+    // on-device: (0, menuBarHeight, displayW, displayH) — bottom off-screen). Pointing the
+    // exit at the real restore frame first (setBounds updates Electron's recorded original
+    // frame) makes the exit animation land exactly there.
+    let macWallpaperRestoreBounds = null;
+    if (macWallpaperSavedState && macWallpaperSavedState.bounds) {
+      // Entering wallpaper from native full screen records the full-display frame; macOS
+      // restores the real pre-fullscreen frame only for the window itself, so fall back to the
+      // persisted normal bounds when the saved frame looks like a full-display rect.
+      macWallpaperRestoreBounds = macWallpaperSavedState.bounds;
+      try {
+        const displayBounds = screen.getPrimaryDisplay().bounds;
+        const looksLikeFullDisplay = macWallpaperRestoreBounds.x === displayBounds.x
+          && macWallpaperRestoreBounds.y === displayBounds.y
+          && macWallpaperRestoreBounds.width === displayBounds.width
+          && macWallpaperRestoreBounds.height === displayBounds.height;
+        if (looksLikeFullDisplay) {
+          const storedNormal = getStoredWindowState();
+          if (storedNormal.bounds && !storedNormal.isMaximized) {
+            macWallpaperRestoreBounds = storedNormal.bounds;
+          }
+        }
+      } catch (error) {
+        // ignore
+      }
+    }
+    if (isMacSimpleFullScreen(mainWindow)) {
+      if (macWallpaperRestoreBounds) {
+        try {
+          // Updates Electron's recorded original frame so its exit animation lands here.
+          mainWindow.setBounds(macWallpaperRestoreBounds, false);
+        } catch (error) {
+          // ignore
+        }
+      }
+      try {
+        mainWindow.setSimpleFullScreen(false);
+      } catch (error) {
+        // ignore
+      }
+    }
+    if (macWallpaperSavedState) {
+      mainWindow.setResizable(macWallpaperSavedState.resizable);
+      mainWindow.setMovable(macWallpaperSavedState.movable);
+      // setResizable(false) + simple full screen flip maximizable as an AppKit side effect and
+      // neither setter restores it; put it back explicitly (after setResizable, which rewrites
+      // the zoom-button style mask).
+      try {
+        mainWindow.setMaximizable(macWallpaperSavedState.maximizable !== false);
+      } catch (error) {
+        // ignore
+      }
+      if (!isTransparentPlayerBackgroundEnabled() && store.get('enable_player_page_native_blur') === true) {
+        try {
+          mainWindow.setVibrancy('fullscreen-ui');
+        } catch (error) {
+          // ignore
+        }
+      }
+    } else {
+      mainWindow.setResizable(true);
+      mainWindow.setMovable(true);
+      try {
+        mainWindow.setMaximizable(true);
+      } catch (error) {
+        // ignore
+      }
+    }
+    if (macWallpaperRestoreBounds) {
+      mainWindow.setBounds(macWallpaperRestoreBounds, false);
+    }
+    // Restore the geometry guard only after the saved bounds are back, so the restore-induced
+    // move/resize events cannot persist an intermediate geometry.
+    mainWindow.__wallpaperGeometry = false;
+    mainWindow.show();
+    mainWindow.focus();
+  } catch (error) {
+    console.warn('[WallpaperMac] exit wallpaper mode restore issue:', error && error.message);
+  } finally {
+    macWallpaperSavedState = null;
+    store.set(WALLPAPER_MODE_SETTING_KEY, false);
+    notifyMacWallpaperModeChanged();
+    // Runs after Electron's simple-full-screen exit restored its (possibly stale) capture;
+    // this is the last word on the app-level AutoHide bits.
+    clearMacWallpaperAutoHideLeftovers();
+  }
+  return true;
+}
+
+// The transparent-background toggle rebuilds the main window (the `transparent` flag is fixed at
+// window creation), destroying the window the wallpaper session was sunk into. The session's
+// per-window state — level, geometry, click-through, saved state — dies with it, so re-assert the
+// full wallpaper posture on the replacement. Without this the window comes back as an ordinary
+// window while the stored wallpaper_mode stays on: the renderer keeps its wallpaper chrome but the
+// mode is visually gone (the in-place macOS path otherwise never rebuilds the window).
+function rebindMacWallpaperSessionToCurrentWindow() {
+  const controller = getMacWallpaperController();
+  if (process.platform !== 'darwin' || !isMacWallpaperActive || !controller || !controller.isAvailable()) {
+    return false;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  if (macWallpaperTapRetryTimer) {
+    clearTimeout(macWallpaperTapRetryTimer);
+    macWallpaperTapRetryTimer = null;
+  }
+  if (macWallpaperDragTimer) {
+    clearTimeout(macWallpaperDragTimer);
+    macWallpaperDragTimer = null;
+  }
+  macWallpaperPendingDrag = null;
+  // The replacement window starts clean; drop any deferred-entry/settle timers the destroyed
+  // window's session may still carry.
+  clearMacWallpaperDeferredState();
+  try {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    if (!mainWindow.isVisible()) {
+      try {
+        mainWindow.showInactive();
+      } catch (error) {
+        mainWindow.show();
+      }
+    }
+    // Capture the replacement's normal state before mutating it — the recorded state from the
+    // destroyed wallpaper window describes a frame that no longer exists.
+    macWallpaperSavedState = {
+      bounds: mainWindow.getBounds(),
+      resizable: mainWindow.isResizable(),
+      movable: mainWindow.isMovable(),
+      maximizable: mainWindow.isMaximizable(),
+      nativeBlurEnabled: store.get('enable_player_page_native_blur') === true,
+    };
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    }
+    if (isMacSimpleFullScreen(mainWindow)) {
+      mainWindow.setSimpleFullScreen(false);
+    }
+    mainWindow.setResizable(false);
+    mainWindow.setMovable(false);
+    // The wallpaper frame is dictated by the display; never persist the replacement's geometry
+    // while it spans the screen (same guard enterMacWallpaperMode sets).
+    mainWindow.__wallpaperGeometry = true;
+    // vibrancy at the desktop layer renders behind the icons (the "wallpaper stuck" AppKit trap);
+    // drop it for the session and restore it on exit if the user had native blur on.
+    if (macWallpaperSavedState.nativeBlurEnabled) {
+      try {
+        mainWindow.setVibrancy(null);
+      } catch (error) {
+        // ignore
+      }
+    }
+    // Frame first, then ambient — same order the posture uses (see applyMacWallpaperPosture).
+    applyMacWallpaperFrame();
+    applyMacAmbientLevel();
+    if (shouldMacWallpaperAutohideDock(controller)) {
+      void controller.setDockAutohide(true);
+    }
+    // Re-arm the tap against the replacement window. When interactivity was already disabled
+    // this degrades gracefully instead of failing the rebind.
+    startMacWallpaperInteraction();
+    scheduleMacWallpaperFrameSettleVerify();
+    return true;
+  } catch (error) {
+    console.warn('[WallpaperMac] re-sink wallpaper after window swap failed:', error && error.message);
+    return false;
+  }
+}
+
+// Bare-desktop events only matter where the wallpaper window actually is. The tap is session-wide,
+// so on a multi-display setup the other screens' bare desktop would otherwise start gestures that
+// this window (spanning one display only) must never receive.
+function macWallpaperWindowHitTest(x, y) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  try {
+    const b = mainWindow.getBounds();
+    return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Toggle the "click the wallpaper directly" behaviour (default ON in wallpaper mode). Starts or
+// stops the listen-only mouse tap. Needs the Input Monitoring grant; until it is granted the
+// wallpaper stays on but non-interactive.
+function startMacWallpaperInteraction() {
+  const controller = getMacWallpaperController();
+  if (!isMacWallpaperActive || !controller || !controller.isAvailable()) {
+    return false;
+  }
+  if (!isMacWallpaperInteractionEnabled) {
+    controller.stop();
+    return false;
+  }
+  if (!controller.hasPermission()) {
+    try {
+      controller.requestPermission();
+    } catch (error) {
+      // ignore
+    }
+    isMacWallpaperInteractionEnabled = false;
+    // The grant may have been revoked mid-session: catchers without a tap would leave the
+    // controls dead to every click.
+    syncMacWallpaperHitPanels();
+    notifyMacWallpaperInputMonitoringNeeded();
+    return false;
+  }
+  const started = controller.start(forwardMacWallpaperMouse, macWallpaperWindowHitTest);
+  if (!started) {
+    macWallpaperTapFailures += 1;
+    if (macWallpaperTapFailures >= MAC_WALLPAPER_TAP_FAILURE_THRESHOLD) {
+      // Repeated failure -> degrade to a non-interactive wallpaper instead of a retry loop.
+      console.warn('[WallpaperMac] event tap keeps failing, wallpaper is now non-interactive');
+      isMacWallpaperInteractionEnabled = false;
+      controller.stop();
+      syncMacWallpaperHitPanels();
+      notifyMacWallpaperInputMonitoringNeeded();
+      return false;
+    }
+    if (!macWallpaperTapRetryTimer) {
+      macWallpaperTapRetryTimer = setTimeout(() => {
+        macWallpaperTapRetryTimer = null;
+        if (isMacWallpaperActive && isMacWallpaperInteractionEnabled) {
+          startMacWallpaperInteraction();
+        }
+      }, MAC_WALLPAPER_TAP_RETRY_DELAY_MS);
+      if (typeof macWallpaperTapRetryTimer?.unref === 'function') {
+        macWallpaperTapRetryTimer.unref();
+      }
+    }
+    return false;
+  }
+  macWallpaperTapFailures = 0;
+  syncMacWallpaperHitPanels();
+  return true;
+}
+
+function stopMacWallpaperInteraction() {
+  isMacWallpaperInteractionEnabled = false;
+  const controller = getMacWallpaperController();
+  if (controller) {
+    try {
+      controller.stop();
+    } catch (error) {
+      // ignore
+    }
+  }
+  syncMacWallpaperHitPanels();
+}
+
+function getMacWallpaperHitPanels(controller) {
+  if (!macWallpaperHitPanelsInstance) {
+    macWallpaperHitPanelsInstance = createMacWallpaperHitPanels({
+      // One above the Finder icons (the wallpaper sits one below them): above the desktop,
+      // below every normal window, the Dock and the menu bar.
+      level: controller.desktopLevel() + 2,
+      primaryHeight: () => screen.getPrimaryDisplay().bounds.height,
+    });
+  }
+  return macWallpaperHitPanelsInstance;
+}
+
+// Puts the click catchers over the controls the renderer last reported (or one over the whole
+// wallpaper while Stage Manager hides the desktop items), or takes them all down.
+// They are only up while the tap runs: a catcher takes the click away from Finder, and only the
+// tap hands it on to the wallpaper, so without it the controls would go dead.
+function syncMacWallpaperHitPanels() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+  const controller = getMacWallpaperController();
+  const live = isMacWallpaperActive
+    && isMacWallpaperInteractionEnabled
+    && !macWallpaperPendingEnter
+    && controller
+    && controller.isRunning()
+    && mainWindow
+    && !mainWindow.isDestroyed();
+  if (!live) {
+    if (macWallpaperStageManagerTimer) {
+      clearInterval(macWallpaperStageManagerTimer);
+      macWallpaperStageManagerTimer = null;
+    }
+    if (macWallpaperClickGuardInstance) {
+      macWallpaperClickGuardInstance.stop();
+    }
+    if (macWallpaperHitPanelsInstance) {
+      macWallpaperHitPanelsInstance.clear();
+    }
+    return;
+  }
+  if (!macWallpaperStageManagerTimer) {
+    macWallpaperStageState = readMacWallpaperStageState();
+    macWallpaperStageManagerTimer = setInterval(() => {
+      const next = readMacWallpaperStageState();
+      const prev = macWallpaperStageState;
+      if (next.enabled !== prev.enabled || next.hidesDesktopItems !== prev.hidesDesktopItems || next.trusted !== prev.trusted) {
+        macWallpaperStageState = next;
+        syncMacWallpaperHitPanels();
+      }
+    }, MAC_WALLPAPER_STAGE_MANAGER_POLL_MS);
+    if (typeof macWallpaperStageManagerTimer.unref === 'function') {
+      macWallpaperStageManagerTimer.unref();
+    }
+  }
+  try {
+    const bounds = mainWindow.getBounds();
+    const frame = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    const stage = macWallpaperStageState;
+    const coversWhole = coversWholeWallpaper(stage);
+    const wantsGuard = stage.enabled && !stage.hidesDesktopItems;
+    let guardRunning = false;
+    if (wantsGuard && stage.trusted) {
+      guardRunning = getMacWallpaperClickGuard().start(frame);
+    } else if (macWallpaperClickGuardInstance) {
+      macWallpaperClickGuardInstance.stop();
+    }
+    // Granted while Folia was running: macOS can report the grant but refuse the tap until Folia
+    // restarts. Same one-time hint, which says to restart Folia.
+    const staleGrant = wantsGuard && stage.trusted && !guardRunning
+      && macWallpaperClickGuardInstance?.lastFailure() === 'tap-failed';
+    if (staleGrant && !macWallpaperAccessibilityHinted) {
+      macWallpaperAccessibilityHinted = true;
+      notifyMacWallpaperAccessibilitySuggested();
+    }
+    if (wantsGuard && !stage.trusted && !macWallpaperAccessibilityHinted
+      && store.get(WALLPAPER_MAC_ACCESSIBILITY_ASKED_KEY) !== true) {
+      macWallpaperAccessibilityHinted = true;
+      store.set(WALLPAPER_MAC_ACCESSIBILITY_ASKED_KEY, true);
+      getMacWallpaperClickGuard().requestAccess();
+      notifyMacWallpaperAccessibilitySuggested();
+    }
+    const rects = coversWhole
+      ? [frame]
+      : toScreenHitRects(macWallpaperHitRects, bounds, mainWindow.webContents.getZoomFactor());
+    getMacWallpaperHitPanels(controller).apply(rects);
+  } catch (error) {
+    console.warn('[WallpaperMac] hit panel sync failed:', error && error.message);
+  }
+}
+
+// Stage Manager's switch and "hide desktop items", plus whether Folia holds the Accessibility
+// grant the click guard needs. Both cheap: CFPreferences and AXIsProcessTrusted, no child process.
+function readMacWallpaperStageState() {
+  const stage = readStageManagerDesktop() || { enabled: false, hidesDesktopItems: false };
+  return {
+    enabled: stage.enabled === true,
+    hidesDesktopItems: stage.hidesDesktopItems === true,
+    trusted: stage.enabled === true && stage.hidesDesktopItems !== true && isAccessibilityTrusted(),
+  };
+}
+
+// Packaged: Resources/libfolia_click_guard.dylib (built by packaging/macos/build-desktop-click-guard.mjs).
+// FOLIA_DESKTOP_CLICK_GUARD_PATH overrides it for local runs.
+function resolveMacDesktopClickGuardPath() {
+  if (process.env.FOLIA_DESKTOP_CLICK_GUARD_PATH) {
+    return process.env.FOLIA_DESKTOP_CLICK_GUARD_PATH;
+  }
+  return path.join(process.resourcesPath, 'libfolia_click_guard.dylib');
+}
+
+function getMacWallpaperClickGuard() {
+  if (!macWallpaperClickGuardInstance) {
+    macWallpaperClickGuardInstance = createMacDesktopClickGuard({ libraryPath: resolveMacDesktopClickGuardPath });
+  }
+  return macWallpaperClickGuardInstance;
+}
+
+// Stage Manager is on with the desktop icons shown and Folia lacks the Accessibility grant: clicks
+// on the bare wallpaper still send the stage aside. Asked once per session; never turns the
+// wallpaper off.
+function notifyMacWallpaperAccessibilitySuggested() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wallpaper-accessibility-suggested', null);
+  }
+}
+
+function flushMacWallpaperPendingDrag() {
+  if (macWallpaperDragTimer) {
+    clearTimeout(macWallpaperDragTimer);
+    macWallpaperDragTimer = null;
+  }
+  if (!macWallpaperPendingDrag) {
+    return;
+  }
+  const dragEvent = macWallpaperPendingDrag;
+  macWallpaperPendingDrag = null;
+  sendMacWallpaperMouseEvent(dragEvent);
+}
+
+// The tap only reports events it verified as bare-desktop, so nothing an app/Dock/window owns is
+// ever hijacked. Down/up/scroll pass through immediately; drag events are coalesced to the latest
+// position and flushed at ~display rate so the main -> renderer IPC does not flood.
+function forwardMacWallpaperMouse(event) {
+  if (!isMacWallpaperActive || !isMacWallpaperInteractionEnabled) {
+    return;
+  }
+  if (event.kind === 'drag' || event.kind === 'rdrag') {
+    macWallpaperPendingDrag = event; // only the most recent position survives
+    if (!macWallpaperDragTimer) {
+      macWallpaperDragTimer = setTimeout(flushMacWallpaperPendingDrag, MAC_WALLPAPER_DRAG_FLUSH_MS);
+    }
+    return;
+  }
+  flushMacWallpaperPendingDrag(); // emit any pending move first (event order + final position)
+  sendMacWallpaperMouseEvent(event);
+}
+
+// Inject one screen-space desktop mouse event into the wallpaper renderer via sendInputEvent
+// (the behind-icons window never receives these natively). Screen point -> window content point.
+function sendMacWallpaperMouseEvent(event) {
+  if (!isMacWallpaperActive || !isMacWallpaperInteractionEnabled || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  try {
+    const bounds = mainWindow.getBounds();
+    const x = Math.round(event.x - bounds.x);
+    const y = Math.round(event.y - bounds.y);
+    const webContents = mainWindow.webContents;
+    switch (event.kind) {
+      case 'down': {
+        // clickCount must be synthesised: injected events bypass the OS multi-click detector.
+        const now = Date.now();
+        const isDoubleClick = now - macWallpaperMouseDownAt.at < 500
+          && Math.abs(event.x - macWallpaperMouseDownAt.x) <= 8
+          && Math.abs(event.y - macWallpaperMouseDownAt.y) <= 8;
+        macWallpaperMouseDownAt = { at: now, x: event.x, y: event.y };
+        webContents.sendInputEvent({
+          type: 'mouseDown',
+          x,
+          y,
+          button: 'left',
+          clickCount: isDoubleClick ? 2 : 1,
+          modifiers: ['leftbuttondown'],
+        });
+        return;
+      }
+      case 'up':
+        webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        return;
+      case 'drag': {
+        // Injected mouseMove events carry no button state of their own; the modifier is what
+        // keeps MouseEvent.buttons=1 so Chromium does not tear the drag down mid-gesture.
+        webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers: ['leftbuttondown'] });
+        return;
+      }
+      case 'rdrag': {
+        // Right-drag mirrors the left-drag case with the right-button modifier (buttons=2).
+        webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers: ['rightbuttondown'] });
+        return;
+      }
+      case 'rdown':
+        webContents.sendInputEvent({
+          type: 'mouseDown',
+          x,
+          y,
+          button: 'right',
+          clickCount: 1,
+          modifiers: ['rightbuttondown'],
+        });
+        return;
+      case 'rup':
+        webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 });
+        return;
+      case 'move': {
+        if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) {
+          return; // nothing to hover outside the window
+        }
+        webContents.sendInputEvent({ type: 'mouseMove', x, y });
+        return;
+      }
+      case 'scroll': {
+        if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) {
+          return;
+        }
+        // Quartz line deltas scale to CSS px for Chromium's mouseWheel (calibrated with the same
+        // multiplier the reference implementation uses on-device).
+        webContents.sendInputEvent({
+          type: 'mouseWheel',
+          x,
+          y,
+          deltaX: (event.dx || 0) * 16,
+          deltaY: (event.dy || 0) * 16,
+          canScroll: true,
+        });
+        return;
+      }
+      default:
+        break;
+    }
+  } catch (error) {
+    // ignore
+  }
+}
+
 // Startup wrapper: only the main process reaches main.cjs (GPU/renderer children start with
 // --type=... and exit before this). The jumpboard takes the single-instance lock before spawning
 // windowtolayer; the wrapped child uses FOLIA_RELAUNCH to retry after the jumpboard exits.
 const wallpaperMode = isWallpaperModeEnabled();
 const onWayland = Boolean(process.env.WAYLAND_DISPLAY);
+// False on the native Wayland backend: setAlwaysOnTop there is silently ignored (issue #657), so every
+// always-on-top switch is greyed out instead of showing a state the compositor never received.
+const windowAlwaysOnTopSupported = isWindowAlwaysOnTopSupported({
+  ozonePlatform: app.commandLine.getSwitchValue('ozone-platform'),
+});
+if (!windowAlwaysOnTopSupported) {
+  console.info('[Window] always-on-top unavailable: running on the native Wayland backend');
+}
 
 // Serializes ownership, wrapper launch, and crash-loop accounting.
 async function prepareMainProcessStartup() {
@@ -313,62 +2189,163 @@ const mainProcessStartupPromise = prepareMainProcessStartup();
 const APP_LOCALE_KEY = 'APP_LOCALE';
 const mainLocale = {
   'zh-CN': {
-    trayShowHide: '显示/隐藏主窗口',
-    trayOpenRemote: '打开 遥控窗口',
+    trayShowWindow: '显示窗口',
+    trayHideWindow: '隐藏窗口',
+    trayOpenRemote: '遥控窗口',
+    trayUnlockRemote: '解锁遥控窗口',
+    trayTransparentBackground: '透明背景',
+    trayToggleClickThrough: '点击穿透',
+    trayAlwaysOnTop: '窗口置顶',
+    trayAlwaysOnTopUnavailable: '窗口置顶（Wayland 下不可用）',
     trayPrevious: '上一首',
     trayPlay: '播放',
     trayPause: '暂停',
     trayNext: '下一首',
     trayNoTrack: '暂无播放',
-    trayToggleClickThrough: '切换点击穿透',
-    trayOverlayPreset: '锁定 + 透明 + 置顶',
-    trayResetWindow: '重置窗口',
     trayHideTaskbar: '隐藏任务栏图标',
+    trayDesktopLyricMode: '桌面歌词',
+    trayToggleWallpaperMode: '壁纸模式',
+    trayWallpaperDisplay: '壁纸显示器',
+    trayWallpaperDisplayAuto: '自动',
+    trayWallpaperDisplayPrimary: '主显示器',
+    trayResetWindow: '重置窗口',
     trayQuit: '退出',
     dialogImportTitle: '无法导入此文件夹',
     dialogImportMessage: '不能直接导入系统目录或常用用户目录。\n请选择一个专门存放音乐的文件夹。',
     dialogChooseOther: '选择其他文件夹',
     dialogCancel: '取消',
+    crashTitle: 'Folia 遇到了问题',
+    crashMessage: '程序发生了一次崩溃，日志已保存。把它发给开发者能帮助定位问题。',
+    crashOpenFolder: '打开日志所在文件夹',
+    crashClose: '关闭',
+  },
+  'zh-TW': {
+    trayPrevious: '上一首',
+    trayPlay: '播放',
+    trayPause: '暫停',
+    trayNext: '下一首',
+    trayNoTrack: '暫無播放',
+    trayShowWindow: '顯示視窗',
+    trayHideWindow: '隱藏視窗',
+    trayOpenRemote: '遙控視窗',
+    trayUnlockRemote: '解鎖遙控視窗',
+    trayTransparentBackground: '透明背景',
+    trayToggleClickThrough: '點選穿透',
+    trayAlwaysOnTop: '視窗置頂',
+    trayAlwaysOnTopUnavailable: '視窗置頂（Wayland 下不可用）',
+    trayHideTaskbar: '隱藏工作列圖示',
+    trayDesktopLyricMode: '桌面歌詞',
+    trayToggleWallpaperMode: '桌布模式',
+    trayWallpaperDisplay: '桌布顯示器',
+    trayWallpaperDisplayAuto: '自動',
+    trayWallpaperDisplayPrimary: '主顯示器',
+    trayResetWindow: '重置視窗',
+    trayQuit: '退出',
+    dialogImportTitle: '無法匯入此資料夾',
+    dialogImportMessage: '不能直接匯入系統目錄或常用使用者目錄。\n請選擇一個專門存放音樂的資料夾。',
+    dialogChooseOther: '選擇其他資料夾',
+    dialogCancel: '取消',
+    crashTitle: 'Folia 遇到了問題',
+    crashMessage: '程式發生了一次崩潰，日誌已儲存。把它發給開發者能幫助定位問題。',
+    crashOpenFolder: '開啟日誌所在資料夾',
+    crashClose: '關閉',
   },
   en: {
-    trayShowHide: 'Show/Hide Main Window',
-    trayOpenRemote: 'Open Remote Window',
+    trayShowWindow: 'Show Window',
+    trayHideWindow: 'Hide Window',
+    trayOpenRemote: 'Remote Window',
+    trayUnlockRemote: 'Unlock Remote Window',
+    trayTransparentBackground: 'Transparent Background',
+    trayToggleClickThrough: 'Click-Through',
+    trayAlwaysOnTop: 'Always on Top',
+    trayAlwaysOnTopUnavailable: 'Always on Top (unavailable on Wayland)',
     trayPrevious: 'Previous Track',
     trayPlay: 'Play',
     trayPause: 'Pause',
     trayNext: 'Next Track',
     trayNoTrack: 'Nothing Playing',
-    trayToggleClickThrough: 'Toggle Click-Through',
-    trayOverlayPreset: 'Locked + Transparent + On Top',
-    trayResetWindow: 'Reset Window',
     trayHideTaskbar: 'Hide Taskbar Icon',
+    trayDesktopLyricMode: 'Desktop Lyrics',
+    trayToggleWallpaperMode: 'Wallpaper Mode',
+    trayWallpaperDisplay: 'Wallpaper Display',
+    trayWallpaperDisplayAuto: 'Automatic',
+    trayWallpaperDisplayPrimary: 'Primary',
+    trayResetWindow: 'Reset Window',
     trayQuit: 'Quit',
     dialogImportTitle: 'Cannot import this folder',
     dialogImportMessage: 'Cannot directly import system or common user directories.\nPlease choose a dedicated music folder.',
     dialogChooseOther: 'Choose Another Folder',
     dialogCancel: 'Cancel',
+    crashTitle: 'Folia ran into a problem',
+    crashMessage: 'The app crashed and a log has been saved. Sending it to the developer helps track the problem down.',
+    crashOpenFolder: 'Open Log Folder',
+    crashClose: 'Close',
   },
   in: {
-    trayShowHide: 'Tampilkan/Sembunyikan Jendela Utama',
-    trayOpenRemote: 'Buka Jendela Remote',
+    trayShowWindow: 'Tampilkan Jendela',
+    trayHideWindow: 'Sembunyikan Jendela',
+    trayOpenRemote: 'Jendela Remote',
+    trayUnlockRemote: 'Buka Kunci Jendela Remote',
+    trayTransparentBackground: 'Latar Belakang Transparan',
+    trayToggleClickThrough: 'Click-Through',
+    trayAlwaysOnTop: 'Selalu di Atas',
+    trayAlwaysOnTopUnavailable: 'Selalu di Atas (tidak tersedia di Wayland)',
     trayPrevious: 'Lagu Sebelumnya',
     trayPlay: 'Putar',
     trayPause: 'Jeda',
     trayNext: 'Lagu Berikutnya',
     trayNoTrack: 'Tidak Ada Pemutaran',
-    trayToggleClickThrough: 'Alihkan Click-Through',
-    trayOverlayPreset: 'Terkunci + Transparan + Di Atas',
-    trayResetWindow: 'Atur Ulang Jendela',
     trayHideTaskbar: 'Sembunyikan Ikon Taskbar',
+    trayDesktopLyricMode: 'Lirik Desktop',
+    trayToggleWallpaperMode: 'Mode Wallpaper',
+    trayWallpaperDisplay: 'Layar Wallpaper',
+    trayWallpaperDisplayAuto: 'Otomatis',
+    trayWallpaperDisplayPrimary: 'Utama',
+    trayResetWindow: 'Atur Ulang Jendela',
     trayQuit: 'Keluar',
     dialogImportTitle: 'Tidak dapat mengimpor folder ini',
     dialogImportMessage: 'Folder sistem atau folder pengguna umum tidak dapat diimpor langsung.\nPilih folder khusus untuk menyimpan musik.',
     dialogChooseOther: 'Pilih Folder Lain',
     dialogCancel: 'Batal',
+    crashTitle: 'Folia mengalami masalah',
+    crashMessage: 'Aplikasi mengalami crash dan log telah disimpan. Mengirimkannya ke pengembang membantu menemukan masalahnya.',
+    crashOpenFolder: 'Buka Folder Log',
+    crashClose: 'Tutup',
+  },
+  vi: {
+    trayPrevious: 'Bài trước',
+    trayPlay: 'Phát',
+    trayPause: 'Tạm dừng',
+    trayNext: 'Bài tiếp theo',
+    trayNoTrack: 'Không có bài đang phát',
+    trayShowWindow: 'Hiện cửa sổ',
+    trayHideWindow: 'Ẩn cửa sổ',
+    trayOpenRemote: 'Cửa sổ điều khiển',
+    trayUnlockRemote: 'Mở khóa cửa sổ điều khiển',
+    trayTransparentBackground: 'Nền trong suốt',
+    trayToggleClickThrough: 'Nhấp xuyên qua',
+    trayAlwaysOnTop: 'Luôn trên cùng',
+    trayAlwaysOnTopUnavailable: 'Luôn trên cùng (không khả dụng trên Wayland)',
+    trayHideTaskbar: 'Ẩn biểu tượng thanh tác vụ',
+    trayDesktopLyricMode: 'Lời bài hát màn hình chính',
+    trayToggleWallpaperMode: 'Chế độ hình nền',
+    trayWallpaperDisplay: 'Màn hình hiển thị hình nền',
+    trayWallpaperDisplayAuto: 'Tự động',
+    trayWallpaperDisplayPrimary: 'Màn hình chính',
+    trayResetWindow: 'Đặt lại cửa sổ',
+    trayQuit: 'Thoát',
+    dialogImportTitle: 'Không thể nhập thư mục này',
+    dialogImportMessage: 'Không thể nhập trực tiếp thư mục hệ thống hoặc thư mục người dùng thông thường.\nVui lòng chọn một thư mục chuyên lưu nhạc.',
+    dialogChooseOther: 'Chọn thư mục khác',
+    dialogCancel: 'Hủy',
+    crashTitle: 'Folia đã gặp sự cố',
+    crashMessage: 'Ứng dụng đã gặp sự cố và tệp nhật ký đã được lưu. Gửi nhật ký cho nhà phát triển sẽ giúp giải quyết vấn đề.',
+    crashOpenFolder: 'Mở thư mục nhật ký',
+    crashClose: 'Đóng',
   },
 };
 
-// Maps an arbitrary BCP 47 tag onto one of the three locales the main process ships.
+// Maps an arbitrary BCP 47 tag onto one of the five locales the main process ships.
 // Returns null for unsupported tags so callers can keep walking the preference list.
 function normalizeMainLocaleKey(value) {
   if (typeof value !== 'string' || !value) {
@@ -379,8 +2356,16 @@ function normalizeMainLocaleKey(value) {
   if (lowered === 'in' || lowered.startsWith('id')) {
     return 'in';
   }
+  if (lowered === 'vi' || lowered.startsWith('vi-')) {
+    return 'vi';
+  }
+  // Same script/region split the renderer applies in src/i18n/config.ts: an explicit
+  // Hant / TW / HK / MO subtag means traditional, a bare `zh` stays simplified.
   if (lowered.startsWith('zh')) {
-    return 'zh-CN';
+    const subtags = lowered.split('-').slice(1);
+    return subtags.some(tag => tag === 'hant' || tag === 'tw' || tag === 'hk' || tag === 'mo')
+      ? 'zh-TW'
+      : 'zh-CN';
   }
   if (lowered.startsWith('en')) {
     return 'en';
@@ -418,20 +2403,148 @@ function detectSystemLocaleKey() {
   return 'en';
 }
 
-function getMainLocale() {
+// The locale key the main process should speak in, honouring the app setting
+// and falling back to the system locale. Split out from getMainLocale so
+// modules with their own dialog copy (the mod loader) can ask for the key.
+function getMainLocaleKey() {
   const stored = store.get(APP_LOCALE_KEY);
-  if (stored === 'zh-CN' || stored === 'en' || stored === 'in') {
-    return mainLocale[stored];
+  if (stored === 'zh-CN' || stored === 'zh-TW' || stored === 'en' || stored === 'in' || stored === 'vi') {
+    return stored;
   }
-  return mainLocale[detectSystemLocaleKey()];
+  return detectSystemLocaleKey();
 }
+
+function getMainLocale() {
+  return mainLocale[getMainLocaleKey()];
+}
+
+// Crash reporting. Installed here rather than at the end of the file because everything below it
+// runs before `ready`, and a startup failure is exactly the crash a user cannot diagnose alone.
+// Writes to `logs` beside the executable where that is writable — see resolveCrashLogDir for the
+// platforms where it is not, and where the reports land instead.
+const crashLog = createCrashLog({
+  app,
+  dialog,
+  shell,
+  getLocale: getMainLocale,
+  onLine: runtimeLine,
+});
+// Keep native crash dumps beside the text reports so one folder contains the evidence needed
+// to identify the faulting module. Dumps stay on this machine until the user shares them.
+if (crashLog.dir) {
+  const crashDumpDir = path.join(crashLog.dir, 'crash-dumps');
+  try {
+    fs.mkdirSync(crashDumpDir, { recursive: true });
+    app.setPath('crashDumps', crashDumpDir);
+  } catch (error) {
+    console.warn('[Crash] Could not place crash dumps beside logs', error);
+  }
+}
+try {
+  crashReporter.start({ uploadToServer: false });
+} catch (error) {
+  console.warn('[Crash] Native crash dumps are unavailable', error);
+}
+
+const RENDERER_CRASH_RELOAD_WINDOW_MS = 60_000;
+const MAX_RENDERER_CRASH_RELOADS = 2;
+
+// Limit automatic reloads to avoid trapping the user in a crash loop.
+function shouldReloadMainRenderer(win, details) {
+  if (details?.reason !== 'crashed' || !win || win.isDestroyed() || isWallpaperModeEnabled()) {
+    return false;
+  }
+  const now = Date.now();
+  win.__rendererCrashReloads = (win.__rendererCrashReloads || [])
+    .filter(at => now - at < RENDERER_CRASH_RELOAD_WINDOW_MS);
+  return win.__rendererCrashReloads.length < MAX_RENDERER_CRASH_RELOADS;
+}
+
+// A window that stays stuck after "keep waiting" is asked about again after this long: the
+// `unresponsive` event itself comes once per time the window stops answering.
+const UNRESPONSIVE_ASK_AGAIN_MS = 30_000;
+
+/*
+ * The main window stopped answering while mods are running: one of them may be stuck, and a
+ * stuck page cannot ask anything itself. Offers to keep waiting or to reopen the window without
+ * mods. "Reopen" holds for this run of the app only and writes no setting (safeStart.cjs).
+ */
+async function offerReopenWithoutMods(win) {
+  if (win !== mainWindow || win.isDestroyed() || win.__unresponsivePrompt || !modSystem?.hasRunningMods()) {
+    return;
+  }
+  const prompt = new AbortController();
+  win.__unresponsivePrompt = prompt;
+  let reopen = false;
+  try {
+    reopen = await modSystem.askReopenWithoutMods(win, prompt.signal);
+  } catch (error) {
+    console.warn('[Mods] Could not ask about the window that stopped answering', error);
+  }
+  win.__unresponsivePrompt = null;
+  // Answering again in the meantime (the question was closed for the user), or gone.
+  if (win.isDestroyed() || prompt.signal.aborted) {
+    return;
+  }
+  if (reopen) {
+    console.log('[Mods] Reopening the window without mods for this run');
+    modSystem.skipForThisRun();
+    // Electron's own recipe for a page that no longer answers: end its process, then load it
+    // again in a new one. This is not a crash to announce or to recover from by other means.
+    win.__reopeningWithoutMods = true;
+    win.webContents.once('did-finish-load', () => {
+      win.__reopeningWithoutMods = false;
+    });
+    win.webContents.forcefullyCrashRenderer();
+    win.webContents.reload();
+    return;
+  }
+  // One timer per window: a second stall inside the wait must not make the question come early.
+  clearTimeout(win.__unresponsiveAskAgain);
+  win.__unresponsiveAskAgain = setTimeout(() => {
+    win.__unresponsiveAskAgain = null;
+    if (!win.isDestroyed() && win.__stoppedAnswering) {
+      void offerReopenWithoutMods(win);
+    }
+  }, UNRESPONSIVE_ASK_AGAIN_MS);
+}
+
+/*
+ * The page of this window is no longer stuck: it answers again, or its process has ended (a crash,
+ * a kill from outside, the reopen above) and there is nothing left to wait for. An open question
+ * about it is taken down, and it is not asked again. Without the second case a page that crashed
+ * while stuck, and was loaded again, would be asked about every 30 seconds for good: Electron
+ * need not send `responsive` for a page whose process is gone.
+ */
+function noteWindowNotStuck(win) {
+  win.__stoppedAnswering = false;
+  clearTimeout(win.__unresponsiveAskAgain);
+  win.__unresponsiveAskAgain = null;
+  win.__unresponsivePrompt?.abort();
+}
+
+installCrashHandlers({
+  app,
+  crashLog,
+  // 壁纸模式沿用自己的恢复路径；普通主窗口短时间内最多自动重载两次。
+  // 恢复期间仍写日志，但不弹出会打断恢复的提示框。
+  // 用户选了「不带模组重新打开」时页面进程是有意结束的（offerReopenWithoutMods），同样不弹。
+  isRendererCrashRecovered: (details, contents) => (
+    (contents === mainWindow?.webContents && mainWindow?.__reopeningWithoutMods === true)
+    || (details?.reason === 'crashed' && (
+      isWallpaperModeEnabled()
+      || (contents === mainWindow?.webContents && shouldReloadMainRenderer(mainWindow, details))
+    ))
+  ),
+  beforeExit: () => hifiSession.killSync(),
+});
 
 
 let mainWindow = null;
+let modSystem = null;
 let remoteControlWindow = null;
 let appTray = null;
 // 标记应用正在真正退出，用于区分"关闭到托盘"应拦截的窗口 close 和退出流程中的 close。
-let isQuittingApp = false;
 // 本次进程是否由开机登录项以静默模式拉起；只对第一扇主窗生效，创建后即清零。
 let pendingSilentLaunch = isSilentLaunch(process.argv);
 let latestRemoteControlSnapshot = null;
@@ -442,14 +2555,29 @@ let latestObsBrowserSourceAudio = null;
 const obsBrowserSourceClients = new Set();
 let remoteControlAlwaysOnTop = false;
 let remoteControlSkipTaskbarEnabled = false;
+let remoteControlHideTitlebarEnabled = false;
+let remoteControlClickThroughEnabled = false;
+let remoteControlExpandCoverEnabled = true;
+let remoteControlTextShadeEnabled = false;
 let mainWindowAlwaysOnTop = false;
-// Click-through follows wallpaper mode on Wayland only; X11 wallpaper mode must keep it off (see
-// isX11WallpaperMode).
-let mainWindowClickThroughEnabled = isWallpaperModeEnabled() && Boolean(process.env.WAYLAND_DISPLAY);
+let mainWindowClickThroughEnabled = false;
 let mainWindowClickThroughUnlockHover = false;
 let mainWindowClickThroughUnlockHoverTimer = null;
 let mainWindowSkipTaskbarEnabled = false;
 let videoExportWindowRestoreState = null;
+// The 后台节流 switch; refresh() wherever one of its stand-down reasons can change.
+const backgroundThrottling = createBackgroundThrottling({
+  isEnabled: () => readStoredBoolean(BACKGROUND_THROTTLING_SETTING_KEY, false),
+  getStandDownReason: () => {
+    if (isWallpaperModeEnabled()) return 'wallpaper mode';
+    if (videoExportWindowRestoreState) return 'video export';
+    if (obsBrowserSourceClients.size > 0) return 'OBS browser source';
+    return null;
+  },
+});
+// Chromium's fragmented MP4 leaves the movie duration at the first fragment (#549); patch it
+// from the fragment timeline once recording ends.
+const videoExportFileWriter = createVideoExportFileWriter({ finalizeFile: finalizeVideoExportFile });
 let autoUpdater = null;
 // Backed by the settings store so a handoff survives a full process relaunch (wallpaper mode)
 const windowPlaybackHandoffStore = createWindowPlaybackHandoffStore({
@@ -462,8 +2590,11 @@ let windowStateSaveTimer = null;
 let wallpaperModeRelaunchTimer = null;
 let wallpaperModeRelaunchGeneration = 0;
 const x11WallpaperWindows = new WeakSet();
+// Must match CLICK_THROUGH_UNLOCK_HOTSPOT in src/utils/clickThroughUnlockHotspot.ts (the renderer
+// runs the same hit test on mousemove). The width covers the unlock button both at right-[180px]
+// and at right-[224px] (titlebar showing the fullscreen button).
 const MAIN_WINDOW_CLICK_THROUGH_UNLOCK_HOTSPOT = {
-  width: 48,
+  width: 84,
   height: 40,
   rightInset: 176,
   topInset: 4,
@@ -475,6 +2606,9 @@ const DEFAULT_WINDOW_BOUNDS = {
 };
 const WINDOW_STATE_SAVE_DEBOUNCE_MS = 300;
 const CACHE_DIRECTORY_SETTING_KEY = 'CACHE_DIRECTORY';
+// The 模型目录 earlier versions (up to 0.7.20) let the listener choose for automix's downloads. Never
+// written now; read once to offer deleting what is left there, then cleared (legacy-models-*).
+const LEGACY_MODELS_DIRECTORY_SETTING_KEY = 'MODELS_DIRECTORY';
 const ENABLE_UPDATE_CHECK_SETTING_KEY = 'ENABLE_UPDATE_CHECK';
 const ENABLE_AUTO_UPDATE_SETTING_KEY = 'ENABLE_AUTO_UPDATE';
 const UPDATE_CHANNEL_SETTING_KEY = 'UPDATE_CHANNEL';
@@ -500,8 +2634,11 @@ const REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY = 'REMOTE_CONTROL_SKIP_TASKBAR';
 const MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY = 'MAIN_WINDOW_ALWAYS_ON_TOP';
 const TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY = 'TRANSPARENT_PLAYER_BACKGROUND';
 const VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY = 'VOICE_INPUT_PAUSE_ENABLED';
-const AI_PROVIDER_CREDENTIALS_SETTING_KEY = 'AI_PROVIDER_CREDENTIALS';
 const PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY = 'PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK';
+// Master switch for the experimental mod system. Off by default: with it off no
+// mod is discovered, activated or reachable over IPC, so the mod system costs
+// nothing to anyone who has not opted in.
+const MOD_SYSTEM_ENABLED_SETTING_KEY = 'MOD_SYSTEM_ENABLED';
 
 const DEFAULT_STAGE_API_PORT = 32107;
 const DEFAULT_OBS_BROWSER_SOURCE_PORT = 32108;
@@ -610,7 +2747,7 @@ function readStoredBoolean(settingKey, fallback = false) {
 
 function getPublicSettings() {
   return {
-    ...store.store,
+    ...aiCredentials.toPublicSettings(store.store),
     [CLOSE_TO_TRAY_SETTING_KEY]: readStoredBoolean(CLOSE_TO_TRAY_SETTING_KEY, false),
     [CLOSE_MAIN_PANEL_ACTION_SETTING_KEY]: getCloseMainPanelAction(),
     [LAUNCH_AT_LOGIN_SETTING_KEY]: getLaunchAtLoginEnabled(),
@@ -619,15 +2756,27 @@ function getPublicSettings() {
     [HIDE_TASKBAR_ICON_SETTING_KEY]: readStoredBoolean(HIDE_TASKBAR_ICON_SETTING_KEY, false),
     [REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY, true),
     [REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY, false),
+    [REMOTE_CONTROL_HIDE_TITLEBAR_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_HIDE_TITLEBAR_SETTING_KEY, false),
+    [REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY, false),
+    [REMOTE_CONTROL_EXPAND_COVER_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_EXPAND_COVER_SETTING_KEY, true),
+    [REMOTE_CONTROL_TEXT_SHADE_SETTING_KEY]: readStoredBoolean(REMOTE_CONTROL_TEXT_SHADE_SETTING_KEY, false),
     [MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY]: readStoredBoolean(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, false),
     [TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY]: readStoredBoolean(TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY, false),
     [DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY]: readStoredBoolean(DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY, false),
     [LYRIC_API_ENABLED_SETTING_KEY]: readStoredBoolean(LYRIC_API_ENABLED_SETTING_KEY, false),
     [VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY]: readStoredBoolean(VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY, false),
     [PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY]: readStoredBoolean(PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY, false),
+    [MOD_SYSTEM_ENABLED_SETTING_KEY]: readStoredBoolean(MOD_SYSTEM_ENABLED_SETTING_KEY, false),
+    [BACKGROUND_THROTTLING_SETTING_KEY]: readStoredBoolean(BACKGROUND_THROTTLING_SETTING_KEY, false),
     [UPDATE_CHANNEL_SETTING_KEY]: getCurrentReleaseChannel().id,
     'enable_player_page_native_blur': store.get('enable_player_page_native_blur') === true,
+    'wallpaper_attach_mode': process.platform === 'win32' ? wallpaperWindowsAttachMode : null,
+    [GPU_PREFERENCE_SETTING_KEY]: normalizeGpuPreference(store.get(GPU_PREFERENCE_SETTING_KEY)),
     [WALLPAPER_MODE_SETTING_KEY]: isWallpaperModeEnabled(),
+    [WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY]: readStoredBoolean(WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY, false),
+    [WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY]: readStoredBoolean(WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY, true),
+    // Not a stored setting: whether always-on-top can take effect in this process at all.
+    'window_always_on_top_supported': windowAlwaysOnTopSupported,
   };
 }
 
@@ -679,6 +2828,7 @@ function buildObsBrowserSourceStatus() {
 }
 
 function broadcastObsBrowserSourceStatus() {
+  backgroundThrottling.refresh();
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('obs-browser-source-status-changed', buildObsBrowserSourceStatus());
   }
@@ -687,6 +2837,13 @@ function broadcastObsBrowserSourceStatus() {
 mainWindowSkipTaskbarEnabled = readStoredBoolean(HIDE_TASKBAR_ICON_SETTING_KEY, false);
 remoteControlAlwaysOnTop = readStoredBoolean(REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY, true);
 remoteControlSkipTaskbarEnabled = readStoredBoolean(REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY, false);
+{
+  const remoteWindowSettings = readRemoteControlWindowSettings(readStoredBoolean);
+  remoteControlHideTitlebarEnabled = remoteWindowSettings.hideTitlebar;
+  remoteControlClickThroughEnabled = remoteWindowSettings.clickThrough;
+  remoteControlExpandCoverEnabled = remoteWindowSettings.expandCover;
+  remoteControlTextShadeEnabled = remoteWindowSettings.textShade;
+}
 mainWindowAlwaysOnTop = readStoredBoolean(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, false);
 
 const stageApi = createStageApi({
@@ -698,7 +2855,7 @@ const stageApi = createStageApi({
   stageApiTokenSettingKey: STAGE_API_TOKEN_SETTING_KEY,
   stageApiPortSettingKey: STAGE_API_PORT_SETTING_KEY,
   defaultStageApiPort: DEFAULT_STAGE_API_PORT,
-  getNeteasePort: () => assignedPort,
+  getNeteasePort: () => neteaseBackend.getPort(),
 });
 
 const lyricApi = createLyricApi({
@@ -724,6 +2881,16 @@ const voiceInputPauseMonitor = createVoiceInputPauseMonitor({
   getOwnExePath: () => process.execPath,
 });
 const displaySleepBlocker = createDisplaySleepBlocker(powerSaveBlocker);
+// Both models, in a child process. Registers their IPC handlers; the renderer falls back to its
+// own estimators whenever they answer null, which is what the web build always gets.
+// The developer debug module: the runtime log and the memory monitor, both switched from
+// Settings > Developer. Created BEFORE the analysis host, which logs through it.
+createDebugHost({ app, ipcMain, store, BrowserWindow });
+logLinuxVulkanChoice(linuxVulkan, linuxGraphicsMode);
+
+const analysisHost = createAnalysisHost({
+  app, ipcMain, getModelsDir: getBundledModelsDirectory,
+});
 
 function buildPlaybackSyncBridgeStatus() {
   return {
@@ -811,7 +2978,10 @@ function clearWindowStateSaveTimer() {
 }
 
 function saveWindowState(win, options = {}) {
-  if (!win || win.isDestroyed() || isX11WallpaperMode() || x11WallpaperWindows.has(win)) {
+  // A wallpaper window's geometry is dictated by the display; persisting it would clobber the
+  // bounds a normal window restores to after leaving wallpaper mode (same reason as the X11
+  // guards — the Windows wallpaper path just has no separate window set to check against).
+  if (!win || win.isDestroyed() || isX11WallpaperMode() || x11WallpaperWindows.has(win) || win.__wallpaperGeometry === true || win.__transparentFullscreen === true) {
     return;
   }
 
@@ -835,6 +3005,26 @@ function saveWindowState(win, options = {}) {
   pendingWindowStateSave = null;
   clearWindowStateSaveTimer();
   persistWindowStateSnapshot(snapshot);
+}
+
+// Electron sizes Windows transparent windows to the display without updating isFullScreen().
+// Track that path per window so F11 can restore its original bounds on the next press.
+function isMainWindowFullscreen(win) {
+  return win.__transparentFullscreen === true || win.isFullScreen();
+}
+
+function setMainWindowFullscreen(win, fullscreen) {
+  if (process.platform === 'win32' && win.__wallpaperWindowTransparent === true) {
+    if (isMainWindowFullscreen(win) === fullscreen) {
+      return;
+    }
+    if (fullscreen) {
+      saveWindowState(win);
+      win.__transparentFullscreenRestoreBounds = win.getBounds();
+    }
+    win.__transparentFullscreen = fullscreen;
+  }
+  win.setFullScreen(fullscreen);
 }
 
 function isWindowsThumbarSupported() {
@@ -932,6 +3122,18 @@ function getConfiguredCacheDirectory() {
   return typeof configured === 'string' && configured.trim().length > 0
     ? configured
     : getDefaultCacheDirectory();
+}
+
+// The models ship inside the installer - Beat This! final0 and htdemucs, the WebGPU exports both
+// runtimes read (electron/analysis/modelPaths.cjs) - and are read from there alone. Earlier versions
+// downloaded them, or older forms of them, into userData/models; those copies are deleted once at
+// startup (removeDownloadedLeftovers), as nothing reads them any more.
+function getDownloadedModelsDirectory() {
+  return path.join(app.getPath('userData'), 'models');
+}
+
+function getBundledModelsDirectory() {
+  return path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, '..'), 'models');
 }
 
 function getAudioCacheDirectory() {
@@ -1176,7 +3378,7 @@ function setLaunchAtLoginEnabled(enabled) {
 function shouldHideMainWindowOnClose() {
   return resolveHideMainWindowOnClose({
     hasTray: Boolean(appTray),
-    isQuitting: isQuittingApp,
+    isQuitting: isAppQuitting,
     closeMainPanelEnabled: isCloseToTrayEnabled(),
     closeMainPanelAction: getCloseMainPanelAction(),
   });
@@ -1217,12 +3419,52 @@ function applyRemoteControlSkipTaskbar(win) {
   return remoteControlSkipTaskbarEnabled;
 }
 
+function buildRemoteControlWindowSettings() {
+  return {
+    hideTitlebar: remoteControlHideTitlebarEnabled,
+    clickThrough: remoteControlClickThroughEnabled,
+    expandCover: remoteControlExpandCoverEnabled,
+    textShade: remoteControlTextShadeEnabled,
+    alwaysOnTopSupported: windowAlwaysOnTopSupported,
+  };
+}
+
+// Applies click-through to the remote window and tells its renderer about its switches.
+function applyRemoteControlWindowPresentation(win) {
+  if (!win || win.isDestroyed()) {
+    return false;
+  }
+
+  syncRemoteControlMouseIgnore();
+  if (!win.webContents.isDestroyed()) {
+    win.webContents.send('remote-control-window-settings-changed', buildRemoteControlWindowSettings());
+  }
+  return true;
+}
+
+// Tray / command palette unlock path: persist, apply, and let the main renderer's store follow.
+function setRemoteControlClickThroughEnabled(enabled) {
+  remoteControlClickThroughEnabled = Boolean(enabled);
+  store.set(REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY, remoteControlClickThroughEnabled);
+  applyRemoteControlWindowPresentation(remoteControlWindow);
+  refreshTrayMenu();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+  }
+  return remoteControlClickThroughEnabled;
+}
+
 function applyMainWindowAlwaysOnTop() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return false;
   }
 
   mainWindow.setAlwaysOnTop(mainWindowAlwaysOnTop, 'screen-saver');
+  // Electron's setAlwaysOnTop poisons this window's later simple-full-screen presentation
+  // (measured on-device: content presented 33pt below the window top, empty menu-bar strip
+  // above the wallpaper — sticky for the life of the window). Mark it so the mac wallpaper
+  // entry rebuilds the window instead of sinking a poisoned one.
+  mainWindow.__macAlwaysOnTopElectronTouched = true;
   if (mainWindowAlwaysOnTop && typeof mainWindow.moveTop === 'function') {
     mainWindow.moveTop();
   }
@@ -1230,47 +3472,76 @@ function applyMainWindowAlwaysOnTop() {
 }
 
 function setMainWindowAlwaysOnTop(enabled) {
+  // Always-on-top would fight the wallpaper's desktop-layer z-order, so wallpaper mode refuses it.
+  if (Boolean(enabled) && isWallpaperModeEnabled()) {
+    return mainWindowAlwaysOnTop;
+  }
+
   mainWindowAlwaysOnTop = Boolean(enabled);
   store.set(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, mainWindowAlwaysOnTop);
   applyMainWindowAlwaysOnTop();
   patchRemoteControlSnapshot({
     mainWindowAlwaysOnTop,
   });
+  refreshTrayMenu();
   return mainWindowAlwaysOnTop;
 }
 
-// Tray preset: click-through, a transparent window, and always-on-top switched as one thing, for
-// the overlay setup where Folia sits on top of whatever else is on screen and takes no clicks.
-function isMainWindowOverlayPresetActive() {
+function isDesktopLyricModeActive() {
   return mainWindowClickThroughEnabled
     && mainWindowAlwaysOnTop
-    && isTransparentPlayerBackgroundEnabled();
+    && isTransparentPlayerBackgroundEnabled()
+    && mainWindowSkipTaskbarEnabled;
 }
 
-// Order is forced by the transparency switch: it rebuilds the main window, and the rebuild reads
-// mainWindowAlwaysOnTop for the new window's options while resetting click-through to off. So the
-// on-top flag has to be set before the rebuild and click-through re-applied after it.
-async function setMainWindowOverlayPreset(enabled) {
+async function setDesktopLyricMode(enabled) {
   const nextEnabled = Boolean(enabled);
-  // Click-through is refused in X11 wallpaper mode, which would leave the preset half applied.
-  if (nextEnabled && isX11WallpaperMode()) {
+  if (nextEnabled && isWallpaperModeEnabled()) {
     return false;
   }
 
+  // The preset has no state of its own: it only applies one exact combination of independent
+  // window switches. Drop click-through before a possible window rebuild, then reapply it last.
+  setMainWindowClickThroughEnabled(false);
   setMainWindowAlwaysOnTop(nextEnabled);
+  persistMainWindowSkipTaskbarEnabled(nextEnabled);
   if (isTransparentPlayerBackgroundEnabled() !== nextEnabled) {
     await setMainWindowTransparentModeFromRemote(nextEnabled);
   }
-  // setMainWindowClickThroughEnabled refreshes the tray itself, so the checkbox is already correct.
-  setMainWindowClickThroughEnabled(nextEnabled);
+  if (nextEnabled) {
+    setMainWindowClickThroughEnabled(true);
+  }
   return nextEnabled;
 }
 
-// Tray escape hatch: drops the window back to opaque, clickable and not on top, whichever of those
-// modes happen to be on. The overlay preset already applies exactly that combination in the order
-// the transparency rebuild requires, and it skips the rebuild when the window is opaque already.
 async function resetMainWindowPresentation() {
-  return setMainWindowOverlayPreset(false);
+  return setDesktopLyricMode(false);
+}
+
+async function enableDesktopLyricsLeavingWallpaperMode() {
+  store.set(WALLPAPER_MODE_SETTING_KEY, false);
+  refreshTrayMenu();
+
+  if (process.platform === 'linux') {
+    mainWindowAlwaysOnTop = true;
+    mainWindowSkipTaskbarEnabled = true;
+    store.set(MAIN_WINDOW_ALWAYS_ON_TOP_SETTING_KEY, true);
+    store.set(HIDE_TASKBAR_ICON_SETTING_KEY, true);
+    store.set(TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY, true);
+    process.env.FOLIA_PENDING_DESKTOP_LYRIC = '1';
+    scheduleWallpaperModeRelaunch(false);
+    return;
+  }
+
+  wallpaperModeRelaunchGeneration += 1;
+  const generation = wallpaperModeRelaunchGeneration;
+  if (wallpaperModeRelaunchTimer) {
+    clearTimeout(wallpaperModeRelaunchTimer);
+    wallpaperModeRelaunchTimer = null;
+  }
+  await relaunchForWallpaperModeChange(false, generation);
+  await setDesktopLyricMode(true);
+  refreshTrayMenu();
 }
 
 function refreshTrayMenu() {
@@ -1279,6 +3550,21 @@ function refreshTrayMenu() {
   }
 
   const locale = getMainLocale();
+  const hasMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const remoteOpen = Boolean(remoteControlWindow && !remoteControlWindow.isDestroyed());
+  const wallpaperOn = isWallpaperModeEnabled();
+  // Reset only has something to undo while the window sits in a non-default presentation.
+  const canResetPresentation = hasMainWindow && (
+    mainWindowClickThroughEnabled
+    || mainWindowAlwaysOnTop
+    || isTransparentPlayerBackgroundEnabled()
+    || mainWindowSkipTaskbarEnabled
+  );
+  // One flat level, grouped by separators: window presence, whole-window modes, the individual
+  // switches those modes are made of, then reset and quit. Every switch is one click away, and a
+  // mode and its parts stay visible together so the checkboxes explain each other. The one
+  // submenu is the wallpaper display: a list to pick from, not a switch.
+  const wallpaperDisplayItem = isWallpaperModeSupportedPlatform() ? buildWallpaperDisplayTrayItem(locale) : null;
   const menu = Menu.buildFromTemplate([
     {
       label: formatTrayTrackLabel(locale),
@@ -1308,48 +3594,134 @@ function refreshTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: locale.trayShowHide,
+      label: isMainWindowVisible() ? locale.trayHideWindow : locale.trayShowWindow,
+      enabled: hasMainWindow,
       click: () => {
         toggleMainWindowVisibility();
       },
     },
     {
       label: locale.trayOpenRemote,
+      type: 'checkbox',
+      checked: remoteOpen,
       click: () => {
-        createRemoteControlWindow();
+        // Both createRemoteControlWindow and the window's 'closed' handler refresh the tray.
+        if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
+          remoteControlWindow.close();
+        } else {
+          createRemoteControlWindow();
+        }
       },
     },
-    ...(!isX11WallpaperMode() ? [{
+    ...(shouldShowRemoteUnlockTrayItem({ remoteOpen, clickThrough: remoteControlClickThroughEnabled }) ? [{
+      label: locale.trayUnlockRemote,
+      click: () => {
+        setRemoteControlClickThroughEnabled(false);
+      },
+    }] : []),
+    { type: 'separator' },
+    {
+      label: locale.trayDesktopLyricMode,
+      type: 'checkbox',
+      checked: isDesktopLyricModeActive(),
+      enabled: hasMainWindow,
+      click: () => {
+        const nextEnabled = !isDesktopLyricModeActive();
+        if (nextEnabled && isWallpaperModeEnabled()) {
+          void enableDesktopLyricsLeavingWallpaperMode();
+          return;
+        }
+        void setDesktopLyricMode(nextEnabled).then(() => {
+          refreshTrayMenu();
+        });
+      },
+    },
+    ...(isWallpaperModeSupportedPlatform() ? [{
+      label: locale.trayToggleWallpaperMode,
+      type: 'checkbox',
+      checked: isWallpaperModeEnabled(),
+      click: () => {
+        const nextEnabled = !isWallpaperModeEnabled();
+        // Entering is a user-initiated switch, so the first entry asks for confirmation through the
+        // renderer and then enters through save-settings. Once the renderer has recorded that first
+        // entry, there is no dialog left to show: enter directly instead of bringing the window
+        // forward for nothing. Leaving never needs a confirmation.
+        if (
+          nextEnabled &&
+          !readStoredBoolean(WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY, false) &&
+          requestWallpaperEntryConfirmation({ mainWindow, focusMainWindow, isClickThroughActive: () => mainWindowClickThroughEnabled })
+        ) {
+          // The click already flipped the checkbox; nothing is entered until the user confirms.
+          refreshTrayMenu();
+          return;
+        }
+        // NOTE: no Electron window calls here. Calling setAlwaysOnTop/setIgnoreMouseEvents
+        // on the window right before the entry poisons the upcoming simple-full-screen
+        // presentation (measured on-device: the content is presented 33pt low, leaving an
+        // empty menu-bar strip above the wallpaper). The wallpaper entry asserts click-
+        // through and the always-on-top state itself (state-only flip + level sink).
+        store.set(WALLPAPER_MODE_SETTING_KEY, nextEnabled);
+        if (nextEnabled) {
+          // Either the renderer already accepted the warning, or it could not answer (destroyed,
+          // loading, crashed, click-through) and the click wins over the dialog. Entering counts
+          // as the first use either way, so the next tray click must not ask again.
+          store.set(WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY, true);
+        }
+        refreshTrayMenu();
+        scheduleWallpaperModeRelaunch(nextEnabled);
+      },
+    }] : []),
+    ...(wallpaperDisplayItem ? [wallpaperDisplayItem] : []),
+    { type: 'separator' },
+    {
+      label: locale.trayTransparentBackground,
+      type: 'checkbox',
+      checked: isTransparentPlayerBackgroundEnabled(),
+      enabled: hasMainWindow && !(process.platform === 'win32'
+        && isWindowsWallpaperMode()
+        && !isWindowsWallpaperTransparentSupported()),
+      click: () => {
+        void setMainWindowTransparentModeFromRemote(!isTransparentPlayerBackgroundEnabled()).then(() => {
+          refreshTrayMenu();
+        });
+      },
+    },
+    {
       label: locale.trayToggleClickThrough,
       type: 'checkbox',
       checked: mainWindowClickThroughEnabled,
-      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      enabled: hasMainWindow && !wallpaperOn,
       click: () => {
         setMainWindowClickThroughEnabled(!mainWindowClickThroughEnabled);
       },
-    }, {
-      label: locale.trayOverlayPreset,
-      type: 'checkbox',
-      checked: isMainWindowOverlayPresetActive(),
-      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
-      click: () => {
-        void setMainWindowOverlayPreset(!isMainWindowOverlayPresetActive());
-      },
-    }] : []),
+    },
     {
-      label: locale.trayResetWindow,
-      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      // Native Wayland ignores the request; the label says so, since a tray menu has no tooltip on Linux.
+      label: windowAlwaysOnTopSupported ? locale.trayAlwaysOnTop : locale.trayAlwaysOnTopUnavailable,
+      type: 'checkbox',
+      checked: windowAlwaysOnTopSupported && mainWindowAlwaysOnTop,
+      enabled: hasMainWindow && !wallpaperOn && windowAlwaysOnTopSupported,
       click: () => {
-        void resetMainWindowPresentation();
+        setMainWindowAlwaysOnTop(!mainWindowAlwaysOnTop);
       },
     },
     {
       label: locale.trayHideTaskbar,
       type: 'checkbox',
       checked: mainWindowSkipTaskbarEnabled,
-      enabled: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      enabled: hasMainWindow && !wallpaperOn,
       click: () => {
         persistMainWindowSkipTaskbarEnabled(!mainWindowSkipTaskbarEnabled);
+      },
+    },
+    { type: 'separator' },
+    {
+      label: locale.trayResetWindow,
+      enabled: canResetPresentation,
+      click: () => {
+        void resetMainWindowPresentation().then(() => {
+          refreshTrayMenu();
+        });
       },
     },
     { type: 'separator' },
@@ -1372,7 +3744,7 @@ function refreshTrayMenu() {
 // 复用遥控窗那套 loadAppEntry + preload 桥。创建失败时回退到原生菜单。
 // 窗口尺寸固定，菜单内容贴窗口右下角，多出的部分保持透明。
 // 不做「渲染后测量再 resize 窗口」：那条回路会让 setBounds 改变视口、视口又影响下一次测量，
-// 表现为菜单上下抖动和滚动条进出导致的宽度跳变。网易云同样是按菜单数据一次定尺寸，不回灌。
+// 表现为菜单上下抖动和滚动条进出导致的宽度跳变。参照的客户端同样是按菜单数据一次定尺寸，不回灌。
 const TRAY_MENU_BODY_WIDTH = 200;
 const TRAY_MENU_SUBMENU_WIDTH = 152;
 const TRAY_MENU_WINDOW_WIDTH = TRAY_MENU_BODY_WIDTH + TRAY_MENU_SUBMENU_WIDTH;
@@ -1381,7 +3753,7 @@ const TRAY_MENU_WINDOW_HEIGHT = 320;
 const TRAY_MENU_DEBUG = process.env.FOLIA_TRAY_DEBUG === '1';
 // 菜单底边抬到光标上方，避开托盘图标本身（光标落在图标中心，图标半高约 12px）。
 const TRAY_MENU_CURSOR_GAP = 20;
-// 网易云的辅助窗（MiniPlayer/DesktopLyrics）都是常驻隐藏窗口，弹出只改位置不走 show()，
+// 参照客户端的辅助窗（MiniPlayer/DesktopLyrics）都是常驻隐藏窗口，弹出只改位置不走 show()，
 // 因此没有系统的窗口显示动画。这里照搬：窗口创建后一直处于 shown 状态，
 // 「隐藏」是把它挪到屏幕外，「显示」是挪回锚点。
 const TRAY_MENU_OFFSCREEN_X = -20000;
@@ -1398,11 +3770,11 @@ let trayMenuVisible = false;
 // 弹出时记下的锚点：菜单内容右下角贴这里。窗口尺寸恒定，因此位置一次算准即可。
 let trayMenuAnchor = null;
 
-// 复刻网易云的算法：光标位置代表托盘图标所在，菜单只出现在图标的右上或左上。
+// 复刻参照客户端的算法：光标位置代表托盘图标所在，菜单只出现在图标的右上或左上。
 // 默认菜单左缘对齐图标、向右展开（右上）；右侧放不下就翻转成右缘对齐图标、向左展开（左上）。
 // 它并没有查询托盘图标矩形的能力（dll 未导入 Shell_NotifyIconGetRect / SHAppBarMessage），
 // 只有 GetCursorPos + MonitorFromPoint + GetMonitorInfo，够用是因为右键时光标必在图标上。
-// 按托盘图标矩形定位，与网易云观感一致：菜单只出现在图标的右上或左上。
+// 按托盘图标矩形定位，与参照客户端观感一致：菜单只出现在图标的右上或左上。
 // tray.getBounds() 实测可靠，图标折叠进溢出面板后返回的也是面板内的真实位置。
 // 水平：默认菜单左缘对齐图标左缘、向右展开（右上）；右侧放不下则右缘对齐图标右缘、向左展开（左上）。
 // 垂直：菜单底边贴图标顶边，图标在任务栏内时正好压在任务栏上沿，且永远不遮挡图标。
@@ -1571,7 +3943,7 @@ function createTrayMenuWindow() {
 }
 
 // 按光标定位：菜单右下角贴住光标，因此弹在托盘图标的左上方。
-// 依据是 cloudmusic.dll 导入了 GetCursorPos 而非 TrackPopupMenu —— 网易云同样按光标算，
+// 依据是 cloudmusic.dll 导入了 GetCursorPos 而非 TrackPopupMenu —— 参照客户端同样按光标算，
 // 托盘图标位置固定，观感就是"每次都在同一处"。
 // 注意不能用 tray.getBounds()：图标被折叠进溢出区时它返回的矩形不可靠。
 function positionAndShowTrayMenuWindow() {
@@ -1835,7 +4207,8 @@ function setupCorsBypassHandlers() {
         hostname === 'y.gtimg.cn' ||
         hostname === 'kugou.com' ||
         hostname.endsWith('.kugou.com') ||
-        hostname === 'amll-ttml-db.stevexmh.net';
+        // Bodian audio and cover CDNs may omit CORS headers needed by Web Audio and canvas/WebGL.
+        bodianMediaPolicy.allows(details) || qishuiMediaPolicy.allows(details);
     } catch (error) {
       isTargetDomain = false;
     }
@@ -1849,6 +4222,8 @@ function setupCorsBypassHandlers() {
 
     callback({ cancel: false, responseHeaders });
   });
+
+  ses.webRequest.onBeforeRedirect(details => { bodianMediaPolicy.followRedirect(details); qishuiMediaPolicy.followRedirect(details); });
 
   ses.webRequest.onErrorOccurred({ urls: ['*://*.kugou.com/*'] }, details => {
     const requestInfo = getKugouMediaRequestInfo(details);
@@ -1883,12 +4258,15 @@ function isAllowedLyricProxyHost(hostname) {
     hostname.endsWith('.kugou.com') ||
     hostname === 'kgimg.com' ||
     hostname.endsWith('.kgimg.com') ||
-    hostname === 'amll-ttml-db.stevexmh.net'
+    hostname === 'api.amll.dev'
   );
 }
 
+// AMLL TTML DB 官方 API（#515）。UA 由渲染进程按构建信息拼好放在请求头里，这里原样转发。
+const AMLL_API_TIMEOUT_MS = 5000;
+
 function isAmllDbHost(hostname) {
-  return hostname === 'amll-ttml-db.stevexmh.net';
+  return hostname === 'api.amll.dev';
 }
 
 async function proxyLyricRequest(targetUrlStr, init = {}) {
@@ -1915,21 +4293,11 @@ async function proxyLyricRequest(targetUrlStr, init = {}) {
     method: typeof init?.method === 'string' ? init.method : 'GET',
     headers,
     body: init?.body,
+    ...(isAmllDbRequest ? { signal: AbortSignal.timeout(AMLL_API_TIMEOUT_MS) } : {}),
   });
 
   if (isAmllDbRequest) {
     console.log(`[AMLL Proxy] Response ${response.status} ${targetUrl.toString()}`);
-  }
-
-  if (isAmllDbRequest && response.status === 404) {
-    console.log(`[AMLL Proxy] Convert 404 -> 204 ${targetUrl.toString()}`);
-    return {
-      ok: true,
-      status: 204,
-      statusText: 'No Content',
-      headers: {},
-      bodyText: '',
-    };
   }
 
   const normalizedHeaders = {};
@@ -2080,9 +4448,6 @@ function normalizeUpdateChannelSelection(value) {
 }
 
 function getUpdateCheckSupportReason() {
-  if (process.platform !== 'win32') {
-    return 'system';
-  }
   return getCurrentReleaseChannel().updateEnabled ? null : 'channel';
 }
 
@@ -2108,11 +4473,23 @@ function getDevUpdatePreviewVersion() {
 
 function isAutoUpdaterSupported() {
   return (
+    process.platform === 'win32' &&
     isUpdateCheckSupported() &&
     app.isPackaged &&
     process.env.ELECTRON_DEV !== 'true' &&
     process.env.NODE_ENV !== 'development'
   );
+}
+
+function getAutoUpdateSupportReason() {
+  if (!getCurrentReleaseChannel().updateEnabled) {
+    return 'channel';
+  }
+  return process.platform === 'win32' ? null : 'system';
+}
+
+function isPackagedUpdateRuntime() {
+  return app.isPackaged && process.env.ELECTRON_DEV !== 'true' && process.env.NODE_ENV !== 'development';
 }
 
 const updateState = {
@@ -2137,6 +4514,8 @@ function getUpdateStatus() {
     platform: process.platform,
     updateCheckEnabled: getUpdateCheckEnabled(),
     autoUpdateEnabled: getAutoUpdateEnabled(),
+    autoUpdateSupported: isDevPreview || isAutoUpdaterSupported(),
+    autoUpdateSupportReason: isDevPreview ? null : getAutoUpdateSupportReason(),
     lastSeenVersion: store.get(LAST_SEEN_UPDATE_VERSION_SETTING_KEY) || null,
     updateSeen: Boolean(
       availableVersion &&
@@ -2326,9 +4705,13 @@ async function checkForUpdates({ manual = false } = {}) {
     return getUpdateStatus();
   }
 
-  if (!isAutoUpdaterSupported()) {
+  if (!isPackagedUpdateRuntime()) {
     setUpdateState({ status: 'idle', error: null, downloadProgress: null });
     return getUpdateStatus();
+  }
+
+  if (!isAutoUpdaterSupported()) {
+    return checkForManualUpdateAvailability();
   }
 
   try {
@@ -2346,6 +4729,66 @@ async function checkForUpdates({ manual = false } = {}) {
       lastCheckedAt: Date.now(),
       downloadProgress: null,
     });
+  }
+
+  return getUpdateStatus();
+}
+
+async function checkForManualUpdateAvailability() {
+  const releaseChannel = getCurrentReleaseChannel();
+  const discovery = getUpdateDiscoveryConfig(releaseChannel, FOLIA_GITHUB_REPOSITORY);
+  if (!discovery) {
+    setUpdateState({ status: 'unsupported', error: null, availableVersion: null, downloadProgress: null });
+    return getUpdateStatus();
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  setUpdateState({ status: 'checking', error: null, downloadProgress: null });
+
+  try {
+    // Keep the startup check off the app's default session so refreshing proxy state cannot
+    // interrupt playback, provider requests, or other live connections.
+    const ses = session.fromPartition('folia-update-check');
+    await ses.setProxy({ mode: 'system' });
+    await ses.forceReloadProxyConfig();
+    const response = await ses.fetch(discovery.url, {
+      headers: {
+        Accept: 'text/yaml, text/plain',
+        'User-Agent': `Folia/${app.getVersion()}`,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Update metadata request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const metadata = await response.text();
+    const latestVersion = parseUpdateMetadataVersion(metadata);
+    if (!latestVersion) {
+      throw new Error('Update metadata did not include a version.');
+    }
+
+    const hasUpdate = compareVersions(latestVersion, app.getVersion()) > 0;
+    setUpdateState({
+      status: hasUpdate ? 'available' : 'latest',
+      availableVersion: hasUpdate ? latestVersion : null,
+      updateUrl: hasUpdate
+        ? getReleaseUrl(releaseChannel.id, latestVersion, FOLIA_RELEASES_URL)
+        : FOLIA_RELEASES_URL,
+      error: null,
+      lastCheckedAt: Date.now(),
+      downloadProgress: null,
+    });
+  } catch (error) {
+    setUpdateState({
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      lastCheckedAt: Date.now(),
+      downloadProgress: null,
+    });
+  } finally {
+    clearTimeout(timeout);
   }
 
   return getUpdateStatus();
@@ -2372,14 +4815,19 @@ async function openUpdateReleasePage(version) {
   return true;
 }
 
-async function openExternalUrl(url) {
-  if (typeof url !== 'string' || !url.trim()) {
-    return false;
-  }
-
-  await shell.openExternal(url.trim());
-  return true;
-}
+// External links are restricted to http(s) before reaching shell.openExternal: any other scheme
+// would be handed to the OS as a protocol launch (file:// opens local paths, ms-settings: reaches
+// system panes, anything else depends on what the machine has registered). Scope, stated plainly:
+// this limits what an untrusted URL can trigger once a renderer is compromised or a compromised
+// surface feeds strings here - it is not privilege escalation by itself, and the registered protocol
+// handlers decide the impact. Every in-app caller passes a plain https URL, so the allowlist costs
+// nothing. The validation and the opener live in externalUrlPolicy.cjs so both can be loaded and
+// tested without starting the app; this file wires the production shell into that factory.
+const openExternalUrl = createExternalUrlOpener({
+  openExternal: (resolved) => shell.openExternal(resolved),
+  // 不把被拒的字符串写进日志：它本身就是不可信内容。
+  onBlocked: () => console.warn('[main] blocked openExternal for a non-http(s) URL'),
+});
 
 function scheduleStartupUpdateCheck() {
   if (isDevUpdatePreviewEnabled()) {
@@ -2397,7 +4845,7 @@ function scheduleStartupUpdateCheck() {
     return;
   }
 
-  if (!isAutoUpdaterSupported()) {
+  if (!isPackagedUpdateRuntime()) {
     setUpdateState({ status: 'idle', error: null });
     return;
   }
@@ -2481,52 +4929,10 @@ function getGeminiResponseSchema() {
   };
 }
 
-async function generateGeminiTheme({ apiKey, systemPrompt, sourcePrompt, customFetch }) {
-  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent';
-  const response = await customFetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [
-          { text: systemPrompt }
-        ]
-      },
-      contents: [
-        {
-          parts: [
-            { text: sourcePrompt }
-          ]
-        }
-      ],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: getGeminiResponseSchema(),
-      }
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Gemini API error: ${response.status} ${response.statusText}${errText ? ` - ${errText}` : ''}`);
-  }
-
-  const data = await response.json();
-  const jsonText = data?.candidates?.[0]?.content?.parts?.find((part) => typeof part?.text === 'string')?.text;
-  if (!jsonText) {
-    throw new Error('Failed to generate theme JSON');
-  }
-
-  return JSON.parse(jsonText);
-}
-
-const DEFAULT_OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
-const DEFAULT_OPENAI_MODEL = 'gpt-4o';
-const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
 const THEME_JSON_SCHEMA_NAME = 'dual_theme';
+// What the theme's answer needs. Attempts that cannot switch reasoning off get room for it on top
+// (shared/ai/aiTasks.mjs), so this no longer depends on the provider.
+const THEME_MAX_OUTPUT_TOKENS = 8192;
 const THEME_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -2561,7 +4967,7 @@ const THEME_JSON_SCHEMA = {
           items: { type: 'string' }
         },
       },
-      required: ['name', 'backgroundColor', 'primaryColor', 'accentColor', 'secondaryColor', 'wordColors', 'lyricsIcons'],
+      required: ['name', 'description', 'backgroundColor', 'primaryColor', 'accentColor', 'secondaryColor', 'wordColors', 'lyricsIcons'],
     },
     dark: {
       type: 'object',
@@ -2593,118 +4999,11 @@ const THEME_JSON_SCHEMA = {
           items: { type: 'string' }
         },
       },
-      required: ['name', 'backgroundColor', 'primaryColor', 'accentColor', 'secondaryColor', 'wordColors', 'lyricsIcons'],
+      required: ['name', 'description', 'backgroundColor', 'primaryColor', 'accentColor', 'secondaryColor', 'wordColors', 'lyricsIcons'],
     },
   },
   required: ['light', 'dark'],
 };
-
-function normalizeOpenAIChatCompletionsUrl(rawUrl) {
-  const trimmedUrl = typeof rawUrl === 'string' ? rawUrl.trim() : '';
-  if (!trimmedUrl) {
-    return DEFAULT_OPENAI_CHAT_COMPLETIONS_URL;
-  }
-
-  try {
-    const parsed = new URL(trimmedUrl);
-    const normalizedPath = parsed.pathname.replace(/\/+$/, '');
-
-    if (!normalizedPath || normalizedPath === '/') {
-      parsed.pathname = '/v1/chat/completions';
-      return parsed.toString();
-    }
-
-    if (/\/v\d+$/.test(normalizedPath)) {
-      parsed.pathname = `${normalizedPath}/chat/completions`;
-      return parsed.toString();
-    }
-
-    parsed.pathname = normalizedPath;
-    return parsed.toString();
-  } catch {
-    return trimmedUrl.replace(/\/+$/, '');
-  }
-}
-
-function resolveOpenAICompatibleModel(apiUrl, configuredModel) {
-  const trimmedModel = typeof configuredModel === 'string' ? configuredModel.trim() : '';
-  if (trimmedModel) {
-    return trimmedModel;
-  }
-
-  try {
-    const hostname = new URL(apiUrl).hostname.toLowerCase();
-    if (hostname === 'api.deepseek.com' || hostname.endsWith('.deepseek.com')) {
-      return DEEPSEEK_DEFAULT_MODEL;
-    }
-  } catch {
-    // Fall back to the generic OpenAI default when URL parsing fails.
-  }
-
-  return DEFAULT_OPENAI_MODEL;
-}
-
-function detectOpenAICompatibleProvider(apiUrl, model) {
-  const normalizedModel = model.trim().toLowerCase();
-  if (normalizedModel.startsWith('deepseek-')) {
-    return 'deepseek';
-  }
-
-  try {
-    const hostname = new URL(apiUrl).hostname.toLowerCase();
-    if (hostname === 'api.deepseek.com' || hostname.endsWith('.deepseek.com')) {
-      return 'deepseek';
-    }
-    if (hostname === 'api.openai.com' || hostname.endsWith('.openai.com')) {
-      return 'openai';
-    }
-  } catch {
-    // Fall through to generic provider handling.
-  }
-
-  if (/^(gpt|o[1-9]|o[1-9]-|chatgpt-)/.test(normalizedModel)) {
-    return 'openai';
-  }
-
-  return 'generic';
-}
-
-function providerSupportsStructuredOutputs(provider) {
-  return provider === 'openai';
-}
-
-function extractProviderErrorMessage(payload) {
-  if (!payload || typeof payload !== 'object') {
-    return null;
-  }
-
-  const error = payload.error;
-  if (typeof error === 'string') {
-    return error;
-  }
-
-  if (error && typeof error === 'object' && typeof error.message === 'string') {
-    return error.message;
-  }
-
-  return typeof payload.message === 'string' ? payload.message : null;
-}
-
-async function formatOpenAICompatibleError(response) {
-  const rawText = await response.text();
-  let detail = rawText.trim();
-
-  try {
-    const parsed = JSON.parse(rawText);
-    detail = extractProviderErrorMessage(parsed) || detail;
-  } catch {
-    // Leave non-JSON responses as-is.
-  }
-
-  return detail
-    ? `OpenAI compatible API error (${response.status}): ${detail}`
-    : `OpenAI compatible API error (${response.status}): ${response.statusText}`;
-}
 
 function buildThemeSystemPrompt(includeSchemaText = false) {
   const instructionPrompt = `Analyze the mood of the provided song source text and generate TWO visual theme configurations for a music player - one for LIGHT mode and one for DARK mode.
@@ -2771,83 +5070,7 @@ ${isPureMusic && songTitle ? `Song title: ${songTitle}\n` : ''}Source snippet:
 ${snippet}`;
 }
 
-const DEFAULT_OPENAI_TEMPERATURE = 0.7;
-
-function resolveOpenAICompatibleTemperature(value) {
-  const temperature = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '').trim());
-  return Number.isFinite(temperature) && temperature >= 0 && temperature <= 2
-    ? temperature
-    : DEFAULT_OPENAI_TEMPERATURE;
-}
-
-function buildOpenAICompatibleRequestBody(model, provider, systemPrompt, sourcePrompt, temperature) {
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: sourcePrompt }
-  ];
-
-  if (providerSupportsStructuredOutputs(provider)) {
-    return {
-      model,
-      messages,
-      temperature,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: THEME_JSON_SCHEMA_NAME,
-          strict: true,
-          schema: THEME_JSON_SCHEMA,
-        },
-      },
-    };
-  }
-
-  return {
-    model,
-    messages,
-    temperature,
-    response_format: { type: 'json_object' },
-  };
-}
-
-function extractResponseContentText(message) {
-  if (!message) {
-    return null;
-  }
-
-  if (typeof message.refusal === 'string' && message.refusal.trim()) {
-    throw new Error(`Model refused request: ${message.refusal}`);
-  }
-
-  if (typeof message.content === 'string') {
-    return message.content;
-  }
-
-  if (Array.isArray(message.content)) {
-    const text = message.content
-      .filter((part) => part && typeof part === 'object')
-      .filter((part) => part.type === 'text' && typeof part.text === 'string')
-      .map((part) => part.text)
-      .join('');
-    return text || null;
-  }
-
-  return null;
-}
-
-// Provide Netease API unblock parameter as requested
-process.env.ENABLE_GENERAL_UNBLOCK = 'false';
-
-// Issue: Netease API module reads 'anonymous_token' synchronously from tmp dir upon require.
-// If not present, Electron crashes with ENOENT. Pre-create the file, then hydrate the
-// package's runtime state in the order required by the current api-enhanced build.
 const fsp = fs.promises;
-const os = require('os');
-const tokenPath = path.resolve(os.tmpdir(), 'anonymous_token');
-const xeapiPublicKeyPath = path.resolve(os.tmpdir(), 'xeapi_public_key');
-if (!fs.existsSync(tokenPath)) {
-  fs.writeFileSync(tokenPath, '', 'utf-8');
-}
 
 async function ensureAudioCacheDirectory() {
   await fsp.mkdir(getAudioCacheDirectory(), { recursive: true });
@@ -2872,6 +5095,12 @@ async function readAudioCacheEntry(cacheKey) {
       fsp.readFile(dataPath),
       fsp.readFile(metaPath, 'utf-8').catch(() => null),
     ]);
+
+    // Mark it as recently used, so pruning evicts by last play rather than by first download.
+    // Access time would say this without a write, but Windows ships with atime updates off, so
+    // the only field that survives a round trip is the one we set ourselves.
+    const now = new Date();
+    fsp.utimes(dataPath, now, now).catch(() => {});
 
     let mimeType = 'audio/mpeg';
     if (rawMeta) {
@@ -2899,7 +5128,75 @@ async function readAudioCacheEntry(cacheKey) {
   }
 }
 
-async function writeAudioCacheEntry(cacheKey, data, mimeType) {
+/**
+ * Lists original cached files for shared pruning and storage statistics.
+ */
+async function listAudioCacheEntries() {
+  const audioDirectory = getAudioCacheDirectory();
+  try {
+    const names = (await fsp.readdir(audioDirectory)).filter((name) => name.endsWith('.bin'));
+    return Promise.all(names.map(async (name) => {
+      const stat = await fsp.stat(path.join(audioDirectory, name));
+      return { name, size: stat.size, usedAt: stat.mtimeMs };
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function removeAudioCacheEntry(name) {
+  if (!/^[a-zA-Z0-9_-]+\.bin$/.test(String(name || ''))) return;
+  const base = path.join(getAudioCacheDirectory(), name.replace(/\.bin$/, ''));
+  await Promise.allSettled([
+    fsp.rm(`${base}.bin`, { force: true }),
+    fsp.rm(`${base}.json`, { force: true }),
+  ]);
+}
+
+/** Every file the media-cache budget counts: original audio, transcodes, and Spotify's encrypted files. */
+async function listMediaCacheEntries() {
+  const [audioEntries, transcodeEntries, spotifyEntries] = await Promise.all([
+    listAudioCacheEntries(),
+    transcodeService.listCacheEntries(),
+    spotifyApiBridge.audioFiles.list(),
+  ]);
+  return [
+    ...audioEntries.map(entry => ({ ...entry, name: `audio:${entry.name}` })),
+    ...transcodeEntries.map(entry => ({ ...entry, name: `transcode:${entry.name}` })),
+    ...spotifyEntries.map(entry => ({ ...entry, name: `spotify:${entry.name}` })),
+  ];
+}
+
+/** Prunes original, transcoded and Spotify audio as one media-cache budget. */
+async function pruneMediaCache(limitBytes, protectedTranscodeEntry = null) {
+  const resolvedLimit = resolveCacheLimit(limitBytes);
+  if (resolvedLimit === Infinity) return;
+
+  try {
+    let entries = await listMediaCacheEntries();
+    // Entries the renderer is streaming are unevictable but still spend the budget: a fully
+    // buffered media element stops touching its file, so LRU alone would drop it mid-playback.
+    const protectedNames = new Set(transcodeService.getPinnedCacheKeys().map(key => `transcode:${key}`));
+    if (protectedTranscodeEntry) protectedNames.add(`transcode:${protectedTranscodeEntry.cacheKey}`);
+    const protectedEntries = entries.filter(entry => protectedNames.has(entry.name));
+    let protectedBytes = protectedEntries.reduce((total, entry) => total + entry.size, 0);
+    if (protectedTranscodeEntry && !protectedEntries.some(entry => entry.name === `transcode:${protectedTranscodeEntry.cacheKey}`)) {
+      protectedBytes += protectedTranscodeEntry.size;
+    }
+    entries = entries.filter(entry => !protectedNames.has(entry.name));
+    const effectiveLimit = protectedBytes > 0 ? Math.max(1, resolvedLimit - protectedBytes) : resolvedLimit;
+
+    for (const name of selectEvictions(entries, effectiveLimit)) {
+      if (name.startsWith('audio:')) await removeAudioCacheEntry(name.slice('audio:'.length));
+      else if (name.startsWith('transcode:')) await transcodeService.removeCacheEntry(name.slice('transcode:'.length));
+      else if (name.startsWith('spotify:')) await spotifyApiBridge.audioFiles.remove(name.slice('spotify:'.length));
+    }
+  } catch (error) {
+    console.warn('[AudioCache] Failed to prune media cache directories', error);
+  }
+}
+
+async function writeAudioCacheEntry(cacheKey, data, mimeType, limitBytes) {
   const { dataPath, metaPath } = getAudioCachePaths(cacheKey);
   await ensureAudioCacheDirectory();
 
@@ -2916,51 +5213,25 @@ async function writeAudioCacheEntry(cacheKey, data, mimeType) {
       updatedAt: Date.now(),
     }), 'utf-8'),
   ]);
+
+  await pruneMediaCache(limitBytes);
 }
 
 async function getAudioCacheUsageBytes() {
-  const audioDirectory = getAudioCacheDirectory();
-
   try {
-    const entries = await fsp.readdir(audioDirectory, { withFileTypes: true });
-    let total = 0;
-
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.bin')) {
-        continue;
-      }
-
-      const stat = await fsp.stat(path.join(audioDirectory, entry.name));
-      total += stat.size;
-    }
-
-    return total;
+    return (await listMediaCacheEntries()).reduce((total, entry) => total + entry.size, 0);
   } catch {
     return 0;
   }
 }
 
 async function getAudioCacheStats() {
-  const audioDirectory = getAudioCacheDirectory();
-
   try {
-    const entries = await fsp.readdir(audioDirectory, { withFileTypes: true });
-    let totalSize = 0;
-    let totalCount = 0;
-
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.bin')) {
-        continue;
-      }
-
-      const stat = await fsp.stat(path.join(audioDirectory, entry.name));
-      totalSize += stat.size;
-      totalCount += 1;
-    }
+    const entries = await listMediaCacheEntries();
 
     return {
-      size: totalSize,
-      count: totalCount,
+      size: entries.reduce((total, entry) => total + entry.size, 0),
+      count: entries.length,
     };
   } catch {
     return {
@@ -2972,7 +5243,11 @@ async function getAudioCacheStats() {
 
 async function clearAudioCacheDirectory() {
   try {
-    await fsp.rm(getAudioCacheDirectory(), { recursive: true, force: true });
+    await Promise.all([
+      fsp.rm(getAudioCacheDirectory(), { recursive: true, force: true }),
+      transcodeService.clearCache(),
+      spotifyApiBridge.audioFiles.clear(),
+    ]);
   } catch (error) {
     console.warn('[AudioCache] Failed to clear cache directory', error);
   }
@@ -3059,191 +5334,53 @@ async function clearCoverCacheDirectory() {
   }
 }
 
-const { register_anonimous } = require('@neteasecloudmusicapienhanced/api/main');
-const { getXeapiPublicKey } = require('@neteasecloudmusicapienhanced/api/util/xeapiKey');
-const {
-  cookieToJson,
-  generateDeviceId,
-  generateRandomChineseIP,
-} = require('@neteasecloudmusicapienhanced/api/util/index');
-const { serveNcmApi } = require('@neteasecloudmusicapienhanced/api/server');
-const {
-  refreshAnonymousToken,
-  resolveXeapiPublicKey,
-} = require('./neteaseApiStartup.cjs');
-const {
-  isModuleNotFound: isQqApiModuleNotFound,
-  startQqApi: startQqApiServer,
-} = require('./qqApiStartup.cjs');
+const { createNetworkRecorder } = require('./networkRecorder.cjs');
+const { createNeteaseBackend } = require('./netease/neteaseBackend.cjs');
+const { createQqBackend } = require('./qq/qqBackend.cjs');
+const { registerLoginBackendIpc } = require('./loginBackendIpc.cjs');
 
-const net = require('net');
-let assignedPort = 30000; // default fallback
-const NETEASE_API_STATUS_CHANNEL = 'netease-api-status-changed';
-let neteaseApiStatus = {
-  status: 'starting',
-  port: null,
-  error: null,
-  updatedAt: Date.now(),
-};
+// 主线程里内嵌后端的出站连接记录：要在它们发出请求之前开始订阅。工作线程里发出的请求另有一份记录（见 networkRecorder.cjs）。
+const networkRecorder = createNetworkRecorder();
+networkRecorder.start();
 
-function serializeError(error) {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-
-  if (typeof error === 'string' && error.trim()) {
-    return error;
-  }
-
-  return 'Unknown error';
-}
-
-function updateNeteaseApiStatus(nextStatus) {
-  neteaseApiStatus = {
-    ...neteaseApiStatus,
-    ...nextStatus,
-    updatedAt: Date.now(),
-  };
-
+function broadcastToWindows(channel, payload) {
   BrowserWindow.getAllWindows().forEach((win) => {
     if (!win.isDestroyed()) {
-      win.webContents.send(NETEASE_API_STATUS_CHANNEL, neteaseApiStatus);
+      win.webContents.send(channel, payload);
     }
   });
 }
 
-async function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, () => {
-      const port = srv.address().port;
-      srv.close((err) => {
-        if (err) reject(err);
-        else resolve(port);
-      });
-    });
-    srv.on('error', reject);
-  });
-}
-
-// Initializes the Netease API runtime files before the local server starts handling requests.
-async function initializeNcmApiRuntime() {
-  global.cnIp = generateRandomChineseIP();
-
-  if (!global.deviceId) {
-    global.deviceId = generateDeviceId();
+// 网易云本地 API 的包不在主线程里加载，在工作线程里加载和运行（原因见 neteaseApiWorker.cjs）。
+// 拉起本身（网络请求）在 app ready 之后由 start() 进行。
+const neteaseBackend = createNeteaseBackend({
+  broadcast: broadcastToWindows,
+  // 和主线程里没人接的 rejection 同一个去处：写一份报告，不打断用户。
+  onUnhandledRejection: (reason) => {
+    crashLog.reportError('unhandledRejection', reason, { announceToUser: false });
+  },
+});
+// 确定由本进程运行应用以后就开线程，让它先加载包，不等 ready：主线程接下来有一百多毫秒在等
+// Electron 自己初始化，线程正好用上。重复启动的实例和壁纸模式的跳板进程不运行应用，不开。
+// 不放到文件开头去开得更早：量过一次（4 个慢核，推迟 jsdom 之前），线程加载完的时刻和现在分不出
+// 先后，首页却晚了约 130 毫秒能用；原因没有查。
+mainProcessStartupPromise.then((startupResult) => {
+  if (startupResult !== 'duplicate' && startupResult !== 'spawned') {
+    neteaseBackend.preload();
   }
-
-  let currentPublicKey = {};
-  if (fs.existsSync(xeapiPublicKeyPath)) {
-    try {
-      currentPublicKey = JSON.parse(fs.readFileSync(xeapiPublicKeyPath, 'utf-8'));
-    } catch (error) {
-      console.warn('[Netease API] Failed to read cached xeapi public key, regenerating', error);
-    }
-  }
-
-  const { publicKey: nextPublicKey, refreshed } = await resolveXeapiPublicKey({
-    currentPublicKey,
-    deviceId: global.deviceId,
-    getXeapiPublicKey,
-  });
-  if (refreshed) {
-    fs.writeFileSync(xeapiPublicKeyPath, JSON.stringify(nextPublicKey), 'utf-8');
-  }
-
-  await refreshAnonymousToken({
-    registerAnonymous: register_anonimous,
-    cookieToJson,
-    persistToken: (token) => fs.writeFileSync(tokenPath, token, 'utf-8'),
-  });
-}
-
-async function startApi() {
-  updateNeteaseApiStatus({ status: 'starting', port: null, error: null });
-  try {
-    const freePort = await getFreePort();
-    await initializeNcmApiRuntime();
-    await serveNcmApi({ port: freePort });
-    assignedPort = freePort;
-    updateNeteaseApiStatus({ status: 'running', port: assignedPort, error: null });
-    console.log('Netease API started on port', assignedPort);
-  } catch (e) {
-    updateNeteaseApiStatus({ status: 'error', port: null, error: serializeError(e) });
-    console.error('Failed to start Netease API', e);
-  }
-}
-
-const QQ_API_STATUS_CHANNEL = 'qq-api-status-changed';
-let qqApiStatus = {
-  status: 'starting',
-  port: null,
-  error: null,
-  updatedAt: Date.now(),
-};
-
-function updateQqApiStatus(nextStatus) {
-  qqApiStatus = {
-    ...qqApiStatus,
-    ...nextStatus,
-    updatedAt: Date.now(),
-  };
-
-  BrowserWindow.getAllWindows().forEach((win) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send(QQ_API_STATUS_CHANNEL, qqApiStatus);
-    }
-  });
-}
-
-let qqApiHandle = null;
+}, () => {
+  // 启动准备本身失败时，ready 的处理函数里等的是同一个 promise，由那里报出来；这里不再报一遍。
+});
 
 // Runs @yakult-green-tea/qq-music-api in-process. Device identifiers remain in their existing file;
 // account credentials are owned by the API and cross this boundary only through an encrypted
 // main-process repository. The renderer continues to receive only an opaque session token.
-async function startQqApi() {
-  updateQqApiStatus({ status: 'starting', port: null, error: null });
-  try {
-    const freePort = await getFreePort();
-    // getFreePort only observes that the port was free a moment ago, so the bind can still lose a
-    // race. Awaiting the handle means 'running' is only published once the socket is really bound.
-    qqApiHandle = await startQqApiServer({
-      port: freePort,
-      stateFilePath: path.join(app.getPath('userData'), 'qq-auth-state', 'qq-device.json'),
-      authSessionRepository: qqAuthSessionRepository,
-    });
-    updateQqApiStatus({ status: 'running', port: freePort, error: null });
-    console.log('QQ API started on port', freePort);
-  } catch (error) {
-    qqApiHandle = null;
-
-    // A build that shipped without the package can never recover, so it is reported as
-    // 'unavailable' rather than 'error'; everything else (a lost port race, a throw from inside the
-    // package) is a real failure and keeps the error status.
-    if (isQqApiModuleNotFound(error)) {
-      updateQqApiStatus({ status: 'unavailable', port: null, error: serializeError(error) });
-      console.warn('[QQ API] Package not installed; QQ provider will stay unavailable in this build');
-      return;
-    }
-
-    updateQqApiStatus({ status: 'error', port: null, error: serializeError(error) });
-    console.error('Failed to start QQ API', error);
-  }
-}
-
-async function stopQqApi() {
-  const handle = qqApiHandle;
-  qqApiHandle = null;
-  if (!handle) {
-    return;
-  }
-
-  try {
-    await handle.close();
-  } catch (error) {
-    console.error('Failed to stop QQ API', error);
-  }
-}
+const qqBackend = createQqBackend({
+  broadcast: broadcastToWindows,
+  networkRecorder,
+  getStateFilePath: () => path.join(app.getPath('userData'), 'qq-auth-state', 'qq-device.json'),
+  authSessionRepository: qqAuthSessionRepository,
+});
 
 function isElectronDevRuntime() {
   return process.env.ELECTRON_DEV === 'true' || process.env.NODE_ENV === 'development';
@@ -3542,17 +5679,23 @@ function clearPendingWindowPlaybackHandoffRequests() {
   }
 }
 
+/** The snapshot without its queue, for sends that do not change it (the remote keeps the last one). */
+function withoutRemoteControlQueue(snapshot) {
+  const { queue: _queue, ...rest } = snapshot;
+  return rest;
+}
+
 function patchRemoteControlSnapshot(patch) {
   if (!latestRemoteControlSnapshot) {
     return;
   }
 
+  // updatedAt stays: it is when the main window read the playback time, and the time is not re-read here.
   latestRemoteControlSnapshot = {
     ...latestRemoteControlSnapshot,
     ...patch,
-    updatedAt: Date.now(),
   };
-  sendRemoteControlSnapshot(latestRemoteControlSnapshot);
+  sendRemoteControlSnapshot(withoutRemoteControlQueue(latestRemoteControlSnapshot));
 }
 
 function publishMainWindowClickThroughState() {
@@ -3598,6 +5741,13 @@ function startMainWindowClickThroughUnlockHoverMonitor() {
   if (mainWindowClickThroughUnlockHoverTimer) {
     return;
   }
+  // Wayland exposes neither window position nor a global cursor: getBounds() sits at (0,0) and
+  // getCursorScreenPoint() stays (0,0), so this poll would read "outside" every tick and fight the
+  // renderer's mousemove hit test (the unlock button blinks every interval and can't be clicked).
+  // The renderer keeps receiving mouse-move while ignoring there, so it drives the hotspot alone.
+  if (process.platform === 'linux' && onWayland) {
+    return;
+  }
 
   syncMainWindowClickThroughUnlockHoverFromCursor();
   mainWindowClickThroughUnlockHoverTimer = setInterval(
@@ -3629,9 +5779,11 @@ function applyMainWindowMouseIgnoreState() {
 }
 
 function setMainWindowClickThroughEnabled(enabled) {
-  // Refuse to enable on X11 wallpaper mode: clicks would reach the KDE desktop window and KWin
-  // would raise it above Folia (both desktop-type), covering the wallpaper. The state stays off.
-  if (Boolean(enabled) && isX11WallpaperMode()) {
+  // Refuse to enable on wallpaper modes: X11/Windows sink the window below the desktop-icon
+  // layer, where real clicks never reach it; the live macOS session forces the window
+  // mouse-transparent at the full-screen presentation layer, where an unlock hotspot would eat
+  // the desktop clicks the session forwards through its tap. The state stays off.
+  if (Boolean(enabled) && (isX11WallpaperMode() || isWindowsWallpaperMode() || isMacWallpaperActive)) {
     return mainWindowClickThroughEnabled;
   }
 
@@ -3672,6 +5824,154 @@ function sendRemoteControlSnapshot(snapshot) {
   return true;
 }
 
+// The remote window is draggable by everything that is not a button, and on Windows a drag
+// region is non-client area: the page gets no mouse events over it. So "is the pointer in the
+// window" is answered here, from the cursor's screen position, and pushed to the page when it
+// changes. Click-through never reports the pointer: the page must not light up under a cursor
+// it cannot serve.
+// "In the window" is the whole window, also the empty part left of the card in use: the idle
+// look's large cover fills that part, so a pointer resting there must not swap the looks back
+// and forth. That part lets clicks through while the cursor is over it; the cursor is then in the
+// window, so the card is in use and the part is empty.
+// On a Wayland session this cannot be answered: a client is told neither where the cursor is
+// on the screen nor where its own window is. There nothing is polled, the question is answered
+// with null, and the page uses its own mouse events instead.
+const REMOTE_CONTROL_POINTER_POLL_INTERVAL_MS = 80;
+let remoteControlPointerInside = false;
+let remoteControlPointerTimer = null;
+let remoteControlMouseIgnored = false;
+
+function isCursorInsideRemoteControlWindow() {
+  const win = remoteControlWindow;
+  if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized() || remoteControlClickThroughEnabled) {
+    return false;
+  }
+
+  const bounds = win.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  return cursor.x >= bounds.x
+    && cursor.x < bounds.x + bounds.width
+    && cursor.y >= bounds.y
+    && cursor.y < bounds.y + bounds.height;
+}
+
+function syncRemoteControlPointerInside() {
+  const inside = isCursorInsideRemoteControlWindow();
+  if (inside === remoteControlPointerInside) {
+    return;
+  }
+
+  remoteControlPointerInside = inside;
+  if (remoteControlWindow && !remoteControlWindow.isDestroyed() && !remoteControlWindow.webContents.isDestroyed()) {
+    remoteControlWindow.webContents.send('remote-control-pointer-inside', inside);
+  }
+}
+
+// The whole window ignores the mouse in click-through; otherwise only the part left of the card.
+function syncRemoteControlMouseIgnore() {
+  const win = remoteControlWindow;
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  const ignore = remoteControlClickThroughEnabled
+    || (!onWayland && isPointOverRemoteControlStrip(win.getBounds(), screen.getCursorScreenPoint()));
+  if (ignore !== remoteControlMouseIgnored) {
+    remoteControlMouseIgnored = applyRemoteControlMouseIgnore(win, ignore);
+  }
+}
+
+function pollRemoteControlPointer() {
+  syncRemoteControlPointerInside();
+  syncRemoteControlMouseIgnore();
+}
+
+// Dragged past the outer left edge of the screens, the idle look's cover would be cut off. On
+// Windows the move can be held there as it happens; elsewhere a move cannot be refused. With the
+// cover collapsed only the card in use is held, so it can reach the edge.
+function keepRemoteControlCoverOnScreen(win, event, newBounds) {
+  const x = clampRemoteControlWindowX(
+    newBounds,
+    screen.getAllDisplays().map(display => display.bounds),
+    remoteControlExpandCoverEnabled,
+  );
+  if (x !== newBounds.x) {
+    // Windows then keeps the window where this puts it, and the drag slides along the edge.
+    event.preventDefault();
+    // setBounds rather than setPosition: this window's size is fixed (resizable: false, min ===
+    // max; only showing the queue changes it). Stating it on every move keeps the window the size
+    // the page is laid out to, instead of leaving the platform to re-derive it.
+    const { width, height } = getRemoteControlWindowBounds(newBounds, remoteControlQueueExpansion);
+    win.setBounds({ x, y: newBounds.y, width, height });
+  }
+}
+
+// Switching the cover back on where the card was dragged to the edge: the strip left of the card
+// is off screen, so the window steps right until the cover fits, as a drag would have held it.
+function bringRemoteControlCoverOnScreen(win) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) {
+    return;
+  }
+
+  const bounds = win.getBounds();
+  const x = clampRemoteControlWindowX(bounds, screen.getAllDisplays().map(display => display.bounds), true);
+  if (x !== bounds.x) {
+    const { width, height } = getRemoteControlWindowBounds(bounds, remoteControlQueueExpansion);
+    win.setBounds({ x, y: bounds.y, width, height });
+  }
+}
+
+// The play queue opens below or above the card, wherever the screen has room
+// (getRemoteControlQueueExpansion), so the window grows that way and the card stays where it is.
+// While shown it keeps that side; a queue that gets longer or shorter only changes the height.
+// What is remembered as the window's spot is always the card's (getRemoteControlCardPosition).
+let remoteControlQueueExpansion = null;
+
+function resizeRemoteControlWindow(win, bounds) {
+  const current = win.getBounds();
+  // min === max: open the limit on the side the window moves to first, or the platform clamps it.
+  if (bounds.height >= current.height) {
+    win.setMaximumSize(bounds.width, bounds.height);
+    win.setMinimumSize(bounds.width, bounds.height);
+  } else {
+    win.setMinimumSize(bounds.width, bounds.height);
+    win.setMaximumSize(bounds.width, bounds.height);
+  }
+  win.setBounds(bounds);
+}
+
+/**
+ * Shows the queue `wantedHeight` px tall (null hides it); returns where it went, or null. With
+ * `preview` it only says where it would go: the page anchors the card on that side first, so the
+ * window can then grow without the card moving. `direction` is the side the page anchored for; it
+ * is kept while it has room, as is the side of a queue already shown.
+ */
+function setRemoteControlQueueExpansion(win, wantedHeight, { preview = false, direction = null } = {}) {
+  if (!win || win.isDestroyed()) {
+    return null;
+  }
+
+  const card = getRemoteControlCardPosition(win.getBounds(), remoteControlQueueExpansion);
+  const cardBounds = getRemoteControlWindowBounds(card, null);
+  const next = Number.isFinite(wantedHeight) && wantedHeight > 0
+    ? getRemoteControlQueueExpansion(
+      cardBounds,
+      onWayland ? null : screen.getDisplayMatching(cardBounds).workArea,
+      wantedHeight,
+      remoteControlQueueExpansion?.direction ?? direction,
+    )
+    : null;
+  if (preview) {
+    return next;
+  }
+  if (next?.direction !== remoteControlQueueExpansion?.direction || next?.height !== remoteControlQueueExpansion?.height) {
+    console.info('[RemoteControl] Queue', next ? `shown ${next.direction}, ${next.height} px` : 'hidden');
+  }
+  remoteControlQueueExpansion = next;
+  resizeRemoteControlWindow(win, getRemoteControlWindowBounds(card, next));
+  return next;
+}
+
 // Wallpaper mode (Wayland): windowtolayer turns the first window it sees into the layer
 // surface and passes every later one through to xdg-shell as an ordinary window. The main
 // window claims that slot at startup, but a hidden window has no surface at all, so show it
@@ -3686,27 +5986,48 @@ function ensureWallpaperLayerHeldByMainWindow() {
   }
 }
 
+// Where the remote control window last sat, read back safely. A position saved on a display that is
+// no longer there (monitor unplugged, resolution changed) falls back to the centred default: what is
+// drawn (the whole window, or only the card in use with the cover collapsed) has to fit inside one
+// display's work area, so it never opens off-screen or under the taskbar.
+function getRestoredRemoteControlWindowPosition() {
+  const saved = store.get(REMOTE_CONTROL_WINDOW_POSITION_SETTING_KEY);
+  return resolveRemoteControlWindowPosition(
+    saved,
+    screen.getAllDisplays().map(display => display.workArea),
+    remoteControlExpandCoverEnabled,
+  );
+}
+
 function createRemoteControlWindow() {
   if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
     remoteControlWindow.setTitle(REMOTE_CONTROL_WINDOW_TITLE);
     applyRemoteControlAlwaysOnTop(remoteControlWindow);
     applyRemoteControlSkipTaskbar(remoteControlWindow);
+    applyRemoteControlWindowPresentation(remoteControlWindow);
     remoteControlWindow.show();
     remoteControlWindow.focus();
     broadcastPlaybackSyncBridgeStatus();
+    refreshTrayMenu();
     return remoteControlWindow;
   }
 
   ensureWallpaperLayerHeldByMainWindow();
 
+  // Only resized to show the play queue: the idle look and the card in use are both drawn in this size.
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const position = getRestoredRemoteControlWindowPosition()
+    ?? getInitialRemoteControlWindowPosition(workArea);
   const win = new BrowserWindow({
     modal: false,
-    width: 450,
-    height: 230,
-    minWidth: 450,
-    minHeight: 230,
-    maxWidth: 450,
-    maxHeight: 230,
+    x: position.x,
+    y: position.y,
+    width: REMOTE_CONTROL_WINDOW_WIDTH,
+    height: REMOTE_CONTROL_WINDOW_HEIGHT,
+    minWidth: REMOTE_CONTROL_WINDOW_WIDTH,
+    minHeight: REMOTE_CONTROL_WINDOW_HEIGHT,
+    maxWidth: REMOTE_CONTROL_WINDOW_WIDTH,
+    maxHeight: REMOTE_CONTROL_WINDOW_HEIGHT,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -3730,29 +6051,69 @@ function createRemoteControlWindow() {
   });
 
   remoteControlWindow = win;
+  remoteControlQueueExpansion = null;
+  remoteControlPointerInside = false;
+  remoteControlMouseIgnored = false;
+  clearInterval(remoteControlPointerTimer);
+  remoteControlPointerTimer = onWayland
+    ? null
+    : setInterval(pollRemoteControlPointer, REMOTE_CONTROL_POINTER_POLL_INTERVAL_MS);
   broadcastPlaybackSyncBridgeStatus();
   win.on('page-title-updated', (event) => {
     event.preventDefault();
     win.setTitle(REMOTE_CONTROL_WINDOW_TITLE);
   });
+  if (process.platform === 'win32') {
+    win.on('will-move', (event, newBounds) => keepRemoteControlCoverOnScreen(win, event, newBounds));
+  }
+  // Remember where the window last sat: after a drag, and again when it closes so an undragged
+  // window keeps the spot it opened on.
+  // macOS fires 'moved' on every frame of a drag and electron-store rewrites config.json
+  // synchronously on each set, so the save after a move waits until the window has settled, the
+  // same way the main window's state is saved; 'close' saves at once and drops the pending one.
+  let remoteControlPositionSaveTimer = null;
+  const clearRemoteControlPositionSaveTimer = () => {
+    clearTimeout(remoteControlPositionSaveTimer);
+    remoteControlPositionSaveTimer = null;
+  };
+  const persistRemoteControlPosition = () => {
+    clearRemoteControlPositionSaveTimer();
+    if (!win.isDestroyed()) {
+      const { x, y } = getRemoteControlCardPosition(win.getBounds(), remoteControlQueueExpansion);
+      store.set(REMOTE_CONTROL_WINDOW_POSITION_SETTING_KEY, { x, y });
+    }
+  };
+  win.on('moved', () => {
+    clearRemoteControlPositionSaveTimer();
+    remoteControlPositionSaveTimer = setTimeout(persistRemoteControlPosition, WINDOW_STATE_SAVE_DEBOUNCE_MS);
+  });
+  win.on('close', persistRemoteControlPosition);
   applyRemoteControlAlwaysOnTop(win);
+  syncRemoteControlMouseIgnore();
   loadAppEntry(win, { remote: '1' });
 
   win.once('ready-to-show', () => {
     win.setTitle(REMOTE_CONTROL_WINDOW_TITLE);
     applyRemoteControlAlwaysOnTop(win);
+    applyRemoteControlWindowPresentation(win);
     if (latestRemoteControlSnapshot) {
       sendRemoteControlSnapshot(latestRemoteControlSnapshot);
     }
   });
 
   win.on('closed', () => {
+    clearRemoteControlPositionSaveTimer();
     if (remoteControlWindow === win) {
       remoteControlWindow = null;
+      remoteControlQueueExpansion = null;
+      clearInterval(remoteControlPointerTimer);
+      remoteControlPointerTimer = null;
     }
     broadcastPlaybackSyncBridgeStatus();
+    refreshTrayMenu();
   });
 
+  refreshTrayMenu();
   return win;
 }
 
@@ -3770,162 +6131,54 @@ function sanitizeVideoExportSize(size) {
   };
 }
 
-// Resize the main window so that its *bounds* (the area the capture source
-// actually records, which includes Windows' frameless-window DWM decoration)
-// yields a content physical size >= the requested export size. We use a snap
-// search around the ideal CSS size to find a value where getContentSize() * dpr
-// exceeds the preset (overshoot), then the frontend Canvas crops the excess
-// pixels with integer symmetric cropping — no scaling, no black bars.
-// After sizing, we enter a decoration-removal loop: if DWM adds asymmetric
-// borders that shift content off-center inside bounds, we grow the window by
-// 1px on each edge and retry until bounds == content (decoration eliminated).
+// Resize the main window so its content area renders exactly the requested export size in
+// physical pixels. Recording captures the main webContents itself (see
+// setupVideoExportDisplayMediaHandler), so only the content area matters: OS window
+// decoration, DWM borders and the window manager never reach the captured frames, and content
+// that extends past the screen edge is still rendered and captured. Content usually lands a
+// pixel or two above the preset (DPR rounding); the renderer's frame pipeline crops that off.
 function fitMainWindowBoundsToExportSize(exportSize) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return null;
   }
 
   const exportDpr = mainWindow.__dpr && mainWindow.__dpr > 0 ? mainWindow.__dpr : 1;
-
-  // Size the window so its *bounds* (the area the capture source actually records —
-  // a whole-window capture includes the ~1px frameless-window DWM decoration) matches
-  // the preset in physical pixels exactly. If the bounds physical size differed from the
-  // preset, the capture source aspect ratio would mismatch the output and crop-and-scale
-  // would add black bars. We set the rounded CSS content size, then read back the bounds
-  // physical size and nudge by +/-1 CSS px until it equals the preset. The content area
-  // ends up ~decoration px smaller than the preset (a minor crop), but the recording has
-  // no scaling black bars and the output is exactly the requested resolution.
-  let cssWidth = Math.max(1, Math.round(exportSize.width / exportDpr));
-  let cssHeight = Math.max(1, Math.round(exportSize.height / exportDpr));
+  const cssWidth = Math.max(1, Math.round(exportSize.width / exportDpr));
+  const cssHeight = Math.max(1, Math.round(exportSize.height / exportDpr));
   mainWindow.setContentSize(cssWidth, cssHeight, false);
 
-  // Keep the window on whichever display it already lives on instead of forcing
-  // it to the primary display. getDisplayMatching resolves the display containing
-  // the window's current bounds, so the export stays put (no surprise jump).
+  // Keep the window on whichever display it already lives on and center it there. Windows
+  // larger than the work area are allowed to overflow it; the capture does not depend on it.
   const workArea = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
-  // Center the window and snap its position to a whole physical pixel. Under a non-100% DPI
-  // the CSS position times dpr can land on a half-pixel, and Chromium's crop-and-scale
-  // capture derives its crop rect from the window's physical bounds; a half-pixel offset
-  // between the reported bounds and where the window is actually composited can leave a
-  // 1-2px black strip. Aligning the physical position to whole pixels removes that drift.
-  const center = (w, h) => {
-    let x = Math.round(workArea.x + (workArea.width - w) / 2);
-    let y = Math.round(workArea.y + (workArea.height - h) / 2);
-    if (!Number.isInteger(x * exportDpr)) x += (x % 2 === 0) ? 1 : -1;
-    if (!Number.isInteger(y * exportDpr)) y += (y % 2 === 0) ? 1 : -1;
-    mainWindow.setBounds({ x, y, width: w, height: h }, false);
-    return mainWindow.getBounds();
-  };
+  const bounds = mainWindow.getBounds();
+  // `| 0` folds Math.round's -0 (an overflowing window centered on an origin-0 display) into
+  // 0; Electron's integer conversion rejects -0.
+  mainWindow.setPosition(
+    Math.round(workArea.x + (workArea.width - bounds.width) / 2) | 0,
+    Math.round(workArea.y + (workArea.height - bounds.height) / 2) | 0,
+    false,
+  );
 
-  // The capture source is the *whole window* (bounds), which on a frameless transparent
-  // window on Windows carries a 1px DWM border (decoLeftCss = 1) and, after DWM snaps the
-  // window to its grid, can gain/lose a pixel on resize. So neither the rounded CSS size
-  // nor a single +/-1 nudge reliably yields boundsPhys == preset. We search a small CSS
-  // window around the rounded size, CENTERING THE WINDOW EACH TIME so we read the *final*
-  // boundsPhys (including DWM snapping), and pick the value whose *content* physical
-  // size (from getContentSize, NOT bounds) is >= preset + margin (so the Canvas crop
-  // can work in pure-crop mode without upscaling).
-  // Minimum overshoot (in device pixels) to guarantee pure-crop mode without upscaling.
-  // This is a hard lower bound, NOT a per-resolution guess: regardless of DPR or DWM decoration
-  // size, snap() only ensures contentPhys >= preset + CROP_MARGIN_PX, and the actual crop amount is
-  // always derived from (video.videoWidth/videoHeight - preset) at runtime. Do not retune per resolution.
-  const CROP_MARGIN_PX = 6; // Minimum extra pixels for pure crop (no scaling)
-  const snap = (base, axis, otherCss) => {
-    base = Math.max(1, base);
-    let bestCss = base;
-    let bestErr = Infinity;
-    let bestContentPhys = 0;
-    // Target contentPhys must be >= preset + margin to allow pure crop in Canvas
-    const target = (axis === 'w' ? exportSize.width : exportSize.height) + CROP_MARGIN_PX;
-    const presetVal = axis === 'w' ? exportSize.width : exportSize.height;
-    let probe = '';
-    // Fixed search radius around the rounded CSS size. This is an exploration window to absorb
-    // 1px DWM-snap jitter, NOT a hand-tuned value for a specific resolution: we always test every
-    // delta and pick the one whose measured contentPhys is closest to (preset + CROP_MARGIN_PX).
-    for (let delta = -3; delta <= 5; delta++) { // Extended search range for overshoot
-      const tryCss = base + delta;
-      if (tryCss < 1) continue;
-      if (axis === 'w') mainWindow.setContentSize(tryCss, otherCss, false);
-      else mainWindow.setContentSize(otherCss, tryCss, false);
-      const b = center(axis === 'w' ? tryCss : otherCss, axis === 'w' ? otherCss : tryCss);
-      // Compare CONTENT physical size (not bounds) because the Canvas crop operates
-      // on the content area after excluding DWM decoration pixels.
-      const [cW, cH] = mainWindow.getContentSize();
-      const cPhys = axis === 'w'
-        ? Math.round(cW * exportDpr)
-        : Math.round(cH * exportDpr);
-      const bPhys = axis === 'w'
-        ? Math.round(b.width * exportDpr)
-        : Math.round(b.height * exportDpr);
-      probe += ` [${axis} tryCss=${tryCss} boundsPhys=${bPhys} contentPhys=${cPhys}]`;
-      const err = Math.abs(cPhys - target);
-      if (cPhys >= presetVal && err <= bestErr) {
-        // Accept any value where contentPhys >= preset, prefer closest to target (=preset+margin)
-        if (err < bestErr || (err === bestErr && cPhys > bestContentPhys)) {
-          bestErr = err; bestCss = tryCss; bestContentPhys = cPhys;
-        }
-      } else if (bestContentPhys < presetVal && cPhys > bestContentPhys) {
-        // Fallback: if no valid overshoot found yet, keep the largest undershoot
-        bestErr = err; bestCss = tryCss; bestContentPhys = cPhys;
-      }
-    }
-    return bestCss;
-  };
-
-  cssWidth = snap(cssWidth, 'w', cssHeight);
-  let bounds = center(cssWidth, cssHeight);
-
-  // A frameless transparent window on Windows keeps a 1px DWM border (decoLeftCss = 1,
-  // sometimes also bottom). That border makes the captured whole-window source wider/taller
-  // than the content, so its aspect ratio can never exactly equal the preset and crop-and-scale
-  // pads black bars. Force the content rect to fill the whole window so bounds == content;
-  // retry a few times because a single setContentBounds can race with DWM. Once the decoration
-  // is gone, boundsPhys equals contentPhys and the source aspect ratio matches the preset.
-  for (let i = 0; i < 4; i++) {
-    mainWindow.setContentBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
-    const cb = mainWindow.getContentBounds();
-    const b2 = mainWindow.getBounds();
-    const dl = cb.x - b2.x, dt = cb.y - b2.y;
-    const dr = (b2.x + b2.width) - (cb.x + cb.width);
-    const db = (b2.y + b2.height) - (cb.y + cb.height);
-    if (dl === 0 && dt === 0 && dr === 0 && db === 0) break;
-    bounds = b2;
-  }
-  bounds = mainWindow.getBounds();
-
-  // With the decoration removed, bounds == content, so snapping the height now targets the
-  // real content height: a CSS height of round(600/1.5)=400 yields boundsPhys==600 exactly.
-  cssHeight = snap(cssHeight, 'h', cssWidth);
-  bounds = center(cssWidth, cssHeight);
-
-  let boundsPhysW = Math.round(bounds.width * exportDpr);
-  let boundsPhysH = Math.round(bounds.height * exportDpr);
-
-  return {
-    exportDpr, cssWidth, cssHeight, bounds, boundsPhysW, boundsPhysH,
-  };
+  return { exportDpr, cssWidth, cssHeight };
 }
 
-async function getMainWindowCaptureSource() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return null;
-  }
+// Video export records the main window's own webContents (Chromium tab capture) instead of
+// picking an OS window out of desktopCapturer. Matching that window by id or title is
+// unreliable — under Wayland the portal returns nameless sources whose ids never match
+// getMediaSourceId() (#632) — and a window capture also drags in DWM decoration. Tab capture
+// needs no OS capture permission, keeps rendering when the window is covered, and its frames
+// are exactly the content area. Requests are granted only to the main window while an export
+// has prepared the window, so nothing else can silently capture the player.
+function setupVideoExportDisplayMediaHandler() {
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    const requester = request.frame ? electronWebContents.fromFrame(request.frame) : null;
+    if (!videoExportWindowRestoreState || !isTrustedMainWindowContents(requester)) {
+      callback({});
+      return;
+    }
 
-  const mediaSourceId = typeof mainWindow.getMediaSourceId === 'function'
-    ? mainWindow.getMediaSourceId()
-    : null;
-  const title = mainWindow.getTitle();
-  const sources = await desktopCapturer.getSources({
-    types: ['window'],
-    thumbnailSize: { width: 0, height: 0 },
+    callback({ video: mainWindow.webContents.mainFrame });
   });
-
-  const source =
-    (mediaSourceId && sources.find(item => item.id === mediaSourceId)) ||
-    sources.find(item => item.name === title && item.name !== REMOTE_CONTROL_WINDOW_TITLE) ||
-    sources.find(item => item.name.toLowerCase().includes('folia') && item.name !== REMOTE_CONTROL_WINDOW_TITLE) ||
-    null;
-
-  return source ? { id: source.id, name: source.name } : null;
 }
 
 function createWindow(options = {}) {
@@ -3937,17 +6190,30 @@ function createWindow(options = {}) {
   // _NET_WM_WINDOW_TYPE_DESKTOP) covering the whole work area. Wayland ignores the
   // type option, so this branch is mutually exclusive with the windowtolayer path.
   const useDesktopWindowType = isX11WallpaperMode();
+  // Windows wallpaper mode: an ordinary frameless window that the helper parents into the
+  // WorkerW layer right after creation. It shares the fullscreen-display geometry with the X11
+  // branch, but the window type stays default.
+  const useWindowsWallpaper = isWindowsWallpaperMode();
+  const useWallpaperGeometry = useDesktopWindowType || useWindowsWallpaper;
   // On a scaled X11 desktop (KWin display scale > 1) the bounds from the screen module are
   // device-independent pixels, and Chromium clamps a window that is mapped immediately to the
   // work-area width (which excludes panels). The window must therefore be mapped hidden, sized to
   // the full display, and then shown — a fresh map at the explicit bounds covers the whole screen.
   const deferShowForDesktopSizing = useDesktopWindowType && showImmediately;
   const { bounds: storedBounds, isMaximized: storedMaximized } = getStoredWindowState();
-  const windowBounds = useDesktopWindowType
-    ? screen.getPrimaryDisplay().bounds
-    : ensureWindowBoundsVisible(storedBounds);
-  const isMaximized = useDesktopWindowType ? false : storedMaximized;
-  const useTransparentWindow = isTransparentPlayerBackgroundEnabled();
+  // Wallpaper geometry (both branches) covers the *whole* display, not just its work area: the
+  // wallpaper belongs behind the taskbar as well. Both go to the display chosen in Settings while
+  // it is connected. Without that, X11 stays on the primary display and Windows follows the
+  // display the app window is on (see windowsWallpaperTarget.cjs).
+  const wallpaperBounds = useWallpaperGeometry
+    ? (useWindowsWallpaper ? getWallpaperTargetBounds() : getX11WallpaperBounds())
+    : null;
+  const windowBounds = wallpaperBounds || ensureWindowBoundsVisible(storedBounds);
+  const isMaximized = useWallpaperGeometry ? false : storedMaximized;
+  // Classic-desktop wallpaper windows must be opaque (see the attach-mode note above); the
+  // window remembers what it was built as so the reconcile path can detect mismatches.
+  const useTransparentWindow = isTransparentPlayerBackgroundEnabled()
+    && !(useWindowsWallpaper && !isWindowsWallpaperTransparentSupported());
   const enableNativeBlur = store.get('enable_player_page_native_blur') === true;
   let win;
   try {
@@ -3959,7 +6225,10 @@ function createWindow(options = {}) {
       frame: false,
       transparent: useTransparentWindow,
       hasShadow: !useTransparentWindow,
-      thickFrame: process.platform === 'win32' ? !useTransparentWindow : undefined,
+      // Windows wallpaper mode must drop WS_THICKFRAME entirely: with it, Windows treats the
+      // window as frame-bearing and the geometry work leaves frame-width gaps at the screen
+      // edges (and the pre-attach bounds get adjusted off the requested display rect).
+      thickFrame: process.platform === 'win32' ? !useTransparentWindow && !useWindowsWallpaper : undefined,
       backgroundColor: (useTransparentWindow || enableNativeBlur) ? '#00000000' : '#09090b',
       vibrancy: (!useTransparentWindow && enableNativeBlur) && process.platform === 'darwin' ? 'fullscreen-ui' : undefined,
       backgroundMaterial: (!useTransparentWindow && enableNativeBlur) && process.platform === 'win32' ? 'acrylic' : undefined,
@@ -3967,7 +6236,15 @@ function createWindow(options = {}) {
       icon: APP_ICON_PATH,
       skipTaskbar: mainWindowSkipTaskbarEnabled,
       // Desktop windows already live below every normal window; alwaysOnTop is meaningless here.
-      alwaysOnTop: useDesktopWindowType ? false : mainWindowAlwaysOnTop,
+      alwaysOnTop: useWallpaperGeometry ? false : mainWindowAlwaysOnTop,
+      // A wallpaper window must not be user-resizable; the helper owns the geometry.
+      // NOTE: the key must be omitted entirely in normal mode — passing `resizable: undefined`
+      // makes Electron treat the option as false and create a non-resizable window.
+      ...(useWindowsWallpaper ? { resizable: false } : {}),
+      // Same for dragging: moving a wallpaper window out of the desktop geometry (e.g. out of the
+      // WorkerW hierarchy on Windows) breaks the wallpaper. Key omitted in normal mode, same
+      // undefined-option caveat as `resizable` above.
+      ...(useWallpaperGeometry ? { movable: false } : {}),
       show: showImmediately && !deferShowForDesktopSizing && !startMinimized,
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
@@ -3984,14 +6261,87 @@ function createWindow(options = {}) {
     wallpaperWatchdog.handleWindowBuildFailure();
     throw error;
   }
+  win.__wallpaperWindowTransparent = useTransparentWindow;
+  win.__wallpaperGeometry = useWallpaperGeometry;
+  win.__transparentFullscreen = false;
+
+  if (process.platform === 'win32' && useTransparentWindow) {
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || input.key !== 'F11' || input.isAutoRepeat) {
+        return;
+      }
+      event.preventDefault();
+      if (!isWallpaperModeEnabled()) {
+        setMainWindowFullscreen(win, !isMainWindowFullscreen(win));
+      }
+    });
+  }
 
   if (useDesktopWindowType) {
     x11WallpaperWindows.add(win);
   }
 
+  // A window that stops answering: with mods running, offer to wait or to reopen without them.
+  win.on('unresponsive', () => {
+    win.__stoppedAnswering = true;
+    void offerReopenWithoutMods(win);
+  });
+  win.on('responsive', () => {
+    // It answers again: the question is no longer true, so it is taken down.
+    noteWindowNotStuck(win);
+  });
+  // Windows ends the session (shutdown, restart, log-off) without `before-quit`: for the start
+  // note this is that normal way out (see `before-quit`).
+  win.on('session-end', () => {
+    modSystem?.noteNormalQuit();
+  });
+  // The page itself did not load (-3 is a load given up for another, such as a reload): for the
+  // start note that start went wrong, like a page whose process ended (below).
+  win.webContents.on('did-fail-load', (_event, errorCode, _errorDescription, _url, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3 && win === mainWindow) {
+      modSystem?.notePageFailed();
+    }
+  });
+
   // Watchdog trigger point 1: a crashed renderer breaks the wallpaper connection.
   win.webContents.on('render-process-gone', (_event, details) => {
+    // Whatever ended it, the page that may have been stuck is gone.
+    noteWindowNotStuck(win);
+    if (win.__reopeningWithoutMods) {
+      // Ended on purpose by offerReopenWithoutMods, which loads the page again itself.
+      win.__reopeningWithoutMods = false;
+      return;
+    }
+    if (win === mainWindow) {
+      // For the mods' start note: a start during which the page's process ended went wrong,
+      // also when the app is then left the normal way (safeStart.cjs).
+      modSystem?.notePageFailed();
+    }
     wallpaperWatchdog.handleRendererGone(details);
+    if (win === mainWindow && shouldReloadMainRenderer(win, details)) {
+      win.__rendererCrashReloads.push(Date.now());
+      win.webContents.reload();
+      return;
+    }
+    // Windows: a renderer crash kills only the page — the BrowserWindow (and its place in the
+    // WorkerW) survives, so the helper keeps the still-valid hwnd and must NOT be touched.
+    // Reloading the webContents restores the UI in place; the full window rebuild
+    // (rebuildWindowsWallpaperSession) is reserved for the window-destroyed case where the
+    // WorkerW teardown took the window with it.
+    // macOS: same in-place reload — the desktop level / all-spaces / click-through live on the
+    // BrowserWindow, which a page crash does not destroy, and the new page re-reads the stored
+    // wallpaper_mode through the usual settings sync.
+    const crashed = details?.reason === 'crashed' && !win.isDestroyed();
+    const macWallpaperCrash = process.platform === 'darwin' && isMacWallpaperMode();
+    if ((useWindowsWallpaper || macWallpaperCrash) && crashed) {
+      win.webContents.reload();
+      return;
+    }
+    // The main page is gone and nothing loads it again (killed, out of memory, crashed past the
+    // reload limit): mpv must not play on behind a dead window. A reloaded page (above) adopts it.
+    if (win === mainWindow) {
+      void hifiSession.stop();
+    }
   });
 
   // Wallpaper desktop windows: re-assert the full display bounds while still hidden, then show.
@@ -3999,14 +6349,16 @@ function createWindow(options = {}) {
   // deferShowForDesktopSizing), leaving an uncovered strip. When showImmediately is false the
   // caller (e.g. recreateMainWindowWithTransparencyMode) owns the show, but the bounds fix still
   // applies so the window is full-size by the time it appears.
-  if (useDesktopWindowType) {
-    win.setBounds(screen.getPrimaryDisplay().bounds);
+  if (useWallpaperGeometry) {
+    win.setBounds(wallpaperBounds);
   }
   if (deferShowForDesktopSizing) {
     win.show();
   }
 
-  loadAppEntry(win);
+  // 首屏加载遮罩是不透明的（index.html 里的 #app-splash）。透明播放背景和壁纸窗口在挂载前
+  // 本来就该透出桌面，盖一层黑底会在桌面上闪一个黑块，所以这两种窗口显式关掉它。
+  loadAppEntry(win, (useTransparentWindow || useWallpaperGeometry) ? { splash: '0' } : {});
   if (isElectronDevRuntime()) {
     win.webContents.openDevTools();
   }
@@ -4032,11 +6384,13 @@ function createWindow(options = {}) {
       win.minimize();
     });
   }
+  backgroundThrottling.attach(win);
   ensureTray();
   setMainWindowSkipTaskbarEnabled(mainWindowSkipTaskbarEnabled);
   // Full initializer, not just applyMainWindowMouseIgnoreState(): when click-through is on at
-  // startup (wallpaper mode) this also starts the unlock-hotspot monitor, so the user can still
-  // reveal the lock button to turn click-through back off.
+  // startup (Wayland wallpaper mode) this also starts the unlock-hotspot monitor, so hover near
+  // the titlebar corner can temporarily restore mouse interaction even though the lock toggle
+  // itself is no longer rendered in wallpaper mode.
   setMainWindowClickThroughEnabled(mainWindowClickThroughEnabled);
   updateWindowThumbarButtons();
   win.on('resize', () => {
@@ -4045,27 +6399,66 @@ function createWindow(options = {}) {
   win.on('move', () => {
     saveWindowState(win, { deferred: true });
   });
+  // macOS completes fullscreen asynchronously; notify after the native transition, including
+  // transitions initiated by the system menu or keyboard instead of the titlebar button.
+  win.on('enter-full-screen', () => {
+    if (process.platform === 'win32' && useTransparentWindow) {
+      if (!win.__transparentFullscreen) {
+        saveWindowState(win);
+        win.__transparentFullscreenRestoreBounds = win.getBounds();
+      }
+      win.__transparentFullscreen = true;
+    }
+    win.webContents.send('window-fullscreen-changed', true);
+  });
+  win.on('leave-full-screen', () => {
+    if (process.platform === 'win32' && useTransparentWindow) {
+      win.__transparentFullscreen = false;
+    }
+    win.webContents.send('window-fullscreen-changed', false);
+  });
   win.on('maximize', () => {
     saveWindowState(win);
   });
   win.on('unmaximize', () => {
     saveWindowState(win);
   });
-  win.on('close', (event) => {
+  win.on('close', () => {
     saveWindowState(win);
-    // 只拦截当前主窗口；透明模式重建用的是 destroy()，不会经过这里。
-    if (win === mainWindow && shouldHideMainWindowOnClose()) {
-      event.preventDefault();
-      hideMainWindow();
-    }
   });
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
+      // macOS keeps the app running when its window is closed, so no `before-quit` follows: for
+      // the mods' start note, closing the window is the normal way out there (see `before-quit`).
+      // Not for a page that had stopped answering: that is what the note is for.
+      if (process.platform === 'darwin' && !win.__stoppedAnswering) {
+        modSystem?.noteNormalQuit();
+      }
+      // macOS wallpaper mode is window-bound: when the window goes away (external destroy, a
+      // path that bypasses the normal toggles) the session must stop its tap and restore the
+      // Dock, otherwise the app keeps running with a hidden Dock and a stale wallpaper flag.
+      if (process.platform === 'darwin' && isMacWallpaperActive) {
+        try {
+          exitMacWallpaperMode();
+        } catch (error) {
+          console.warn('[WallpaperMac] exit on window close failed:', error && error.message);
+        }
+      }
       displaySleepBlocker.stop();
+      // HiFi: mpv plays on in its own process, with no page left to pause it, move to the next
+      // song or let the device go (macOS keeps the app running here). A window rebuild hands mpv
+      // over to the new page and has replaced mainWindow before the old one closes, so this only
+      // runs when the page that drove it is gone for good: stop it, as the Web engine stops with
+      // its page.
+      void hifiSession.stop();
+      mainWindowClickThroughUnlockHover = false;
+      stopMainWindowClickThroughUnlockHoverMonitor();
       if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
         remoteControlWindow.close();
       }
+      // The hidden YouTube Music sandbox window would otherwise keep the app from quitting.
+      ytmSandbox.destroy();
       refreshTrayMenu();
     }
   });
@@ -4081,14 +6474,36 @@ function recreateMainWindowWithTransparencyMode(enabled, handoff = null) {
   store.set(TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY, Boolean(enabled));
   rememberWindowPlaybackHandoff(handoff);
 
+  // Windows wallpaper mode: whatever window ends up as the main window must be re-attached —
+  // the helper holds the old window's hwnd, which is about to be destroyed. Detach (graceful)
+  // so the old window is un-parented from the WorkerW before its destroy — killing the helper
+  // instead would leave the destroyed window's last frame stuck on the desktop layer.
+  const reattachWindowsWallpaper = process.platform === 'win32' && isWindowsWallpaperMode();
+  if (reattachWindowsWallpaper) {
+    windowsWallpaper.detach();
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     const createdWindow = createWindow();
+    if (process.platform === 'darwin' && rebindMacWallpaperSessionToCurrentWindow()) {
+      return createdWindow;
+    }
     focusMainWindow();
+    if (reattachWindowsWallpaper) {
+      windowsWallpaper.attach();
+    }
     return createdWindow;
   }
 
   const previousWindow = mainWindow;
   saveWindowState(previousWindow);
+  // Capture the monitor the app window is on *before* it is destroyed: the wallpaper window that
+  // replaces it must land on that display, and a maximized window never updates WINDOW_BOUNDS, so
+  // the stored geometry alone would resolve the wrong monitor. No-op when the outgoing window is
+  // itself a wallpaper window (a rebuild inside an active session keeps the session target).
+  if (reattachWindowsWallpaper) {
+    windowsWallpaperTarget.rememberFromWindow(previousWindow);
+  }
   mainWindow = null;
 
   // Wallpaper mode: windowtolayer only hands the layer surface to a window created while no
@@ -4096,10 +6511,15 @@ function recreateMainWindowWithTransparencyMode(enabled, handoff = null) {
   // window must be gone before the replacement is built — otherwise the rebuilt main window
   // comes back as an ordinary window and the wallpaper disappears with the old one.
   if (isWallpaperWrapped()) {
-    previousWindow.destroy();
-    const createdWindow = createWindow();
-    focusMainWindow();
-    return createdWindow;
+    isSwappingMainWindow = true;
+    try {
+      previousWindow.destroy();
+      const createdWindow = createWindow();
+      focusMainWindow();
+      return createdWindow;
+    } finally {
+      isSwappingMainWindow = false;
+    }
   }
 
   const nextWindow = createWindow({ showImmediately: false });
@@ -4108,7 +6528,28 @@ function recreateMainWindowWithTransparencyMode(enabled, handoff = null) {
     if (!previousWindow.isDestroyed()) {
       previousWindow.destroy();
     }
-    focusMainWindow();
+    // macOS wallpaper mode never rebuilds the window anywhere else, so a transparent toggle
+    // reaching this path would otherwise sink the wallpaper together with the destroyed window.
+    // Re-sink the replacement; a wallpaper window never takes key focus, so skip it on success.
+    // If the re-sink fails, exit the session so the rebuilt window is not left flagged as a
+    // wallpaper it is not actually running (the renderer keys its chrome off that flag).
+    const macWallpaperLiveBeforeSwap = process.platform === 'darwin' && isMacWallpaperActive;
+    if (macWallpaperLiveBeforeSwap) {
+      const rebound = rebindMacWallpaperSessionToCurrentWindow();
+      if (!rebound) {
+        try {
+          exitMacWallpaperMode();
+        } catch (error) {
+          // ignore
+        }
+      }
+    }
+    if (!macWallpaperLiveBeforeSwap || !isMacWallpaperActive) {
+      focusMainWindow();
+    }
+    if (reattachWindowsWallpaper) {
+      windowsWallpaper.attach();
+    }
   });
 
   return nextWindow;
@@ -4116,6 +6557,15 @@ function recreateMainWindowWithTransparencyMode(enabled, handoff = null) {
 
 async function setMainWindowTransparentMode(enabled, handoff = null) {
   const nextEnabled = Boolean(enabled);
+  // Classic-desktop wallpaper windows cannot present a transparent surface after SetParent
+  // (the wallpaper goes black); refuse the toggle instead of recreating into a broken state.
+  // The renderer keeps its previous state and shows the unsupported hint.
+  if (nextEnabled && process.platform === 'win32' && isWindowsWallpaperMode() && !isWindowsWallpaperTransparentSupported()) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('wallpaper-transparent-refused', getPublicSettings());
+    }
+    return false;
+  }
   patchRemoteControlSnapshot({
     transparentModeEnabled: nextEnabled,
   });
@@ -4129,6 +6579,7 @@ async function setMainWindowTransparentModeFromRemote(enabled) {
 }
 
 app.whenReady().then(async () => {
+  applyTileMemoryBudget(app, screen);
   const startupResult = await mainProcessStartupPromise;
   if (startupResult === 'duplicate') {
     app.quit();
@@ -4137,12 +6588,22 @@ app.whenReady().then(async () => {
   if (startupResult === 'spawned') {
     return;
   }
-  if (startupResult === 'fallback') {
-    mainWindowClickThroughEnabled = false;
-  }
+  // Partial mpv downloads and half-extracted runtimes that an exit cut off (app.exit, a crash, a
+  // forced kill) go once per launch, also for someone who never downloads again. Only the instance
+  // holding the single-instance lock sweeps them: a second launch on its way out would delete the
+  // download the first one is still writing into the shared userData folder.
+  hifiInstaller.pruneLeftovers()
+    .catch(error => console.warn('[HiFi] could not remove leftover mpv downloads', error));
 
   if (process.platform === 'win32') {
     app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+  }
+  logGpuPreference(gpuPreferenceApplied);
+  if (process.platform === 'win32') {
+    // Late, so the DxDiag pass behind the read stays out of startup; the settings page may read it sooner.
+    setTimeout(() => {
+      readActiveGpu().catch(error => console.warn('[Gpu] Could not read the active adapter', error));
+    }, 10_000);
   }
 
   // 顺序不能反：先据旧状态写好新登录项，再清理遗留项。
@@ -4161,9 +6622,27 @@ app.whenReady().then(async () => {
     }
   }
 
+  // Seal AI API keys that older versions left in config.json as plaintext.
+  try {
+    migrateLegacyAiProviderCredentials(store);
+    aiCredentials.migrate();
+  } catch (error) {
+    console.warn('[AiCredentials] Migrating plaintext API keys failed', error);
+  }
+
   setupFileSystemAccessPermissionHandlers();
+  setupVideoExportDisplayMediaHandler();
   setupCorsBypassHandlers();
   localCoverAssetStore.registerProtocolHandler(protocol, electronNet);
+  protocol.handle(YTM_AUDIO_SCHEME, request => ytmApiBridge.handleAudioRequest(request));
+  protocol.handle(SPOTIFY_AUDIO_SCHEME, request => spotifyApiBridge.handleAudioRequest(request));
+  // Transcode fallback is an optional degradation path; a failure preparing it must never keep
+  // the rest of this handler, createWindow() included, from running.
+  try {
+    await transcodeService.initialize();
+  } catch (error) {
+    console.warn('[TranscodeFallback] Initialization failed; playback fallback is unavailable', error);
+  }
 
   session.defaultSession.on('file-system-access-restricted', (event, details, callback) => {
     if (details.isDirectory) {
@@ -4188,8 +6667,11 @@ app.whenReady().then(async () => {
   });
 
   setupAutoUpdater();
-  await startApi();
-  await startQqApi();
+  // Not awaited: this performs network round trips (xeapi key, anonymous token) that used to keep
+  // the window from appearing at all on a slow or blocked route. Status reaches the renderer over
+  // netease-api-status-changed, and get-netease-port reports null until the server is listening.
+  void neteaseBackend.start();
+  await qqBackend.start();
   try {
     await stageApi.startStageServerIfNeeded();
   } catch (error) {
@@ -4204,38 +6686,316 @@ app.whenReady().then(async () => {
   ensureTray();
   // createWindow() 会把 pendingSilentLaunch 消费掉，先取下来。
   const isSilentStartup = pendingSilentLaunch;
+  // macOS wallpaper: create the controller once userData is available and recover a Dock left
+  // auto-hidden by a crashed wallpaper session. Recovery is enqueued FIRST on the Dock op queue
+  // (this runs before any enter can hide the Dock again), so the re-enter's hide reads the
+  // restored state — never the still-hidden crash state — as the user's own preference.
+  if (process.platform === 'darwin') {
+    const macController = getMacWallpaperController();
+    if (macController) {
+      macController.configureDockRecovery();
+      void macController.recoverStrandedDock();
+    }
+  }
   createWindow();
   // 静默启动不抢焦点：focusMainWindow() 会 restore + show + focus，
   // 等于把刚收进任务栏的窗口又亮到前台，静默就白做了。
   if (!isSilentStartup) {
     focusMainWindow();
   }
+  if (process.env.FOLIA_PENDING_DESKTOP_LYRIC === '1') {
+    delete process.env.FOLIA_PENDING_DESKTOP_LYRIC;
+    if (!isWallpaperModeEnabled()) {
+      void setDesktopLyricMode(true).then(() => {
+        refreshTrayMenu();
+      });
+    }
+  }
+  // Windows wallpaper mode: attach the helper once the window exists (startup with the setting
+  // on; runtime toggles go through scheduleWallpaperModeRelaunch → relaunchForWallpaperModeChange).
+  if (isWindowsWallpaperMode()) {
+    const attachResult = windowsWallpaper.attach();
+    if (attachResult === 'missing') {
+      // Clearing the setting is not enough: the window above was already created with the
+      // wallpaper options (thickFrame:false, resizable:false, movable:false). It must be
+      // recreated as an ordinary window or the user is left with a borderless, immovable
+      // shell — same recovery the degrade path performs.
+      store.set(WALLPAPER_MODE_SETTING_KEY, false);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('wallpaper-mode-changed', getPublicSettings());
+      }
+      recreateMainWindowWithTransparencyMode(isTransparentPlayerBackgroundEnabled(), null);
+    }
+  }
+  // macOS wallpaper mode is an in-place sink that dies with the window, so a `wallpaper_mode`
+  // left on by a previous session must be re-applied to the fresh window here. If the FFI bridge
+  // or the Input Monitoring permission is unavailable, degrade to a normal window and DROP the
+  // stale flag — otherwise the renderer would keep its custom chrome off and its window-control
+  // IPC refused for a mode the window is not actually in.
+  if (process.platform === 'darwin') {
+    if (isMacWallpaperMode() && !enterMacWallpaperMode()) {
+      store.set(WALLPAPER_MODE_SETTING_KEY, false);
+      notifyMacWallpaperModeChanged();
+    }
+  }
+  // Display hotplug / resolution change: re-assert the fullscreen geometry (DIP) and ask the
+  // helper to re-fill the monitor in physical pixels.
+  // Registered outside the startup-mode branch: the Windows toggle recreates the window
+  // without a process relaunch, so wallpaper mode can be entered long after startup and the
+  // geometry must keep following display changes.
+  if (process.platform === 'win32') {
+    // Display changes arrive as event bursts with different shapes: a resolution edit emits
+    // display-metrics-changed, but a topology switch (monitor plug/unplug, Win+P, lid) emits
+    // only display-removed + display-added — a metrics-changed listener alone misses it and the
+    // wallpaper keeps the dead monitor's size. Coalesce the burst and re-assert the geometry once
+    // it settles. The helper owns the geometry of an attached window: setBounds would be applied
+    // to a *child* of the WorkerW, where Windows interprets the coordinates in the parent's client
+    // space (which is what puts the wallpaper on its host's display), so only the helper re-fills
+    // the monitor the window is on.
+    let wallpaperGeometryTimer = null;
+    const reassertWallpaperGeometry = async () => {
+      if (!isWindowsWallpaperMode()) {
+        return;
+      }
+      // Asked whether or not the helper is attached: a display that comes back while the window
+      // is being rebuilt must not be missed. The display chosen in Settings was unplugged or came
+      // back: the window is rebuilt on the display the wallpaper now belongs on and the helper
+      // fills that display when it attaches
+      // (`move` only re-fills the display the window already is on). Every other change, and
+      // every change without a choice, leaves the window where it is.
+      if (await applyWallpaperDisplayChoice()) {
+        return;
+      }
+      // That may have waited for the page; the mode can have been left meanwhile.
+      if (!isWindowsWallpaperMode() || !windowsWallpaper.isAttached()) {
+        return;
+      }
+      const helperPath = resolveWallpaperHelperPath();
+      const hwnd = getMainWindowNativeHwnd();
+      if (helperPath && hwnd !== null) {
+        const child = spawn(helperPath, ['move', '--hwnd', String(hwnd)], { stdio: 'ignore' });
+        child.on('error', (err) => {
+          console.warn('[WallpaperWin] helper move failed', err);
+        });
+      }
+    };
+    const scheduleWallpaperGeometryReassert = () => {
+      if (wallpaperGeometryTimer) {
+        clearTimeout(wallpaperGeometryTimer);
+      }
+      wallpaperGeometryTimer = setTimeout(() => {
+        wallpaperGeometryTimer = null;
+        reassertWallpaperGeometry().catch((error) => {
+          console.warn('[WallpaperWin] handling the display change failed:', error && error.message);
+        });
+      }, 200);
+    };
+    screen.on('display-added', scheduleWallpaperGeometryReassert);
+    screen.on('display-removed', scheduleWallpaperGeometryReassert);
+    screen.on('display-metrics-changed', scheduleWallpaperGeometryReassert);
+  }
+  // macOS: resolution / display-topology changes must re-assert the wallpaper frame (simple-full
+  // screen geometry) while the session is live. Registered once like the Windows block above,
+  // because the toggle does not restart the process.
+  if (process.platform === 'darwin') {
+    let macWallpaperGeometryTimer = null;
+    const scheduleMacWallpaperFrameReassert = () => {
+      if (macWallpaperGeometryTimer) {
+        clearTimeout(macWallpaperGeometryTimer);
+      }
+      macWallpaperGeometryTimer = setTimeout(() => {
+        macWallpaperGeometryTimer = null;
+        // A deferred entry owns the frame until the full-screen exit lands; do not race it.
+        if (isMacWallpaperActive && !macWallpaperPendingEnter && mainWindow && !mainWindow.isDestroyed()) {
+          applyMacWallpaperFrame();
+          applyMacAmbientLevel();
+        }
+      }, 200);
+    };
+    screen.on('display-added', scheduleMacWallpaperFrameReassert);
+    screen.on('display-removed', scheduleMacWallpaperFrameReassert);
+    screen.on('display-metrics-changed', scheduleMacWallpaperFrameReassert);
+  }
+  // Every platform: the settings page draws the connected displays, so it is told when they
+  // change. X11 has no display handling of its own above: a chosen display that was unplugged or
+  // came back is applied from here (a relaunch; without a choice nothing happens, as before).
+  // Wayland places its layer itself and is left alone.
+  let wallpaperDisplaysChangedTimer = null;
+  const scheduleWallpaperDisplaysChanged = () => {
+    if (wallpaperDisplaysChangedTimer) {
+      clearTimeout(wallpaperDisplaysChangedTimer);
+    }
+    wallpaperDisplaysChangedTimer = setTimeout(() => {
+      wallpaperDisplaysChangedTimer = null;
+      notifyWallpaperDisplaysChanged();
+      if (process.platform === 'linux') {
+        applyWallpaperDisplayChoice().catch((error) => {
+          console.warn('[Wallpaper] handling the display change failed:', error && error.message);
+        });
+      }
+    }, 200);
+  };
+  screen.on('display-added', scheduleWallpaperDisplaysChanged);
+  screen.on('display-removed', scheduleWallpaperDisplaysChanged);
+  screen.on('display-metrics-changed', scheduleWallpaperDisplaysChanged);
   scheduleStartupUpdateCheck();
   voiceInputPauseMonitor.syncState();
+
+  try {
+    modSystem = createModSystem({
+      app,
+      BrowserWindow,
+      getMainWindow: () => mainWindow,
+      getLocaleKey: getMainLocaleKey,
+      isFeatureEnabled: () => readStoredBoolean(MOD_SYSTEM_ENABLED_SETTING_KEY, false),
+    });
+    modSystem.registerIpc();
+    // Loads the enabled mods. If the last start never got to its end, it asks first whether to
+    // start without mods this time, and loads once the answer is in (modSystem.cjs `start`).
+    modSystem.start();
+    if (readStoredBoolean(MOD_SYSTEM_ENABLED_SETTING_KEY, false)) {
+      void modSystem.probeFfmpeg();
+    }
+  } catch (error) {
+    console.error('[Mods] Failed to initialize the mod system', error);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      // The mac wallpaper sink is window-bound: a window rebuilt under an active (stored)
+      // wallpaper mode must be sunk again once it exists.
+      if (process.platform === 'darwin' && isMacWallpaperMode()) {
+        enterMacWallpaperMode();
+      }
     } else {
       focusMainWindow();
     }
   });
 });
 
+// Set in before-quit so window-all-closed can tell an intentional shutdown apart from the main
+// window being destroyed externally (see the Windows wallpaper branch below).
+let isAppQuitting = false;
+
+let isSwappingMainWindow = false;
+
 app.on('window-all-closed', () => {
+  if (isSwappingMainWindow) {
+    return;
+  }
   clearPendingWindowPlaybackHandoffRequests();
+  // Windows wallpaper mode: the main window is a child of a WorkerW, so an explorer restart
+  // destroys it together with the desktop hierarchy. Quitting here would turn a recoverable
+  // session into a dead wallpaper — rebuild the window instead (the helper's own
+  // window-destroyed recovery may also arrive later over the pipe; whichever wins, the
+  // attach latch and the stdout ownership guard dedupe the two paths). Intentional quits run
+  // before-quit first and take the regular path below.
+  if (process.platform === 'win32' && isWindowsWallpaperMode() && !isAppQuitting) {
+    rebuildWindowsWallpaperSession();
+    return;
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app.on('before-quit', () => {
-  isQuittingApp = true;
+// The bridges whose work under way holds a quit, each through its shutdown() (see before-quit).
+const quitHoldingBridges = [ytmApiBridge, spotifyApiBridge];
+// Set while a quit is held for such work (see before-quit).
+let isQuitHeldForAccounts = false;
+
+app.on('before-quit', (event) => {
+  // Work of a bridge that must not be cut off: a web sign-in under way, whose ended browser leaves
+  // a folder holding a whole sign-in session to remove; a token renewal whose answer is not stored
+  // yet, as the next run may not be able to use the token it replaces. shutdown() answers a promise
+  // while there is such work, settled in 3 seconds at most. The quit is held until all have
+  // settled, and then asked for again; nothing below has run by then. A quit with no such work is
+  // not held, and neither is one that arrives while another is held.
+  const held = quitHoldingBridges.map(bridge => bridge.shutdown()).filter(Boolean);
+  if (held.length > 0 && !isQuitHeldForAccounts) {
+    isQuitHeldForAccounts = true;
+    event.preventDefault();
+    void Promise.all(held).then(() => app.quit());
+    return;
+  }
+  isQuitHeldForAccounts = false;
+  transcodeService.dispose();
+  hifiSession.killSync();
+  // An mpv download the quit cuts off is stopped: its partial files go now if there is time, or
+  // with the installer's sweep of leftovers next time.
+  hifiInstaller.cancel();
+  videoExportFileWriter.disposeSync();
+  isAppQuitting = true;
   clearPendingWindowPlaybackHandoffRequests();
+  // A question about a window that stopped answering is taken down: the app is leaving.
+  mainWindow?.__unresponsivePrompt?.abort();
+  if (modSystem) {
+    try {
+      // The normal way out (the user quits, the last window is closed, a restart for an update,
+      // a shutdown on macOS and Linux): the start note of a start that is merely not over yet
+      // is taken up, so the next start does not ask. It stays when the page has gone quiet in
+      // the middle of starting the mods (modSystem.cjs `noteNormalQuit`). app.exit() does not
+      // come through here: the main process crashing, and the wallpaper watchdog's relaunch.
+      modSystem.noteNormalQuit();
+    } catch (error) {
+      console.error('[Mods] Failed to take up the start note', error);
+    }
+    try {
+      modSystem.dispose();
+    } catch (error) {
+      console.error('[Mods] Failed to dispose the mod system', error);
+    }
+  }
   voiceInputPauseMonitor.stop();
   displaySleepBlocker.stop();
+  // Detach (graceful) instead of killing: the helper un-parents the window from the WorkerW
+  // and repaints the layer before the window is destroyed — a window torn down while still
+  // parented leaves its last frame stuck on the desktop. killHelper() is the fallback for
+  // anything that races the graceful path (the helper also self-detaches on stdin EOF).
+  windowsWallpaper.detach();
+  // macOS wallpaper: stop the event tap and restore the Dock. Tap/level state dies with the
+  // process, but the Dock is SYSTEM state — the async restore chain could be cut short by the
+  // process exiting mid-way, so restore synchronously (execFileSync + killall Dock).
+  if (process.platform === 'darwin') {
+    if (macWallpaperTapRetryTimer) {
+      clearTimeout(macWallpaperTapRetryTimer);
+      macWallpaperTapRetryTimer = null;
+    }
+    if (macWallpaperDragTimer) {
+      clearTimeout(macWallpaperDragTimer);
+      macWallpaperDragTimer = null;
+    }
+    macWallpaperPendingDrag = null;
+    isMacWallpaperActive = false;
+    isMacWallpaperInteractionEnabled = false;
+    macWallpaperSavedState = null;
+    const macController = getMacWallpaperController();
+    if (macWallpaperStageManagerTimer) {
+      clearInterval(macWallpaperStageManagerTimer);
+      macWallpaperStageManagerTimer = null;
+    }
+    if (macWallpaperClickGuardInstance) {
+      macWallpaperClickGuardInstance.stop();
+    }
+    if (macWallpaperHitPanelsInstance) {
+      macWallpaperHitPanelsInstance.destroy();
+    }
+    if (macController) {
+      try {
+        macController.stop();
+      } catch (error) {
+        // ignore
+      }
+      try {
+        macController.restoreDockSync();
+      } catch (error) {
+        // ignore
+      }
+    }
+  }
   void discordPresence.destroy();
-  void stopQqApi();
+  void qqBackend.stop();
   void lyricApi.stop();
 });
 
@@ -4248,6 +7008,9 @@ ipcMain.handle('window-set-native-theme', (event, themeSource) => {
 // expressed in physical pixels (see resize-main-window / video-export-prepare-window).
 ipcMain.handle('report-device-pixel-ratio', (event, ratio) => {
   if (!isTrustedMainWindowContents(event.sender)) return;
+  // Tab capture may raise the captured page's device scale factor while recording; that is a
+  // capture artifact, not the monitor's DPR, so it must not leak into window sizing.
+  if (videoExportWindowRestoreState) return;
   const dpr = Number(ratio);
   if (Number.isFinite(dpr) && dpr > 0) {
     mainWindow.__dpr = dpr;
@@ -4258,6 +7021,54 @@ ipcMain.handle('get-settings', () => {
   return getPublicSettings();
 });
 
+// The GPU choice this run started with and the adapter Chromium took; null off Windows, where the
+// setting is not offered, or when the asking page is not the main window.
+ipcMain.handle('gpu-preference-state', async (event) => {
+  if (process.platform !== 'win32' || !isTrustedMainWindowContents(event.sender)) {
+    return null;
+  }
+  let activeGpu = null;
+  try {
+    activeGpu = await readActiveGpu();
+  } catch (error) {
+    console.warn('[Gpu] Could not read the active adapter for the settings page', error);
+  }
+  return { applied: gpuPreferenceApplied.preference, source: gpuPreferenceApplied.source, activeGpu };
+});
+
+// The settings page's choice of the display wallpaper mode uses (see "Wallpaper display choice").
+ipcMain.handle('wallpaper-displays-get', (event) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return null;
+  }
+  return getWallpaperDisplaysState();
+});
+
+ipcMain.handle('wallpaper-display-set', (event, displayId) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return null;
+  }
+  return setWallpaperDisplayChoice(displayId);
+});
+
+// macOS wallpaper mode: the rects (viewport CSS px) of the controls on screen, for the click
+// catchers that keep those clicks away from Finder and so from Stage Manager (issue #698).
+ipcMain.on('wallpaper-hit-regions', (event, rects) => {
+  if (process.platform !== 'darwin' || !isTrustedMainWindowContents(event.sender)) {
+    return;
+  }
+  macWallpaperHitRects = Array.isArray(rects) ? rects.slice(0, MAX_HIT_PANELS) : [];
+  syncMacWallpaperHitPanels();
+});
+
+// The 后台节流 switch as the main window sees it: in force (on, not standing down), and the window
+// minimised or hidden while it is.
+ipcMain.handle('background-throttling-get', (event) => (
+  isTrustedMainWindowContents(event.sender)
+    ? backgroundThrottling.getState()
+    : { active: false, hidden: false }
+));
+
 ipcMain.handle('playback-display-sleep-set-active', (event, active) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     return false;
@@ -4266,7 +7077,7 @@ ipcMain.handle('playback-display-sleep-set-active', (event, active) => {
 });
 
 ipcMain.handle('set-app-locale', (event, localeKey) => {
-  if (localeKey === 'zh-CN' || localeKey === 'en' || localeKey === 'in') {
+  if (localeKey === 'zh-CN' || localeKey === 'zh-TW' || localeKey === 'en' || localeKey === 'in' || localeKey === 'vi') {
     store.set(APP_LOCALE_KEY, localeKey);
     refreshTrayMenu();
   }
@@ -4274,7 +7085,21 @@ ipcMain.handle('set-app-locale', (event, localeKey) => {
 });
 
 ipcMain.handle('save-settings', (event, key, value) => {
-  if (key === 'DISCORD_RICH_PRESENCE_APPLICATION_ID') {
+  // electron-store's set() also accepts an object of key/value pairs, which would bypass the
+  // per-key guards below.
+  if (typeof key !== 'string') {
+    return getPublicSettings();
+  }
+  // The HiFi key is the old home of the approved mpv path (now in a file of main's own): nothing
+  // reads it any more, and the renderer has no business writing it.
+  if (key === 'DISCORD_RICH_PRESENCE_APPLICATION_ID' || isReservedAiCredentialKey(key) || isReservedHifiSettingKey(key)) {
+    return getPublicSettings();
+  }
+  if (isAiCredentialKey(key)) {
+    // Only a string is a key; '' is the explicit clear. Anything else must not wipe a saved key.
+    if (typeof value === 'string') {
+      aiCredentials.set(key, value);
+    }
     return getPublicSettings();
   }
 
@@ -4292,26 +7117,112 @@ ipcMain.handle('save-settings', (event, key, value) => {
   if (key === LAUNCH_AT_LOGIN_MODE_SETTING_KEY) {
     nextValue = value === 'foreground' ? 'foreground' : 'silent';
   }
+  if (key === GPU_PREFERENCE_SETTING_KEY) {
+    if (normalizeGpuPreference(value) !== value) {
+      return getPublicSettings();
+    }
+    console.info(`[Gpu] Preference set to ${value}; takes effect on the next launch`);
+  }
   if (
     key === CLOSE_TO_TRAY_SETTING_KEY ||
     key === LAUNCH_AT_LOGIN_SETTING_KEY ||
     key === HIDE_TASKBAR_ICON_SETTING_KEY ||
     key === REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY ||
     key === REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY ||
+    key === REMOTE_CONTROL_HIDE_TITLEBAR_SETTING_KEY ||
+    key === REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY ||
+    key === REMOTE_CONTROL_EXPAND_COVER_SETTING_KEY ||
+    key === REMOTE_CONTROL_TEXT_SHADE_SETTING_KEY ||
     key === TRANSPARENT_PLAYER_BACKGROUND_SETTING_KEY ||
     key === DISCORD_RICH_PRESENCE_ENABLED_SETTING_KEY ||
     key === VOICE_INPUT_PAUSE_ENABLED_SETTING_KEY ||
     key === PREVENT_DISPLAY_SLEEP_DURING_PLAYBACK_SETTING_KEY ||
-    key === WALLPAPER_MODE_SETTING_KEY
+    key === MOD_SYSTEM_ENABLED_SETTING_KEY ||
+    key === BACKGROUND_THROTTLING_SETTING_KEY ||
+    key === WALLPAPER_MODE_SETTING_KEY ||
+    key === WALLPAPER_ENTRY_CONFIRMED_SETTING_KEY ||
+    key === WALLPAPER_FORWARD_MOUSE_SETTING_KEY ||
+    key === WALLPAPER_ZGUARD_SETTING_KEY ||
+    key === WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY
   ) {
     nextValue = Boolean(value);
   }
   store.set(key, nextValue);
 
+  if (key === BACKGROUND_THROTTLING_SETTING_KEY || key === WALLPAPER_MODE_SETTING_KEY) {
+    backgroundThrottling.refresh();
+  }
+
+  if (key === MOD_SYSTEM_ENABLED_SETTING_KEY && modSystem) {
+    // Turning the switch off deactivates every running mod immediately rather
+    // than only hiding the UI; turning it on discovers and activates whatever
+    // the user had already confirmed.
+    try {
+      modSystem.loadAll();
+    } catch (error) {
+      console.error('[Mods] Failed to apply the mod system switch', error);
+    }
+  }
+
   if (key === WALLPAPER_MODE_SETTING_KEY) {
     // Let the renderer receive its save-settings response before the process relaunches, while
     // coalescing rapid toggles into one handoff/relaunch operation.
     scheduleWallpaperModeRelaunch(Boolean(nextValue));
+  }
+
+  // Windows helper flags are process launch arguments: restart the helper in place so the new
+  // switch takes effect. Kill + re-attach keeps the window welded to the WorkerW throughout
+  // (a graceful detach would race the fresh attach over the same window).
+  if (
+    process.platform === 'win32' &&
+    (key === WALLPAPER_FORWARD_MOUSE_SETTING_KEY || key === WALLPAPER_ZGUARD_SETTING_KEY) &&
+    isWindowsWallpaperMode()
+  ) {
+    windowsWallpaper.killHelper();
+    windowsWallpaper.attach();
+  }
+
+  // macOS: the forward-mouse switch is the in-place interactivity toggle — start/stop the tap on
+  // the live wallpaper session (no helper to restart).
+  if (
+    process.platform === 'darwin' &&
+    key === WALLPAPER_FORWARD_MOUSE_SETTING_KEY &&
+    isMacWallpaperMode()
+  ) {
+    if (isMacWallpaperActive) {
+      isMacWallpaperInteractionEnabled = Boolean(nextValue);
+      if (isMacWallpaperInteractionEnabled) {
+        startMacWallpaperInteraction();
+      } else {
+        stopMacWallpaperInteraction();
+      }
+    }
+  }
+
+  // macOS: the Dock auto-hide switch applies live to the wallpaper session. Turning it off always
+  // restores the Dock; turning it on hides only while the Dock is at the bottom edge (same rule the
+  // wallpaper entry uses — a side Dock is never touched).
+  if (
+    process.platform === 'darwin' &&
+    key === WALLPAPER_MAC_AUTOHIDE_DOCK_SETTING_KEY &&
+    isMacWallpaperMode()
+  ) {
+    if (isMacWallpaperActive) {
+      const macController = getMacWallpaperController();
+      if (macController) {
+        if (Boolean(nextValue)) {
+          try {
+            if (macController.isDockAtBottom()) {
+              void macController.setDockAutohide(true);
+            }
+          } catch (error) {
+            // ignore
+          }
+        } else {
+          void macController.restoreDock();
+        }
+      }
+    }
   }
 
   if (key === 'enable_player_page_native_blur') {
@@ -4320,7 +7231,13 @@ ipcMain.handle('save-settings', (event, key, value) => {
         const enableNativeBlur = Boolean(nextValue);
         mainWindow.setBackgroundColor(enableNativeBlur ? '#00000000' : '#09090b');
         if (process.platform === 'darwin') {
-          mainWindow.setVibrancy(enableNativeBlur ? 'fullscreen-ui' : null);
+          // A wallpaper session holds the window at the desktop layer, where vibrancy renders
+          // behind the icons (the "wallpaper stuck" AppKit trap the entry path clears). The
+          // stored choice is re-applied on session exit, so a mid-session toggle must not apply
+          // vibrancy live — the session keeps it suppressed throughout.
+          if (!isMacWallpaperActive) {
+            mainWindow.setVibrancy(enableNativeBlur ? 'fullscreen-ui' : null);
+          }
         } else if (process.platform === 'win32') {
           mainWindow.setBackgroundMaterial(enableNativeBlur ? 'acrylic' : 'none');
         }
@@ -4367,7 +7284,7 @@ ipcMain.handle('save-settings', (event, key, value) => {
       downloadProgress: null,
     });
 
-    if (getUpdateCheckEnabled() && isAutoUpdaterSupported()) {
+    if (getUpdateCheckEnabled() && isPackagedUpdateRuntime() && isUpdateCheckSupported()) {
       checkForUpdates().catch((error) => {
         setUpdateState({
           status: 'error',
@@ -4398,6 +7315,30 @@ ipcMain.handle('save-settings', (event, key, value) => {
   if (key === REMOTE_CONTROL_SKIP_TASKBAR_SETTING_KEY) {
     remoteControlSkipTaskbarEnabled = Boolean(nextValue);
     applyRemoteControlSkipTaskbar(remoteControlWindow);
+  }
+
+  if (key === REMOTE_CONTROL_HIDE_TITLEBAR_SETTING_KEY) {
+    remoteControlHideTitlebarEnabled = Boolean(nextValue);
+    applyRemoteControlWindowPresentation(remoteControlWindow);
+  }
+
+  if (key === REMOTE_CONTROL_CLICK_THROUGH_SETTING_KEY) {
+    remoteControlClickThroughEnabled = Boolean(nextValue);
+    applyRemoteControlWindowPresentation(remoteControlWindow);
+    refreshTrayMenu();
+  }
+
+  if (key === REMOTE_CONTROL_EXPAND_COVER_SETTING_KEY) {
+    remoteControlExpandCoverEnabled = Boolean(nextValue);
+    if (remoteControlExpandCoverEnabled) {
+      bringRemoteControlCoverOnScreen(remoteControlWindow);
+    }
+    applyRemoteControlWindowPresentation(remoteControlWindow);
+  }
+
+  if (key === REMOTE_CONTROL_TEXT_SHADE_SETTING_KEY) {
+    remoteControlTextShadeEnabled = Boolean(nextValue);
+    applyRemoteControlWindowPresentation(remoteControlWindow);
   }
 
   if (key === STAGE_MODE_SOURCE_SETTING_KEY) {
@@ -4466,6 +7407,66 @@ ipcMain.handle('reset-cache-directory', () => {
   };
 });
 
+// What earlier versions downloaded, gone from this machine: up to 330MB nothing reads now. Once per
+// launch, off the startup path; a file that will not go (in use, read-only) is tried again next time.
+app.whenReady().then(() => setTimeout(() => {
+  removeDownloadedLeftovers(getDownloadedModelsDirectory())
+    .then(({ removed, bytes }) => {
+      if (removed.length) console.log(`[Models] removed ${removed.length} downloaded model files (${Math.round(bytes / 1048576)}MB) the app no longer reads`);
+    })
+    .catch((error) => console.warn('[Models] could not remove the old downloads', error?.message || error));
+}, 10_000));
+
+// The same leftovers in the folder the listener chose for them (LEGACY_MODELS_DIRECTORY_SETTING_KEY)
+// are theirs, not the app's: deleted only when they say so, from the one-time prompt in the renderer
+// (components/modal/LegacyModelsPrompt.tsx). Only the old files go, never the folder or anything else
+// in it (removeDownloadedLeftovers). Answered or dismissed, the setting is cleared and never asked again.
+const getLegacyModelsDirectory = () => {
+  const configured = store.get(LEGACY_MODELS_DIRECTORY_SETTING_KEY);
+  if (typeof configured !== 'string' || !configured.trim()) return null;
+  const dir = path.resolve(configured.trim());
+  // userData/models is cleaned above without asking; the installer's own is never a leftover.
+  const ours = [getDownloadedModelsDirectory(), getBundledModelsDirectory()].map(own => path.resolve(own));
+  return ours.includes(dir) ? null : dir;
+};
+
+ipcMain.handle('legacy-models-check', async () => {
+  const dir = getLegacyModelsDirectory();
+  if (!dir) {
+    store.delete(LEGACY_MODELS_DIRECTORY_SETTING_KEY);
+    return null;
+  }
+  const { paths, bytes } = await measureLeftovers(dir);
+  if (!paths.length) {
+    // Moved, emptied by hand, or on a drive that is not connected: nothing to ask about. A drive that
+    // comes back later is not asked about either - the folder is the listener's to tidy from here.
+    store.delete(LEGACY_MODELS_DIRECTORY_SETTING_KEY);
+    return null;
+  }
+  return { dir, count: paths.length, bytes };
+});
+
+ipcMain.handle('legacy-models-resolve', async (_event, action) => {
+  const dir = getLegacyModelsDirectory();
+  if (action === 'delete' && dir) {
+    try {
+      const { removed, bytes } = await removeDownloadedLeftovers(dir);
+      console.log(`[Models] removed ${removed.length} old model files (${Math.round(bytes / 1048576)}MB) from ${dir}, as asked`);
+    } catch (error) {
+      // Kept, so the prompt comes back next launch rather than leaving files it said it would delete.
+      console.warn('[Models] could not remove the old models in the chosen folder', error?.message || error);
+      return { ok: false };
+    }
+  }
+  store.delete(LEGACY_MODELS_DIRECTORY_SETTING_KEY);
+  return { ok: true };
+});
+
+ipcMain.handle('legacy-models-open', async () => {
+  const dir = getLegacyModelsDirectory();
+  return dir ? (await shell.openPath(dir)) === '' : false;
+});
+
 ipcMain.handle('updates-get-status', () => {
   return getUpdateStatus();
 });
@@ -4515,9 +7516,15 @@ ipcMain.handle('has-audio-cache', async (event, cacheKey) => {
   return hasAudioCacheEntry(cacheKey);
 });
 
-ipcMain.handle('save-audio-cache', async (event, cacheKey, data, mimeType) => {
-  await writeAudioCacheEntry(cacheKey, data, mimeType);
+ipcMain.handle('save-audio-cache', async (event, cacheKey, data, mimeType, limitBytes) => {
+  await writeAudioCacheEntry(cacheKey, data, mimeType, limitBytes);
   return true;
+});
+
+// A copy playback found to be less than the song: deleted only while it is the file that was read.
+ipcMain.handle('remove-audio-cache', async (event, cacheKey, size) => {
+  const { dataPath, metaPath } = getAudioCachePaths(cacheKey);
+  return removeAudioCacheFileOfSize(dataPath, metaPath, size);
 });
 
 ipcMain.handle('get-audio-cache-usage', async () => {
@@ -4531,6 +7538,14 @@ ipcMain.handle('get-audio-cache-stats', async () => {
 ipcMain.handle('clear-audio-cache', async () => {
   await clearAudioCacheDirectory();
   return true;
+});
+
+ipcMain.handle('transcode-fallback-request', async (_event, request) => {
+  return transcodeService.request(request);
+});
+
+ipcMain.handle('transcode-fallback-cancel', (_event, requestId) => {
+  return transcodeService.cancel(requestId);
 });
 
 ipcMain.handle('get-cover-cache', async (event, cacheKey) => {
@@ -4573,29 +7588,75 @@ ipcMain.handle('clear-local-cover-assets', async () => {
   return localCoverAssetStore.clear();
 });
 
-// Retrieve dynamic port of local Netease API Server
-ipcMain.handle('get-netease-port', () => {
-  return assignedPort;
+// 内嵌后端的端口、状态、重启、诊断快照与主动自检（electron/loginBackendIpc.cjs）。
+registerLoginBackendIpc({
+  ipcMain,
+  app,
+  safeStorage,
+  getDefaultSession: () => session.defaultSession,
+  neteaseBackend,
+  qqBackend,
 });
 
-ipcMain.handle('get-netease-api-status', () => {
-  return neteaseApiStatus;
+// Both channels reach the embedded KuGou API. `kugou-api-request` forwards the renderer's operation
+// and params verbatim, so it is a write-capable surface rather than a read-only one; the bridge keeps
+// its own operation allowlist, so what this guard adds is the caller surface. Trusted here means the
+// two first-party windows - the main window and the remote-control window, which runs the same app
+// and therefore the same online providers. `bodian-api-request` below gates the same way.
+//
+// Boundary, stated plainly: comparing webContents identity rejects other windows (a popup opened with
+// window.open carries the same preload). It cannot stop script already running inside a trusted
+// window - that is the CSP and preload layer's job, not this check's.
+const isFirstPartyWindowContents = (event) => (
+  isTrustedMainWindowContents(event.sender) || isTrustedRemoteControlContents(event.sender)
+);
+
+ipcMain.handle('kugou-api-status', createSenderGuardedHandler({
+  channel: 'kugou-api-status',
+  // 只回传可用性、登录状态与错误：拒绝时给一个「没有这个能力」的取值，让调用方走 unavailable 分支。
+  isTrusted: isFirstPartyWindowContents,
+  onUntrusted: () => null,
+  handler: () => kugouApiBridge.getStatus(),
+}));
+ipcMain.handle('kugou-api-request', createSenderGuardedHandler({
+  channel: 'kugou-api-request',
+  isTrusted: isFirstPartyWindowContents,
+  handler: (_event, operation, params) => kugouApiBridge.request(operation, params),
+}));
+ipcMain.handle('qishui-api-request', (event, operation, params) => {
+  if (!isTrustedMainWindowContents(event.sender)) return { ok: false, error: { code: 'unavailable', message: 'Untrusted Qishui request' } };
+  return qishuiApiBridge.request(operation, params);
 });
-
-// Retrieve dynamic port of the embedded QQ API server; null until it is running.
-ipcMain.handle('get-qq-port', () => qqApiStatus.port);
-
-ipcMain.handle('get-qq-api-status', () => qqApiStatus);
-
-ipcMain.handle('kugou-api-status', () => kugouApiBridge.getStatus());
-ipcMain.handle('kugou-api-request', (_event, operation, params) => kugouApiBridge.request(operation, params));
+ipcMain.handle('bodian-api-request', (event, operation, params) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return { ok: false, error: { code: 'unavailable', message: 'Untrusted Bodian request' } };
+  }
+  return bodianApiBridge.request(operation, params);
+});
+ipcMain.handle('ytm-api-request', (event, operation, params) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return { ok: false, error: { code: 'unavailable', message: 'Untrusted YouTube Music request' } };
+  }
+  return ytmApiBridge.request(operation, params);
+});
+ipcMain.handle('spotify-api-request', (event, operation, params) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return { ok: false, error: { code: 'unavailable', message: 'Untrusted Spotify request' } };
+  }
+  return spotifyApiBridge.request(operation, params);
+});
 
 ipcMain.handle('window-minimize', () => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return false;
   }
 
-  // 最小化固定收进任务栏；想常驻托盘请用「关闭主面板」或托盘菜单的显示模式。
+  // Wallpaper windows have no minimize semantics; leaving wallpaper mode goes through the setting.
+  if (isWallpaperModeEnabled()) {
+    return false;
+  }
+
+  // 最小化固定收进任务栏；常驻托盘走「关闭主面板」。
   mainWindow.minimize();
   refreshTrayMenu();
   return true;
@@ -4604,6 +7665,10 @@ ipcMain.handle('window-minimize', () => {
 ipcMain.handle('window-toggle-maximize', () => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return false;
+  }
+
+  if (isWallpaperModeEnabled()) {
+    return mainWindow.isMaximized();
   }
 
   if (mainWindow.isMaximized()) {
@@ -4620,8 +7685,13 @@ ipcMain.handle('window-toggle-fullscreen', (event) => {
     return false;
   }
 
-  const nextFullscreen = !mainWindow.isFullScreen();
-  mainWindow.setFullScreen(nextFullscreen);
+  // Fullscreen would tear the wallpaper window out of its desktop-layer geometry.
+  if (isWallpaperModeEnabled()) {
+    return isMainWindowFullscreen(mainWindow);
+  }
+
+  const nextFullscreen = !isMainWindowFullscreen(mainWindow);
+  setMainWindowFullscreen(mainWindow, nextFullscreen);
   return nextFullscreen;
 });
 
@@ -4630,7 +7700,29 @@ ipcMain.handle('window-close', () => {
     return false;
   }
 
+  // Closing a wallpaper window is meaningless; exit goes through the wallpaper mode setting.
+  if (isWallpaperModeEnabled()) {
+    return false;
+  }
+
+  // Only the titlebar X hides to the tray. Alt+F4, the taskbar's Close window, logoff and
+  // app.quit() still emit a real 'close', so there is always a way to actually exit.
+  // 「关闭主面板」开着且动作是托盘时才隐藏（electron/trayWindowBehavior.cjs）。
+  if (shouldHideMainWindowOnClose()) {
+    return hideMainWindow();
+  }
+
   mainWindow.close();
+  return true;
+});
+
+// Sleep timer and other explicit "exit the whole app" paths. Unlike window-close this
+// quits even when closing-to-tray is enabled, and runs the before-quit cleanup.
+ipcMain.handle('app-quit', (event) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return false;
+  }
+  app.quit();
   return true;
 });
 
@@ -4640,6 +7732,13 @@ ipcMain.handle('window-is-maximized', () => {
   }
 
   return mainWindow.isMaximized();
+});
+
+ipcMain.handle('window-is-fullscreen', (event) => {
+  if (!isTrustedMainWindowContents(event.sender) || !mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  return isMainWindowFullscreen(mainWindow);
 });
 
 ipcMain.handle('window-get-transparent-mode', (event) => {
@@ -4683,6 +7782,11 @@ ipcMain.handle('window-get-always-on-top', (event) => {
     return false;
   }
 
+  // On native Wayland isAlwaysOnTop() only echoes the last request, never the compositor's state.
+  if (!windowAlwaysOnTopSupported) {
+    return false;
+  }
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindowAlwaysOnTop = mainWindow.isAlwaysOnTop();
   }
@@ -4698,9 +7802,17 @@ ipcMain.handle('window-set-always-on-top', (event, enabled) => {
   return setMainWindowAlwaysOnTop(enabled);
 });
 
-ipcMain.handle('obs-browser-source-get-status', () => {
-  return buildObsBrowserSourceStatus();
-});
+ipcMain.handle('obs-browser-source-get-status', createSenderGuardedHandler({
+  channel: 'obs-browser-source-get-status',
+  // 主窗才有浏览器源这张设置页；远控窗用不到它，所以这里只认主窗。
+  isTrusted: (event) => isTrustedMainWindowContents(event.sender),
+  handler: () => buildObsBrowserSourceStatus(),
+}));
+// On the payload: it carries the browser-source token and the full push URL. That token only feeds
+// the local browser-source overlay - display content, no account permissions, no secrets - so this
+// is not a credential-leak fix and it is not a merge blocker on its own. The three handlers beside it
+// (set-enabled / regenerate-token / publish-config) all gate on the sender; this one was the odd one
+// out, and gating it keeps the response surface uniform.
 
 ipcMain.handle('obs-browser-source-set-enabled', async (event, enabled) => {
   if (!isTrustedMainWindowContents(event.sender)) {
@@ -4772,11 +7884,11 @@ ipcMain.handle('lyric-api-set-enabled', (event, enabled) => {
   return lyricApi.setEnabled(Boolean(enabled));
 });
 
-ipcMain.handle('lyric-api-publish', (event, lyrics, offset) => {
+ipcMain.handle('lyric-api-publish', (event, lyrics, offset, clipStartMs) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     return false;
   }
-  return lyricApi.publishLyricData(lyrics, offset);
+  return lyricApi.publishLyricData(lyrics, offset, clipStartMs);
 });
 
 ipcMain.handle('discord-presence-get-status', (event) => {
@@ -4857,6 +7969,54 @@ ipcMain.handle('stage-complete-player-queue', (event, result) => {
   }
 
   return stageApi.completeStagePlayerQueueRequest(result);
+});
+
+ipcMain.handle('stage-complete-player-search', (event, result) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to complete a Stage player search request.');
+  }
+
+  return stageApi.completeStagePlayerSearchRequest(result);
+});
+
+// Created on first use: globalShortcut only works once the app is ready, and the renderer asks
+// only after its window has loaded.
+let globalShortcutController = null;
+const getGlobalShortcutController = () => {
+  if (!globalShortcutController) {
+    globalShortcutController = createGlobalShortcutController({
+      globalShortcut,
+      backend: usesGlobalShortcutsPortal({ ozonePlatform: app.commandLine.getSwitchValue('ozone-platform') }) ? 'portal' : 'native',
+      // TODO: macOS keeps the app running after its window closes, so the keys stay held and a
+      // press with no window does nothing. Reopening the window, or letting the keys go on `closed`,
+      // is undecided until it can be tried on a Mac.
+      onTrigger: (accelerator) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('global-shortcut-triggered', accelerator);
+        }
+      },
+    });
+  }
+  return globalShortcutController;
+};
+
+ipcMain.handle('global-shortcuts-backend', () => (
+  usesGlobalShortcutsPortal({ ozonePlatform: app.commandLine.getSwitchValue('ozone-platform') }) ? 'portal' : 'native'
+));
+
+ipcMain.handle('global-shortcuts-set', (event, accelerators) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to set global shortcuts.');
+  }
+
+  return getGlobalShortcutController().apply(accelerators);
+});
+
+app.on('will-quit', () => {
+  globalShortcutController?.dispose();
+  hifiSession.killSync();
+  hifiMpris?.dispose();
+  hifiInstaller.cancel();
 });
 
 ipcMain.handle('thumbar-update-buttons', (event, state) => {
@@ -5045,6 +8205,11 @@ ipcMain.handle('remote-control-get-always-on-top', (event) => {
     throw new Error('Untrusted renderer attempted to read remote control always-on-top state.');
   }
 
+  // On native Wayland isAlwaysOnTop() only echoes the last request, never the compositor's state.
+  if (!windowAlwaysOnTopSupported) {
+    return false;
+  }
+
   if (remoteControlWindow && !remoteControlWindow.isDestroyed()) {
     remoteControlAlwaysOnTop = remoteControlWindow.isAlwaysOnTop();
   }
@@ -5057,12 +8222,52 @@ ipcMain.handle('remote-control-set-always-on-top', (event, nextAlwaysOnTop) => {
     throw new Error('Untrusted renderer attempted to update remote control always-on-top state.');
   }
 
+  if (!windowAlwaysOnTopSupported) {
+    return false;
+  }
+
   remoteControlAlwaysOnTop = Boolean(nextAlwaysOnTop);
   store.set(REMOTE_CONTROL_ALWAYS_ON_TOP_SETTING_KEY, remoteControlAlwaysOnTop);
 
   applyRemoteControlAlwaysOnTop(remoteControlWindow);
 
   return remoteControlAlwaysOnTop;
+});
+
+ipcMain.handle('remote-control-get-window-settings', (event) => {
+  if (!isTrustedRemoteControlContents(event.sender) && !isTrustedMainWindowContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to read remote control window settings.');
+  }
+
+  return buildRemoteControlWindowSettings();
+});
+
+ipcMain.handle('remote-control-get-pointer-inside', (event) => {
+  if (!isTrustedRemoteControlContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to read the remote control pointer state.');
+  }
+
+  if (onWayland) {
+    return null;
+  }
+
+  remoteControlPointerInside = isCursorInsideRemoteControlWindow();
+  return remoteControlPointerInside;
+});
+
+ipcMain.handle('remote-control-set-queue-expansion', (event, wantedHeight, options) => {
+  if (!isTrustedRemoteControlContents(event.sender)) {
+    throw new Error('Untrusted renderer attempted to resize the remote control window.');
+  }
+
+  return setRemoteControlQueueExpansion(
+    remoteControlWindow,
+    typeof wantedHeight === 'number' ? wantedHeight : null,
+    {
+      preview: options?.preview === true,
+      direction: options?.direction === 'up' || options?.direction === 'down' ? options.direction : null,
+    },
+  );
 });
 
 ipcMain.handle('remote-control-publish-snapshot', (event, snapshot) => {
@@ -5075,12 +8280,19 @@ ipcMain.handle('remote-control-publish-snapshot', (event, snapshot) => {
       ...(latestRemoteControlSnapshot && !Object.prototype.hasOwnProperty.call(snapshot, 'lyrics')
         ? { lyrics: latestRemoteControlSnapshot.lyrics }
         : {}),
+      // The queue, like the lyrics, is only sent when it changed.
+      ...(latestRemoteControlSnapshot && !Object.prototype.hasOwnProperty.call(snapshot, 'queue')
+        ? { queue: latestRemoteControlSnapshot.queue }
+        : {}),
       ...snapshot,
       mainWindowAlwaysOnTop,
     }
     : null;
   if (latestRemoteControlSnapshot) {
-    sendRemoteControlSnapshot(latestRemoteControlSnapshot);
+    // The remote keeps the queue it was last sent: forward it only when this publish carried it.
+    sendRemoteControlSnapshot(Object.prototype.hasOwnProperty.call(snapshot, 'queue')
+      ? latestRemoteControlSnapshot
+      : withoutRemoteControlQueue(latestRemoteControlSnapshot));
   }
   return true;
 });
@@ -5117,8 +8329,8 @@ ipcMain.handle('remote-control-send-command', (event, command) => {
       return false;
     }
 
-    if (mainWindow.isFullScreen()) {
-      mainWindow.setFullScreen(false);
+    if (isMainWindowFullscreen(mainWindow)) {
+      setMainWindowFullscreen(mainWindow, false);
     }
 
     if (mainWindow.isMaximized()) {
@@ -5172,14 +8384,6 @@ ipcMain.handle('video-export-choose-path', async (event, defaultName, extension,
   };
 });
 
-ipcMain.handle('video-export-get-main-window-source', async (event) => {
-  if (!isTrustedMainWindowContents(event.sender)) {
-    throw new Error('Untrusted renderer attempted to read the main window capture source.');
-  }
-
-  return getMainWindowCaptureSource();
-});
-
 ipcMain.handle('video-export-prepare-window', (event, size) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     throw new Error('Untrusted renderer attempted to resize the main window for export.');
@@ -5190,16 +8394,26 @@ ipcMain.handle('video-export-prepare-window', (event, size) => {
     return false;
   }
 
-  if (!videoExportWindowRestoreState) {
-    videoExportWindowRestoreState = {
-      bounds: mainWindow.getBounds(),
-      isMaximized: mainWindow.isMaximized(),
-      isFullScreen: mainWindow.isFullScreen(),
-    };
+  // The renderer sends its DPR at the moment of export; the mount-time report can be missing
+  // or stale, and sizing with the wrong DPR renders the content at the wrong physical size.
+  const reportedDpr = Number(size?.dpr);
+  if (Number.isFinite(reportedDpr) && reportedDpr > 0) {
+    mainWindow.__dpr = reportedDpr;
   }
 
-  if (mainWindow.isFullScreen()) {
-    mainWindow.setFullScreen(false);
+  if (!videoExportWindowRestoreState) {
+    videoExportWindowRestoreState = {
+      bounds: mainWindow.__transparentFullscreen === true
+        ? (mainWindow.__transparentFullscreenRestoreBounds || mainWindow.getBounds())
+        : mainWindow.getBounds(),
+      isMaximized: mainWindow.isMaximized(),
+      isFullScreen: isMainWindowFullscreen(mainWindow),
+    };
+    backgroundThrottling.refresh();
+  }
+
+  if (isMainWindowFullscreen(mainWindow)) {
+    setMainWindowFullscreen(mainWindow, false);
   }
 
   if (mainWindow.isMaximized()) {
@@ -5225,15 +8439,17 @@ ipcMain.handle('video-export-restore-window', (event) => {
 
   if (!mainWindow || mainWindow.isDestroyed() || !videoExportWindowRestoreState) {
     videoExportWindowRestoreState = null;
+    backgroundThrottling.refresh();
     return false;
   }
 
   const restoreState = videoExportWindowRestoreState;
   videoExportWindowRestoreState = null;
+  backgroundThrottling.refresh();
   mainWindow.setBounds(restoreState.bounds, true);
 
   if (restoreState.isFullScreen) {
-    mainWindow.setFullScreen(true);
+    setMainWindowFullscreen(mainWindow, true);
   } else if (restoreState.isMaximized) {
     mainWindow.maximize();
   }
@@ -5241,17 +8457,32 @@ ipcMain.handle('video-export-restore-window', (event) => {
   return true;
 });
 
-ipcMain.handle('video-export-write-file', async (event, filePath, data) => {
+// The export file is written chunk by chunk while recording (see videoExportFileWriter.cjs);
+// a whole-file write would need the entire video in memory and in a single IPC message.
+const assertTrustedVideoExportWriter = (event) => {
   if (!isTrustedMainWindowContents(event.sender)) {
     throw new Error('Untrusted renderer attempted to write a video export file.');
   }
+};
 
-  if (typeof filePath !== 'string' || !filePath) {
-    throw new Error('Missing video export path.');
-  }
+ipcMain.handle('video-export-open-file', (event, filePath) => {
+  assertTrustedVideoExportWriter(event);
+  return videoExportFileWriter.open(filePath);
+});
 
-  await fsp.writeFile(filePath, Buffer.from(data));
-  return true;
+ipcMain.handle('video-export-append-chunk', (event, sessionId, data) => {
+  assertTrustedVideoExportWriter(event);
+  return videoExportFileWriter.append(sessionId, data);
+});
+
+ipcMain.handle('video-export-finish-file', (event, sessionId) => {
+  assertTrustedVideoExportWriter(event);
+  return videoExportFileWriter.finish(sessionId);
+});
+
+ipcMain.handle('video-export-abort-file', (event, sessionId) => {
+  assertTrustedVideoExportWriter(event);
+  return videoExportFileWriter.abort(sessionId);
 });
 
 ipcMain.handle('debug-get-rendered-fonts', async (event, selector) => {
@@ -5285,70 +8516,41 @@ ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
 
     let dualTheme = null;
 
-    // Gemini 走原生 SDK，其余供应商（OpenAI / Claude / Grok / DeepSeek / Kimi / Qwen）
-    // 都提供 OpenAI 兼容的 /chat/completions，共用同一条链路；
-    // 具体地址与模型由设置页选预设时写进 OPENAI_API_URL / OPENAI_API_MODEL。
-    if (provider !== 'gemini') {
-      const adapter = getAiProviderAdapter(provider);
-      // 每家凭据独立存放，切换供应商不会互相冲掉；openai 回落到历史扁平键。
-      const credentials = pickProviderCredentials(
-        store.get(AI_PROVIDER_CREDENTIALS_SETTING_KEY),
-        provider,
-        {
-          apiKey: store.get('OPENAI_API_KEY'),
-          apiUrl: store.get('OPENAI_API_URL'),
-          apiModel: store.get('OPENAI_API_MODEL'),
-        },
-      );
-      const apiKey = credentials.apiKey;
-      const endpoint = resolveAdapterEndpoint(adapter, credentials.apiUrl);
-      const model = resolveAdapterModel(adapter, credentials.apiModel);
-      const temperature = resolveOpenAICompatibleTemperature(store.get('OPENAI_API_TEMPERATURE'));
+    if (provider === 'openai') {
       const systemPrompt = buildThemeSystemPrompt(true);
       const sourcePrompt = buildThemeSourcePrompt(snippet, isPureMusic, songTitle);
-
-      if (!apiKey) {
-        throw new Error(`${adapter.label} API key is not configured in settings`);
-      }
-
-      const response = await customFetch(endpoint, {
-        method: "POST",
-        headers: adapter.buildHeaders(apiKey),
-        body: JSON.stringify(adapter.buildRequestBody({
-          model,
-          systemPrompt,
-          sourcePrompt,
-          temperature,
-          jsonSchema: THEME_JSON_SCHEMA,
-          jsonSchemaName: THEME_JSON_SCHEMA_NAME,
-        })),
+      const content = await runAiJsonCompletion({
+        store: aiCredentials.settingsView,
+        task: 'theme',
+        systemPrompt,
+        sourcePrompt,
+        schema: THEME_JSON_SCHEMA,
+        schemaName: THEME_JSON_SCHEMA_NAME,
+        customFetch,
+        answerTokens: THEME_MAX_OUTPUT_TOKENS,
       });
 
-      if (!response.ok) {
-        throw new Error(await formatOpenAICompatibleError(response));
+      let jsonStr = content.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/^```(json)?\n/, '').replace(/\n```$/, '');
       }
+      dualTheme = sanitizeGeneratedDualTheme(JSON.parse(jsonStr));
 
-      const content = adapter.extractText(await response.json());
-      if (!content) throw new Error("Failed to generate theme JSON");
-
-      dualTheme = sanitizeGeneratedDualTheme(JSON.parse(stripJsonFence(content)));
-
-      // 主题卡片上标出实际用了哪家，混用多个供应商时才分得清结果来自谁。
-      const providerLabel = `${adapter.label} (Local)`;
+      const providerLabel = await aiProviderLabel(aiCredentials.settingsView);
       dualTheme.light.provider = providerLabel;
       dualTheme.dark.provider = providerLabel;
 
     } else {
-      const apiKey = store.get('GEMINI_API_KEY');
-      if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not configured in settings");
-      }
       const systemPrompt = buildThemeSystemPrompt(true);
       const sourcePrompt = buildThemeSourcePrompt(snippet, isPureMusic, songTitle);
-      dualTheme = sanitizeGeneratedDualTheme(await generateGeminiTheme({
-        apiKey,
+      // The key is read through the credential store's view (decrypted in the main process only);
+      // runGeminiThemeCompletion throws when it is not configured.
+      dualTheme = sanitizeGeneratedDualTheme(await runGeminiThemeCompletion({
+        store: aiCredentials.settingsView,
         systemPrompt,
         sourcePrompt,
+        responseSchema: getGeminiResponseSchema(),
+        answerTokens: THEME_MAX_OUTPUT_TOKENS,
         customFetch
       }));
 
@@ -5364,5 +8566,90 @@ ipcMain.handle('generate-theme', async (event, lyricsText, options = {}) => {
   } catch (e) {
     console.error(e);
     throw new Error(e instanceof Error ? e.message : String(e));
+  }
+});
+
+registerAiModelDiscovery({ ipcMain, aiCredentials, store, isTrustedMainWindowContents, fetchWithOptionalSystemProxy });
+
+// "Test connection" button in AI settings: sends "hello" using the values currently in the form
+// (not the saved ones, nothing is persisted) over the same fetch/proxy path as real AI requests.
+// Never throws: a failed connection is returned as a displayable result, and the key is not echoed.
+ipcMain.handle('ai-test-connection', async (event, payload) => {
+  if (!isTrustedMainWindowContents(event.sender)) {
+    return { ok: false, durationMs: 0, errorKind: 'invalid', error: 'Untrusted caller.' };
+  }
+  try {
+    const useSystemProxy = payload && typeof payload === 'object' && typeof payload.useSystemProxy === 'boolean'
+      ? payload.useSystemProxy
+      : (store.get('USE_SYSTEM_PROXY_FOR_AI') || false);
+    const customFetch = (url, options) => fetchWithOptionalSystemProxy(url, options, useSystemProxy);
+    // An empty key field means "use the saved key": the renderer never receives it to send back.
+    let testPayload = payload;
+    if (payload && typeof payload === 'object'
+      && (payload.apiKey === undefined || payload.apiKey === null || typeof payload.apiKey === 'string')) {
+      const resolved = aiCredentials.resolveTestApiKey(payload.provider, payload.apiKey, payload.apiUrl);
+      if (resolved.error) {
+        return { ok: false, durationMs: 0, errorKind: 'config', error: resolved.error };
+      }
+      testPayload = { ...payload, apiKey: resolved.apiKey };
+    }
+    return await runAiConnectionTest(testPayload, { customFetch });
+  } catch (e) {
+    console.error('[ai-test] failed:', e instanceof Error ? e.message : String(e));
+    return { ok: false, durationMs: 0, errorKind: 'network', error: 'Connection test failed unexpectedly.' };
+  }
+});
+
+// Word-segments the current song's lyric lines with whichever model the user configured. Shares
+// its prompt with the web handlers and with the client's copy-to-a-model-site path through
+// shared/lyricSegmentationPrompt.cjs, so all four routes ask for exactly the same thing.
+ipcMain.handle('segment-lyrics', async (event, lines) => {
+  // Held outside the try so the failure path can print what the model actually said. Without it a
+  // rejected response gives the user a stack trace and nothing to act on.
+  let rawResponse = null;
+  try {
+    const sourceLines = Array.isArray(lines) ? lines.map((line) => String(line == null ? '' : line)) : [];
+    if (sourceLines.length === 0) {
+      throw new Error('No lyric lines to segment');
+    }
+
+    const useSystemProxy = store.get('USE_SYSTEM_PROXY_FOR_AI') || false;
+    const customFetch = (url, options) => fetchWithOptionalSystemProxy(url, options, useSystemProxy);
+    console.log(`[segment-lyrics] segmenting ${sourceLines.length} lines`
+      + ` via ${store.get('AI_PROVIDER') || 'gemini'}${useSystemProxy ? ' (system proxy)' : ''}`);
+
+    rawResponse = await runAiJsonCompletion({
+      store: aiCredentials.settingsView,
+      // Splitting text at word boundaries has nothing to reason about, and a reasoning model left
+      // to its own devices spends the whole budget thinking and returns nothing. The segmentation
+      // task is what tells each provider's adapter to switch reasoning off (on Gemini, the zero
+      // thinking budget of SEGMENTATION_GEMINI_GENERATION_CONFIG).
+      task: 'segmentation',
+      systemPrompt: buildSegmentationSystemPrompt(),
+      sourcePrompt: buildSegmentationSourcePrompt(sourceLines),
+      schema: SEGMENTATION_JSON_SCHEMA,
+      schemaName: SEGMENTATION_SCHEMA_NAME,
+      // Gemini takes its own dialect; see the generation config's comment for the measurements.
+      // Sending neither the schema nor the zero thinking budget is what made this take 40s.
+      geminiSchema: SEGMENTATION_GEMINI_SCHEMA,
+      customFetch,
+      answerTokens: SEGMENTATION_MAX_OUTPUT_TOKENS,
+    });
+
+    const { boundaries, rejections } = parseSegmentationResponse(rawResponse, sourceLines);
+    if (rejections.length > 0) {
+      // Not fatal: those lines keep the default split. Logged because a model that mangles many
+      // lines is worth noticing, and the renderer only sees a count.
+      console.warn(`[segment-lyrics] ${rejections.length}/${sourceLines.length} lines rejected;`
+        + ` first: ${rejections[0]}`);
+    }
+    return boundaries;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[segment-lyrics] failed:', message);
+    if (rawResponse) {
+      console.error('[segment-lyrics] raw model response:', String(rawResponse).slice(0, 4000));
+    }
+    throw new Error(message);
   }
 });

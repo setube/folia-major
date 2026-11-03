@@ -37,12 +37,40 @@ export type CommandSurfaceMatchArgs = {
 
 export type CommandPaletteSurface = {
     /**
+     * How the palette dresses itself for this command. `overlay` is the full-screen panel;
+     * `inline` drops the backdrop, the match list and the pinned row and renders just the input,
+     * portalled into the place the command's own surface points at. Used where the palette stands
+     * in for a control that already had a home on screen.
+     */
+    presentation?: 'overlay' | 'inline';
+    /**
+     * How the overlay treats what is behind it. `blur` is the default frosted scrim.
+     *
+     * `clear` drops the blur and thins the scrim, for a surface whose controls change what is
+     * drawn behind the palette: with the default backdrop the poster wall or the card grid being
+     * tuned is the very thing the palette hides, so every slider is dragged blind. The panel turns
+     * near-opaque in exchange, because it no longer has a blurred plate to sit legibly on.
+     */
+    backdrop?: 'blur' | 'clear';
+    /**
+     * Opens the palette in its top overlay even while the player bar is on screen, instead of growing
+     * it out of the bar. For a surface that edits what sits just above the bar — the bottom subtitle —
+     * which the bar-grown panel would cover exactly where the change is meant to be seen.
+     *
+     * Only read when the palette opens straight into this surface (a button or shortcut that names
+     * the command). A palette already grown out of the bar keeps that shell when the surface is picked
+     * from its list: switching shells midway remounts the input and cannot animate either shell out.
+     */
+    keepsClearOfPlayerBar?: boolean;
+    /**
      * Lazily imported so the registry stays a pure-TS module: pulling react-window,
      * react-i18next or the eager visualizer glob into the module graph would break the
      * node-environment registry tests.
+     *
+     * Optional, because an `inline` surface has no body — its input row is the whole UI.
      */
-    load: () => Promise<{ default: React.ComponentType<any> }>;
-    mapProps: (args: CommandSurfaceRenderArgs) => Record<string, unknown>;
+    load?: () => Promise<{ default: React.ComponentType<any> }>;
+    mapProps?: (args: CommandSurfaceRenderArgs) => Record<string, unknown>;
     /** Input element overrides, e.g. the volume command's numeric input. */
     inputProps?: (args: CommandSurfaceRenderArgs) => React.InputHTMLAttributes<HTMLInputElement>;
     /** Replaces the default match list source, e.g. the queue command's songs. */

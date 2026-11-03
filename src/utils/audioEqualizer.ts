@@ -81,10 +81,23 @@ const clampGain = (value: unknown): number => {
     return Math.min(AUDIO_EQUALIZER_MAX_GAIN_DB, Math.max(AUDIO_EQUALIZER_MIN_GAIN_DB, parsed));
 };
 
-const normalizeGains = (value: unknown): number[] => {
+/** Ten gains from untrusted input: a band left out or not a finite number reads 0, each one clamped to ±12 dB. */
+export const normalizeAudioEqualizerGains = (value: unknown): number[] => {
     const rawGains = Array.isArray(value) ? value : [];
     return AUDIO_EQUALIZER_BANDS.map((_, index) => clampGain(rawGains[index]));
 };
+
+/** The filter shape of the band at `index`: the first a low shelf, the last a high shelf, the rest peaking. */
+export type AudioEqualizerBandShape = 'lowshelf' | 'peaking' | 'highshelf';
+
+/** The shape of one band, shared by the Web Audio chain and the Folium equalizer snapshot. */
+export const audioEqualizerBandShape = (index: number): AudioEqualizerBandShape => (
+    index === 0
+        ? 'lowshelf'
+        : index === AUDIO_EQUALIZER_BANDS.length - 1
+            ? 'highshelf'
+            : 'peaking'
+);
 
 // Built-in presets that used to exist; their persisted settings migrate into a custom slot.
 const RETIRED_PRESET_IDS = ['tape', 'vinyl'];
@@ -99,7 +112,7 @@ type LegacyCustomFields = {
 const normalizeCustomSlot = (value: unknown): AudioEqualizerCustomSlot => {
     const candidate = (value && typeof value === 'object' ? value : {}) as Partial<AudioEqualizerCustomSlot>;
     return {
-        gains: normalizeGains(candidate.gains),
+        gains: normalizeAudioEqualizerGains(candidate.gains),
         effects: normalizeAudioEffects(candidate.effects),
     };
 };
@@ -174,15 +187,25 @@ export const resolveAudioEqualizerSettings = (value: unknown): AudioEqualizerSet
     }
 
     const candidate = value as Partial<AudioEqualizerSettings> & LegacyCustomFields;
-    const gains = normalizeGains(candidate.gains);
+    const gains = normalizeAudioEqualizerGains(candidate.gains);
     const hasStoredEffects = Boolean(candidate.effects) && typeof candidate.effects === 'object';
     const storedEffects = hasStoredEffects ? normalizeAudioEffects(candidate.effects) : createNeutralAudioEffects();
     const preset = resolveModeId(candidate.preset, gains, storedEffects);
-    // Settings persisted before the effect chain existed only carried EQ gains, so a still-supported
-    // preset id keeps its intended character instead of collapsing to a neutral chain.
-    const effects = !hasStoredEffects && isAudioSoundPresetId(candidate.preset)
-        ? { ...AUDIO_SOUND_PRESETS[candidate.preset].effects }
-        : storedEffects;
+    // Settings written before the effect chain existed keep a NEUTRAL chain, even when the preset
+    // id they carry is one that now has effects attached to it.
+    //
+    // Upstream adopts the preset's effects here, on the reading that the id names a character and
+    // the character now includes them. The stored value is a record of what someone chose, though,
+    // and what they chose in that build was a tone curve: "Lo-Fi" meant a shape, not vinyl crackle
+    // and bit crush. Honouring the name changes what their music sounds like during an update,
+    // with no notice and no consent - reported here as "severe noise" by someone who never asked
+    // for any.
+    //
+    // The two mistakes are not the same size. Adding an effect costs the listener noticing it,
+    // finding the panel and switching it off; withholding one costs a click on a preset that is
+    // still right there, still named the same, and still selected - resolveModeId keeps the id,
+    // so re-picking it applies the full modern character deliberately.
+    const effects = storedEffects;
 
     return {
         enabled: candidate.enabled === true,
@@ -192,6 +215,52 @@ export const resolveAudioEqualizerSettings = (value: unknown): AudioEqualizerSet
         customSlots: resolveCustomSlots(candidate, gains, effects, preset),
     };
 };
+
+/**
+ * The settings a built-in sound or a saved custom slot leaves: its curve and its effects, under its id,
+ * and processing on unless `keepEnabled` (then the switch stays as it is). Writes no custom slot. Null
+ * when there is no such sound. The store's action and the Folium host layer's check of whether a write
+ * changes anything both read it, so the two never disagree.
+ */
+export const planAudioSoundPreset = (
+    settings: AudioEqualizerSettings,
+    modeId: AudioEqualizerModeId,
+    { keepEnabled = false }: { keepEnabled?: boolean } = {},
+): AudioEqualizerSettings | null => {
+    const source = isAudioEqualizerCustomSlotId(modeId)
+        ? settings.customSlots[getAudioEqualizerCustomSlotIndex(modeId)]
+        : isAudioSoundPresetId(modeId)
+            ? AUDIO_SOUND_PRESETS[modeId]
+            : undefined;
+    if (!source) {
+        return null;
+    }
+
+    return resolveAudioEqualizerSettings({
+        ...settings,
+        enabled: keepEnabled ? settings.enabled : true,
+        preset: modeId,
+        gains: [...source.gains],
+        effects: { ...source.effects },
+    });
+};
+
+const areGainsEqual = (left: readonly number[], right: readonly number[]) => (
+    left.length === right.length && left.every((gain, index) => gain === right[index])
+);
+
+/** Whether two settings are the same in every field: the switch, the mode, the gains, the effects and both custom slots. */
+export const areAudioEqualizerSettingsEqual = (left: AudioEqualizerSettings, right: AudioEqualizerSettings): boolean => (
+    left.enabled === right.enabled
+    && left.preset === right.preset
+    && areGainsEqual(left.gains, right.gains)
+    && areAudioEffectsEqual(left.effects, right.effects)
+    && left.customSlots.length === right.customSlots.length
+    && left.customSlots.every((slot, index) => (
+        areGainsEqual(slot.gains, right.customSlots[index].gains)
+        && areAudioEffectsEqual(slot.effects, right.customSlots[index].effects)
+    ))
+);
 
 export const readStoredAudioEqualizerSettings = (): AudioEqualizerSettings => {
     if (typeof window === 'undefined') {

@@ -8,6 +8,7 @@ import {
     writeCoverAsset,
     type BinaryAssetWriteResult,
 } from './binaryAssetStore';
+import { lyricProxyWebUrl } from './lyricProxy';
 
 interface StoredCoverDescriptor extends BinaryAssetWriteResult { }
 
@@ -27,7 +28,7 @@ const buildCoverRequestUrl = (coverUrl: string): string => {
         if (hostname === 'y.gtimg.cn'
             || hostname === 'kugou.com' || hostname.endsWith('.kugou.com')
             || hostname === 'kgimg.com' || hostname.endsWith('.kgimg.com')) {
-            return `/api/lyric-proxy?url=${encodeURIComponent(coverUrl)}`;
+            return lyricProxyWebUrl(coverUrl);
         }
     } catch {
         return coverUrl;
@@ -35,7 +36,8 @@ const buildCoverRequestUrl = (coverUrl: string): string => {
     return coverUrl;
 };
 
-const fetchCoverBlob = async (coverUrl: string): Promise<Blob> => {
+// Also used where a remote cover's bytes are wanted once (a local collection cover taken from a song).
+export const fetchCoverBlob = async (coverUrl: string): Promise<Blob> => {
     const response = await fetch(buildCoverRequestUrl(coverUrl), { mode: 'cors' });
     if (response.ok === false) throw new Error(`Cover request failed: ${response.status}`);
     return await response.blob();
@@ -64,6 +66,19 @@ export async function getCachedCoverUrl(cacheKey: string): Promise<string | null
         return null;
     }
     return createSafeObjectUrl(cachedCover);
+}
+
+/**
+ * Whether a cover is already stored, without minting an object URL to find out.
+ *
+ * `getCachedCoverUrl` is the wrong question to ask when nothing is going to be displayed: it reads
+ * the bytes and hands back a URL that a caller checking for mere existence then has to remember to
+ * revoke. Reads the descriptor only, and accepts the legacy raw-Blob shape the same way the reader
+ * above does, so a cover written before the asset store existed still counts as cached.
+ */
+export async function hasCachedCover(cacheKey: string): Promise<boolean> {
+    const stored = await getFromCache<unknown>(cacheKey);
+    return isBlob(stored) || isStoredCoverDescriptor(stored);
 }
 
 export async function loadCachedOrFetchCover(cacheKey: string, coverUrl?: string | null): Promise<string | null> {

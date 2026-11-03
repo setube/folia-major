@@ -51,7 +51,9 @@ describe('Visual Settings Import and Export', () => {
         hidePlayerTranslationSubtitle: true,
         showSubtitleTranslation: false,
         subtitleContentMode: 'romanization' as const,
+        subtitleOverlayLayout: 'current+next+translation' as const,
         subtitleOverlayBackground: true,
+        subtitleUpcomingLyricsBlur: false,
         showHarmonySubtitle: false,
         harmonySubtitleBackground: true,
         lyricsFontStyle: 'sans',
@@ -177,6 +179,7 @@ describe('Visual Settings Import and Export', () => {
         monetTuning: {
             keywordColoringEnabled: false,
             showDescription: false,
+            showAudioVisualization: false,
             audioStyle: 'line' as const,
             fontScale: 1.1,
             portraitSource: 'cover' as const,
@@ -203,7 +206,9 @@ describe('Visual Settings Import and Export', () => {
         expect(decoded.hidePlayerTranslationSubtitle).toBe(true);
         expect(decoded.showSubtitleTranslation).toBe(false);
         expect(decoded.subtitleContentMode).toBe('romanization');
+        expect(decoded.subtitleOverlayLayout).toBe('current+next+translation');
         expect(decoded.subtitleOverlayBackground).toBe(true);
+        expect(decoded.subtitleUpcomingLyricsBlur).toBe(false);
         expect(decoded.showHarmonySubtitle).toBe(false);
         expect(decoded.harmonySubtitleBackground).toBe(true);
         expect(decoded.lyricsFontWeight).toBe(650);
@@ -230,6 +235,7 @@ describe('Visual Settings Import and Export', () => {
         expect(decoded.latentBackgroundTuning).toEqual(sampleConfig.latentBackgroundTuning);
         expect(decoded.monetTuning?.portraitOffsetX).toBe(-120);
         expect(decoded.monetTuning?.portraitStyle).toBe('square');
+        expect(decoded.monetTuning?.showAudioVisualization).toBe(false);
         expect(decoded.sonnetTuning?.enableTransitions).toBe(true);
         expect(decoded.sonnetTuning?.outerFrameMode).toBe('frame');
         expect(decoded.sonnetTuning?.postProcessLensDistortion)
@@ -259,7 +265,9 @@ describe('Visual Settings Import and Export', () => {
         expect(decoded.hidePlayerTranslationSubtitle).toBe(true);
         expect(decoded.showSubtitleTranslation).toBe(false);
         expect(decoded.subtitleContentMode).toBe('romanization');
+        expect(decoded.subtitleOverlayLayout).toBe('current+next+translation');
         expect(decoded.subtitleOverlayBackground).toBe(true);
+        expect(decoded.subtitleUpcomingLyricsBlur).toBe(false);
         expect(decoded.showHarmonySubtitle).toBe(false);
         expect(decoded.harmonySubtitleBackground).toBe(true);
         expect(decoded.lyricsFontWeight).toBe(650);
@@ -366,10 +374,15 @@ describe('Visual Settings Import and Export', () => {
             ...DEFAULT_TEMPERA_TUNING,
             cameraIntensity: 1.4,
             glyphMotion: 0.6,
+            wholeLineLyrics: true,
             glyphSettleStretch: 0.85,
+            depthOfField: 1.6,
+            depthPan: 0.3,
+            glyphDepth: 0,
             colorMode: 'gradient' as const,
             showBlocks: false,
             showDecor: false,
+            showCornerMarks: false,
             textInversion: false,
             layerImages: [{
                 id: 'img-1',
@@ -393,7 +406,9 @@ describe('Visual Settings Import and Export', () => {
         };
         const decoded = decompressConfig(compressConfig({ temperaTuning }));
 
-        expect(decoded.temperaTuning).toEqual(temperaTuning);
+        // 旧的单独短码字段不带 render（分辨率与抗锯齿的覆盖随 visualizerTunings 那一包走），导入时本机的保留。
+        const { render: _render, ...carried } = temperaTuning;
+        expect(decoded.temperaTuning).toEqual(carried);
     });
 
     it('gracefully throws error on invalid configuration input strings', () => {

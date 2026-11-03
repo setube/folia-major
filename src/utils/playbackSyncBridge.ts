@@ -1,11 +1,10 @@
-import { PlayerState, type LyricData, type PlaybackContext, type PlayerLoopMode, type SongResult, type StagePlayerSnapshot } from '../types';
-import type { PlayerChromeVisibilityMode, RemoteControlSnapshot } from '../types/remoteControl';
+import { PlayerState, type LyricData, type PlaybackContext, type PlayerLoopMode, type SongResult, type StagePlayerSnapshot, type SubtitleContentMode } from '../types';
+import type { PlayerChromeVisibilityMode, RemoteControlSnapshot, RemoteTrackTransition } from '../types/remoteControl';
 import type { VideoExportState } from '../types/videoExport';
-import { wrapsAroundQueue } from '../components/app/playback/shuffleOrder';
-import { getPlaybackSongKey, isLocalPlaybackSong, resolveNavidromePlaybackCarrier } from './appPlaybackGuards';
+import { getPlaybackSongKey, isLocalPlaybackSong } from './appPlaybackGuards';
 import { buildStagePlayerSnapshot } from './stagePlayerSnapshot';
-import { getProviderSongMetadata } from '../services/onlineMusic/songMetadata';
-import { resolvePlaybackNeighbors } from './playbackNeighbors';
+import { queueIndexOf, resolvePlaybackNeighbors } from './playbackNeighbors';
+import { resolvePlaybackSongArtist, resolvePlaybackSongCoverUrl } from './playbackSongMeta';
 
 // src/utils/playbackSyncBridge.ts
 // Derives shared playback publisher models before adapting them to Electron-facing protocols.
@@ -78,6 +77,8 @@ export interface RemoteControlSnapshotOptions {
     lyrics?: LyricData | null;
     includeLyrics?: boolean;
     playerChromeVisibilityMode: PlayerChromeVisibilityMode;
+    subtitleContentMode: SubtitleContentMode;
+    trackTransition?: RemoteTrackTransition | null;
 }
 
 export interface DiscordPresenceSnapshot {
@@ -95,26 +96,12 @@ const clampFiniteNumber = (value: number, fallback = 0): number => {
     return Number.isFinite(value) ? value : fallback;
 };
 
-const getPlaybackSyncBridgeArtist = (song: SongResult | null): string | null => {
-    if (!song) {
-        return null;
-    }
-
-    const primaryArtists = getProviderSongMetadata(song).artists.map(artist => artist.name).filter(Boolean);
-    if (primaryArtists.length > 0) {
-        return primaryArtists.join(', ');
-    }
-
-    const navidromeSong = resolveNavidromePlaybackCarrier(song);
-    return navidromeSong?.artists?.map(artist => artist.name).filter(Boolean).join(', ') || null;
-};
-
 const getPlaybackSyncBridgeCoverUrl = (
     song: SongResult | null,
     coverUrl: string | null,
     cachedCoverUrl: string | null | undefined,
 ): string | null => {
-    return coverUrl || cachedCoverUrl || getProviderSongMetadata(song).coverUrl || null;
+    return coverUrl || cachedCoverUrl || resolvePlaybackSongCoverUrl(song);
 };
 
 // Builds the single playback model used by Electron publishers with protocol-specific adapters.
@@ -147,17 +134,15 @@ export const buildPlaybackSyncBridgeModel = ({
     sampledAt = Date.now(),
 }: BuildPlaybackSyncBridgeModelArgs): PlaybackSyncBridgeModel => {
     const hasTrack = !isStageActive && Boolean(currentSong);
-    const currentSongKey = currentSong ? getPlaybackSongKey(currentSong) : null;
-    const currentIndex = currentSongKey
-        ? playQueue.findIndex(song => getPlaybackSongKey(song) === currentSongKey)
-        : -1;
-    const hasQueueNeighbors = playQueue.length > 1;
-    const canGoPrevious = hasTrack && (currentIndex > 0 || (wrapsAroundQueue(effectiveLoopMode) && hasQueueNeighbors));
-    const canGoNext = hasTrack && (
-        isFmMode ||
-        currentIndex >= 0 && currentIndex < playQueue.length - 1 ||
-        (wrapsAroundQueue(effectiveLoopMode) && hasQueueNeighbors)
-    );
+    const currentIndex = queueIndexOf(playQueue, currentSong);
+    // The same answer as the main window's arrows: enabled exactly when the press does something.
+    const neighbors = resolvePlaybackNeighbors({
+        playQueue,
+        currentSong,
+        loopMode: effectiveLoopMode,
+        isFmMode,
+        isStageActive,
+    });
     const safeCurrentTimeSec = Math.max(0, clampFiniteNumber(currentTimeSec));
     const safeDurationSec = Math.max(0, clampFiniteNumber(durationSec));
 
@@ -167,7 +152,7 @@ export const buildPlaybackSyncBridgeModel = ({
         playQueue,
         hasTrack,
         title: currentSong?.name ?? null,
-        artist: getPlaybackSyncBridgeArtist(currentSong),
+        artist: resolvePlaybackSongArtist(currentSong),
         coverUrl: getPlaybackSyncBridgeCoverUrl(currentSong, coverUrl, cachedCoverUrl),
         currentIndex,
         currentTimeSec: safeCurrentTimeSec,
@@ -177,8 +162,8 @@ export const buildPlaybackSyncBridgeModel = ({
         playerState,
         loopMode: effectiveLoopMode,
         isFmMode,
-        canGoPrevious,
-        canGoNext,
+        canGoPrevious: neighbors.prev.canGo,
+        canGoNext: neighbors.next.canGo,
         effectiveLoopMode,
         controlsDisabled: controlsDisabled || !hasTrack,
         isStageActive,
@@ -207,10 +192,15 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
         loopMode: model.loopMode,
         isFmMode: model.isFmMode,
         isStageActive: model.isStageActive,
+        // 遥控窗口要靠邻居的艺术家与封面预读下一首
+        withMetadata: true,
     });
 
     return {
     hasTrack: model.hasTrack,
+    // 没有可控曲目时（舞台播放）与 prev/nextTrackKey 保持一致地置空，
+    // 否则占位面会被 key 到一首歌上，之后真正播这首时节点被复用、动画不触发
+    trackKey: model.hasTrack && model.currentSong ? getPlaybackSongKey(model.currentSong) : null,
     title: model.title,
     artist: model.artist,
     coverUrl: model.coverUrl,
@@ -220,8 +210,15 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     loopMode: model.loopMode,
     canGoPrevious: model.canGoPrevious,
     canGoNext: model.canGoNext,
+    prevTrackKey: neighbors.prev.key,
     prevTrackTitle: neighbors.prev.title,
+    prevTrackArtist: neighbors.prev.artist,
+    prevTrackCoverUrl: neighbors.prev.coverUrl,
+    nextTrackKey: neighbors.next.key,
     nextTrackTitle: neighbors.next.title,
+    nextTrackArtist: neighbors.next.artist,
+    nextTrackCoverUrl: neighbors.next.coverUrl,
+    trackTransition: options.trackTransition ?? null,
     controlsDisabled: model.controlsDisabled,
     isStageActive: model.isStageActive,
     transparentModeEnabled: model.transparentModeEnabled,
@@ -234,6 +231,7 @@ export const buildRemoteControlSnapshotFromPlaybackSyncBridge = (
     isDaylight: model.isDaylight,
     ...(options.includeLyrics ? { lyrics: options.lyrics ?? null } : {}),
     lyricOffsetMs: model.lyricOffsetMs,
+    subtitleContentMode: options.subtitleContentMode,
     isLiked: model.isLiked,
     updatedAt: model.sampledAt,
     mainWindowWidth: model.mainWindowWidth,

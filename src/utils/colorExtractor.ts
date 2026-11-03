@@ -8,7 +8,11 @@ interface RGB {
     b: number;
 }
 
-const loadImagePixels = (imageUrl: string): Promise<Uint8ClampedArray | null> => (
+/**
+ * 把图片缩到 50×50 读出像素（crossOrigin 匿名请求）。图片加载失败、没有 CORS 头、画布被污染（读像素抛
+ * SecurityError）时都返回 null。silent：失败时不打 warn（墙上一批头像取色时用，失败只是回退）。
+ */
+export const loadImagePixels = (imageUrl: string, { silent = false }: { silent?: boolean } = {}): Promise<Uint8ClampedArray | null> => (
     new Promise(resolve => {
         const img = new Image();
         img.crossOrigin = "Anonymous";
@@ -27,13 +31,18 @@ const loadImagePixels = (imageUrl: string): Promise<Uint8ClampedArray | null> =>
             canvas.width = width;
             canvas.height = height;
 
-            ctx.drawImage(img, 0, 0, width, height);
-
-            resolve(ctx.getImageData(0, 0, width, height).data);
+            try {
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(ctx.getImageData(0, 0, width, height).data);
+            } catch (error) {
+                // 画布被跨源图片污染时 getImageData 抛错；不吞掉的话这个 Promise 永远不 resolve。
+                if (!silent) console.warn("Failed to read image pixels for color extraction", error);
+                resolve(null);
+            }
         };
 
         img.onerror = (e) => {
-            console.warn("Failed to load image for color extraction", e);
+            if (!silent) console.warn("Failed to load image for color extraction", e);
             resolve(null);
         };
         img.src = imageUrl;

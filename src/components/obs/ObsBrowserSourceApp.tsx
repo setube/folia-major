@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMotionValue } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import VisualizerRenderer from '../visualizer/VisualizerRenderer';
+import { NO_LYRIC_LINES } from '../../utils/lyrics/noLyricLines';
 import { PlayerState } from '../../types';
 import type { ObsBrowserSourceAudio, ObsBrowserSourceClock, ObsBrowserSourceConfig } from '../../types/obsBrowserSource';
 import { findLatestActiveLineIndex } from '../../utils/appPlaybackHelpers';
@@ -28,6 +29,8 @@ const ObsBrowserSourceApp: React.FC = () => {
     const [connected, setConnected] = useState(false);
     const [currentLineIndex, setCurrentLineIndex] = useState(-1);
     const [playbackState, setPlaybackState] = useState<PlayerState>(PlayerState.IDLE);
+    // The song's length rides the clock, not the config, so it does not re-sign the config.
+    const [duration, setDuration] = useState(0);
     const [obsScale, setObsScale] = useState(1);
     const [obsDimensions, setObsDimensions] = useState({ width: '100vw', height: '100vh' });
     const currentLineIndexRef = useRef(-1);
@@ -127,6 +130,8 @@ const ObsBrowserSourceApp: React.FC = () => {
             setPlaybackState(prev => (
                 prev === nextClock.playerState ? prev : nextClock.playerState
             ));
+            // JSON turns an unknown length (NaN, Infinity) into null.
+            setDuration(Number.isFinite(nextClock.duration) ? nextClock.duration : 0);
         });
         eventSource.addEventListener('audio', event => {
             const nextAudio = JSON.parse((event as MessageEvent).data) as ObsBrowserSourceAudio;
@@ -188,8 +193,9 @@ const ObsBrowserSourceApp: React.FC = () => {
                 mode={config.visualizerMode}
                 visualizerTunings={config.visualizerTunings}
                 currentTime={currentTime}
+                duration={duration}
                 currentLineIndex={currentLineIndex}
-                lines={config.lyrics?.lines ?? []}
+                lines={config.lyrics?.lines ?? NO_LYRIC_LINES}
                 theme={config.theme}
                 subtitleTheme={config.subtitleTheme}
                 isDaylight={config.isDaylight}
@@ -209,12 +215,14 @@ const ObsBrowserSourceApp: React.FC = () => {
                 subtitleFontScale={config.subtitleFontScale}
                 subtitleOverlayOpacity={config.subtitleOverlayOpacity}
                 subtitleOverlayBackground={config.subtitleOverlayBackground ?? true}
+                subtitleUpcomingLyricsBlur={config.subtitleUpcomingLyricsBlur ?? true}
                 showHarmonySubtitle={config.showHarmonySubtitle ?? true}
                 harmonySubtitleBackground={config.harmonySubtitleBackground ?? true}
                 isPlayerChromeHidden={true}
                 hideTranslationSubtitle={config.hideTranslationSubtitle}
                 showSubtitleTranslation={config.showSubtitleTranslation ?? true}
                 subtitleContentMode={config.subtitleContentMode}
+                subtitleOverlayLayout={config.subtitleOverlayLayout}
                 cappellaCustomEmojiImages={config.cappellaCustomEmojiImages}
                 cappellaCustomAvatarImages={config.cappellaCustomAvatarImages}
                 monetPortraitImage={config.monetPortraitImage}

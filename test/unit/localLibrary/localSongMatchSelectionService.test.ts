@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLocalSongMatchSelection } from '@/services/localSongMatchSelectionService';
+import { applyLocalSongMatchSelection, resolveLyricMatchMetadataSelection, setLocalSongPureMusicMark } from '@/services/localSongMatchSelectionService';
 import type { OnlineMetadataCandidate } from '@/services/onlineMetadataSearchService';
 
 // test/unit/localLibrary/localSongMatchSelectionService.test.ts
@@ -104,6 +104,70 @@ describe('applyLocalSongMatchSelection', () => {
         });
     });
 
+    it('marks a song as instrumental through the lyrics-only path, leaving metadata and cover alone', async () => {
+        await setLocalSongPureMusicMark('song-1', true);
+
+        expect(mocks.restoreImportedMetadata).not.toHaveBeenCalled();
+        expect(mocks.applyMatchedMetadata).toHaveBeenCalledOnce();
+        expect(mocks.applyMatchedMetadata).toHaveBeenCalledWith('song-1', {}, {
+            lyricsOnly: true,
+            songPatch: {
+                markedPureMusic: true,
+                matchedIsPureMusic: true,
+                matchedLyrics: undefined,
+                matchedLyricsSongId: undefined,
+                matchedLyricsSource: undefined,
+                matchedLyricsProviderPlatform: undefined,
+                lyricsSource: 'online',
+                hasManualLyricSelection: true,
+            },
+        });
+        expect(mocks.cacheLocalSongOnlineCover).not.toHaveBeenCalled();
+        expect(mocks.removeCachedCover).not.toHaveBeenCalled();
+    });
+
+    it('unmarking returns the song to automatic lyric matching', async () => {
+        await setLocalSongPureMusicMark('song-1', false);
+
+        expect(mocks.applyMatchedMetadata).toHaveBeenCalledWith('song-1', {}, {
+            lyricsOnly: true,
+            songPatch: {
+                markedPureMusic: undefined,
+                matchedIsPureMusic: undefined,
+                lyricsSource: undefined,
+                hasManualLyricSelection: false,
+            },
+        });
+    });
+
+    it('a manual online lyric pick clears the instrumental mark', async () => {
+        await applyLocalSongMatchSelection({
+            songId: 'song-1',
+            metadata: 'keep',
+            cover: 'keep',
+            lyrics: 'online',
+            onlineLyrics: { lyrics: { lines: [], isWordByWord: false }, songId: 42, source: 'netease', isPureMusic: false },
+        });
+
+        const [, , options] = mocks.applyMatchedMetadata.mock.calls[0];
+        expect(options.songPatch).toHaveProperty('markedPureMusic', undefined);
+        expect(options.songPatch).toMatchObject({ lyricsSource: 'online', matchedLyricsSongId: 42, matchedIsPureMusic: false });
+    });
+
+    it('an instrumental result picked without lyric lines is saved as the mark', async () => {
+        const applied = await applyLocalSongMatchSelection({
+            songId: 'song-1',
+            metadata: 'keep',
+            cover: 'keep',
+            lyrics: 'online',
+            setPureMusicMark: true,
+        });
+
+        expect(applied.lyricsApplied).toBe(true);
+        const [, , options] = mocks.applyMatchedMetadata.mock.calls[0];
+        expect(options.songPatch).toMatchObject({ markedPureMusic: true, matchedIsPureMusic: true, lyricsSource: 'online' });
+    });
+
     it('restores imported metadata and lyric selection in one catalog transaction', async () => {
         await applyLocalSongMatchSelection({
             songId: 'song-1',
@@ -165,5 +229,50 @@ describe('applyLocalSongMatchSelection', () => {
             lyricsApplied: false,
             partialLyricsFailure: true,
         });
+    });
+
+    it('writes only lyrics for an AMLL selection, keeping online metadata and the cached cover', async () => {
+        // AMLL 搜索结果：artists 是同一歌手的别名，没有封面，专辑 ID 是假的
+        const amllCandidate: OnlineMetadataCandidate = {
+            ...candidate,
+            source: 'netease',
+            songId: 186001,
+            artists: [{ id: 0, name: '周杰伦' }, { id: 1, name: 'Jay Chou' }, { id: 2, name: '周杰倫' }],
+            album: { id: 0, name: 'Album' },
+            coverUrl: undefined,
+        };
+        const selection = resolveLyricMatchMetadataSelection('amll', amllCandidate, {
+            useOnlineMetadata: true,
+            useOnlineCover: true,
+        });
+        expect(selection).toEqual({ candidate: undefined, metadata: 'keep', cover: 'keep' });
+
+        const lyrics = { lines: [], isWordByWord: true };
+        await applyLocalSongMatchSelection({
+            songId: 'song-1',
+            ...selection,
+            lyrics: 'online',
+            onlineLyrics: { lyrics, songId: 186001, source: 'amll', providerPlatform: 'ncm', isPureMusic: false },
+        });
+
+        expect(mocks.applyMatchedMetadata).toHaveBeenCalledTimes(1);
+        const [songId, metadata, options] = mocks.applyMatchedMetadata.mock.calls[0];
+        expect(songId).toBe('song-1');
+        // 没有 source 就不会改 onlineMetadata，lyricsOnly 不会改歌手 / 专辑实体
+        expect(metadata).toEqual({});
+        expect(options.lyricsOnly).toBe(true);
+        expect(options.songPatch).not.toHaveProperty('useOnlineCover');
+        expect(options.songPatch).toMatchObject({ matchedLyrics: lyrics, matchedLyricsSource: 'amll', lyricsSource: 'online' });
+        expect(mocks.removeCachedCover).not.toHaveBeenCalled();
+        expect(mocks.cacheLocalSongOnlineCover).not.toHaveBeenCalled();
+    });
+
+    it('keeps the existing metadata and cover choices for sources that provide metadata', () => {
+        expect(resolveLyricMatchMetadataSelection('qq', candidate, { useOnlineMetadata: true, useOnlineCover: true }))
+            .toEqual({ candidate, metadata: 'online', cover: 'online' });
+        expect(resolveLyricMatchMetadataSelection('netease', candidate, { useOnlineMetadata: false, useOnlineCover: false }))
+            .toEqual({ candidate, metadata: 'imported', cover: 'embedded' });
+        expect(resolveLyricMatchMetadataSelection('kugou', { ...candidate, coverUrl: undefined }, { useOnlineMetadata: true, useOnlineCover: true }))
+            .toMatchObject({ metadata: 'online', cover: 'embedded' });
     });
 });

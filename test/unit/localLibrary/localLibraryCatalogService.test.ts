@@ -132,6 +132,62 @@ describe('localLibraryCatalogService', () => {
         ]);
     });
 
+    it('drops an automatic match write-back once the song has been marked as instrumental', async () => {
+        await assignImportedSongs([song('marked')]);
+        // 自动匹配开始时拿到的旧快照；匹配途中用户标记了纯音乐。
+        const stale = { ...(await appDatabase.local_music.get('marked'))!, markedPureMusic: undefined };
+        await applyMatchedMetadata('marked', {}, {
+            lyricsOnly: true,
+            songPatch: { markedPureMusic: true, matchedIsPureMusic: true, lyricsSource: 'online', hasManualLyricSelection: true },
+        });
+        const assignmentBefore = await appDatabase.local_library_assignments.get('marked');
+
+        await applyMatchedMetadata('marked', {
+            source: 'netease',
+            songId: 5,
+            title: 'Auto Title',
+            artists: [{ id: 5, name: 'Auto Artist' }],
+            album: { id: 6, name: 'Auto Album' },
+        }, {
+            songPatch: { ...stale, matchedLyrics: { lines: [], isWordByWord: false }, matchedIsPureMusic: false },
+            skipIfMarkedPureMusic: true,
+        });
+
+        const stored = await appDatabase.local_music.get('marked');
+        expect(stored).toMatchObject({ markedPureMusic: true, matchedIsPureMusic: true, lyricsSource: 'online', hasManualLyricSelection: true });
+        expect(stored?.matchedLyrics).toBeUndefined();
+        expect(stored?.onlineMetadata).toBeUndefined();
+        expect(await appDatabase.local_library_assignments.get('marked')).toEqual(assignmentBefore);
+    });
+
+    it('leaves online metadata, cover choice and artist assignments untouched for a lyrics-only patch without metadata', async () => {
+        await assignImportedSongs([song('lyrics-only')]);
+        await applyMatchedMetadata('lyrics-only', {
+            source: 'netease',
+            songId: 1,
+            artists: [{ id: 1, name: 'Online Artist' }],
+            album: { id: 10, name: 'Online Album' },
+            coverUrl: 'https://example.com/cover.jpg',
+        }, { songPatch: { useOnlineCover: true } });
+        const before = await appDatabase.local_library_assignments.get('lyrics-only');
+
+        // AMLL 歌词匹配走的就是这条路径（见 resolveLyricMatchMetadataSelection）
+        await applyMatchedMetadata('lyrics-only', {}, {
+            lyricsOnly: true,
+            songPatch: { matchedLyricsSource: 'amll', lyricsSource: 'online' },
+        });
+
+        const stored = await appDatabase.local_music.get('lyrics-only');
+        expect(stored?.onlineMetadata).toMatchObject({
+            songId: 1,
+            artists: [{ id: 1, name: 'Online Artist' }],
+            coverUrl: 'https://example.com/cover.jpg',
+        });
+        expect(stored?.useOnlineCover).toBe(true);
+        expect(stored?.matchedLyricsSource).toBe('amll');
+        expect(await appDatabase.local_library_assignments.get('lyrics-only')).toEqual(before);
+    });
+
     it('does not overwrite matched assignments during a rescan import update', async () => {
         await assignImportedSongs([song('matched')]);
         await applyMatchedMetadata('matched', {

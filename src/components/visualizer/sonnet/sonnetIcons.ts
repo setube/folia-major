@@ -1,22 +1,21 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import * as LucideIcons from 'lucide-react';
+import { loadLucideIcons, resolveLucideIcon, resolveLucideIconNames } from '../../../services/lucideIconResolver';
 
 // src/components/visualizer/sonnet/sonnetIcons.ts
 // Validates theme icon names and produces cacheable SVG data URLs for Pixi.
-const LUCIDE_ICON_NAMES = Object.keys(LucideIcons).filter(name => {
-    const candidate = LucideIcons[name as keyof typeof LucideIcons];
-    return /^[A-Z]/.test(name) && (typeof candidate === 'object' || typeof candidate === 'function');
-});
-const LUCIDE_ICON_NAMES_BY_LOWERCASE = new Map(LUCIDE_ICON_NAMES.map(name => [name.toLowerCase(), name]));
+const SONNET_FALLBACK_ICON = 'Flower';
 
-export const resolveSonnetIconNames = (names: string[] | undefined): string[] => {
-    const resolved = [
-        ...new Set((names ?? [])
-            .map(name => LUCIDE_ICON_NAMES_BY_LOWERCASE.get(name.toLowerCase()))
-            .filter(Boolean)),
-    ] as string[];
-    return resolved.length > 0 ? resolved : ['Flower'];
+/**
+ * Loads the theme's icons and returns the usable ones, or the Lucide flower when none is - loaded
+ * too, so buildSonnetIconDataUrl can draw every returned name right away.
+ */
+export const loadSonnetIconNames = async (names: string[] | undefined): Promise<string[]> => {
+    await loadLucideIcons(names);
+    const resolved = resolveLucideIconNames(names);
+    if (resolved.length > 0) return resolved;
+    await loadLucideIcons([SONNET_FALLBACK_ICON]);
+    return [SONNET_FALLBACK_ICON];
 };
 
 // Spreads icon particles through the scene while guaranteeing every available theme icon is used.
@@ -86,7 +85,7 @@ export const buildSonnetIconDataUrl = (
     strokeWidth: number,
     size: number,
 ) => {
-    const Icon = LucideIcons[name as keyof typeof LucideIcons] as React.ElementType | undefined;
+    const Icon = resolveLucideIcon(name);
     if (!Icon) return null;
     const markup = renderToStaticMarkup(React.createElement(Icon, {
         size,

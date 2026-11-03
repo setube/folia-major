@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 import { PlayerState, type Theme } from '@/types';
 import { buildHomeModel } from '@/components/app/home/buildHomeModel';
+import type { LibraryAccountController } from '@/library/core/account/account.contract';
 
 // test/unit/navigation/homeStageEntry.test.ts
 
@@ -28,8 +29,12 @@ const createBaseParams = () => {
     const openStagePlayer = vi.fn().mockResolvedValue(undefined);
 
     return {
+        account: {} as LibraryAccountController,
         playSong: vi.fn(),
         navigateToPlayer: vi.fn(),
+        navigateToLattice: vi.fn(),
+        togglePlayback: vi.fn(),
+        enterPlaybackView: vi.fn(),
         refreshOnlineProviderPlaylists: vi.fn().mockResolvedValue(undefined),
         user: null,
         playlists: [],
@@ -54,6 +59,7 @@ const createBaseParams = () => {
             entities: [],
             assignments: [],
             ready: true,
+            failed: false,
             reload: vi.fn().mockResolvedValue(undefined),
         },
         localPlaylists: [],
@@ -68,8 +74,6 @@ const createBaseParams = () => {
         onMatchNavidromeSong: vi.fn(),
         navidromeFocusedAlbumIndex: 0,
         setNavidromeFocusedAlbumIndex: vi.fn(),
-        pendingNavidromeSelection: null,
-        setPendingNavidromeSelection: vi.fn(),
         stageSource: 'stage-api' as const,
         activePlaybackContext: 'stage' as const,
         openStagePlayer,
@@ -87,6 +91,7 @@ const createBaseParams = () => {
         queueAddAndPlay: vi.fn(),
         onOpenCollection: vi.fn(),
         onPushCollection: vi.fn(),
+        onPopCollectionTo: vi.fn(),
         onBackCollection: vi.fn(),
     };
 };
@@ -97,7 +102,6 @@ describe('home stage entry wiring', () => {
         const model = buildHomeModel(params);
 
         expect(model.surfaceProps.stageEnabled).toBe(true);
-        expect(model.surfaceProps.stageSource).toBe('stage-api');
         expect(model.surfaceProps.stageIsActive).toBe(true);
 
         await model.surfaceProps.onOpenStagePlayer?.();
@@ -113,22 +117,28 @@ describe('home stage entry wiring', () => {
         });
 
         expect(model.surfaceProps.stageEnabled).toBe(false);
-        expect(model.surfaceProps.stageSource).toBeUndefined();
         expect(model.surfaceProps.stageIsActive).toBe(false);
     });
 });
 
 describe('home stage entry source contracts', () => {
     it('keeps the app-level home surface forwarding legacy props into Grid3D', async () => {
+        // R3 起 Home 经 Library registry 解析首页 surface（`<Grid3D` 不再写在 Home 里）；含义不变：
+        // Home 把首页模型的 surfaceProps 与宿主的 openGridView 交给首页 surface，而默认 suite 的首页就是 Grid3D。
         const content = await readRepoFile('src/components/app/Home.tsx');
 
-        expect(content).toContain('<Grid3D');
+        expect(content).toContain("resolveLibrarySurface('home'");
+        expect(content).toContain('<HomeSurface');
         expect(content).toContain('{...model.surfaceProps}');
         expect(content).toContain('onOpenGridView={openGridView}');
+
+        const gridEntry = await readRepoFile('src/library/suites/grid/entry.ts');
+        expect(gridEntry).toContain("import Grid3D from './home/Grid3D';");
+        expect(gridEntry).toContain('home: { component: Grid3D');
     });
 
     it('keeps the Grid3D desktop tabs rendering the stage entry button', async () => {
-        const content = await readRepoFile('src/components/Grid3D.tsx');
+        const content = await readRepoFile('src/library/suites/grid/home/Grid3D.tsx');
 
         expect(content).toContain('stageEnabled?: boolean;');
         expect(content).toContain('onOpenStagePlayer?: () => void;');

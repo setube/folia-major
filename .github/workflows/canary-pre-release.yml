@@ -86,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
 
     steps:
       - name: Check out Git repository
@@ -101,6 +101,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Rust toolchain
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo build
+        if: runner.os == 'Linux'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .windowtolayer-src
+
+      - name: Cache wallpaper-helper Cargo build
+        if: runner.os == 'Windows'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/windows/wallpaper-helper
+
+      - name: Build wallpaper helper (Windows only)
+        if: runner.os == 'Windows'
+        run: npm run build:wallpaper-helper
+
+      - name: Build windowtolayer (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run build:windowtolayer
+
       - name: Stamp Cielo package metadata
         shell: bash
         env:
@@ -114,6 +140,17 @@ jobs:
           APP_VERSION_LABEL: Cielo
           APP_RELEASE_CHANNEL: cielo
         run: npm run build
+
+      # The analysis models' runtime is built from the pinned MNN source in build/beforePack.cjs
+      # (build/buildMnnRuntime.mjs; cmake and the platform's C++ compiler are on every hosted image).
+      # Cached because MNN is minutes of compile; the key covers everything the build reads.
+      - name: Cache MNN runtime build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/.mnn-src
+            build/mnn
+          key: mnn-${{ runner.os }}-${{ hashFiles('build/buildMnnRuntime.mjs', 'native/folia-mnn/**') }}
 
       - name: Package Electron app
         env:

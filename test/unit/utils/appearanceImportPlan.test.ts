@@ -618,4 +618,77 @@ describe('buildImportPlan', () => {
         expect(p.changes.find(c => c.key === 'isCustomThemePreferred'))
             .toMatchObject({ derived: true, causedBy: ['songThemeAutoSwitchEnabled'] });
     });
+
+    // The now playing card gets its own group: someone taking a configuration for its colours has a
+    // reason to leave the card alone, and taking it means taking all three rows together.
+    describe('the now playing card', () => {
+        it('plans all three rows under one group of their own', () => {
+            const p = plan(
+                { stageTrackPillMode: 'always', stageTrackPillTimeoutSec: 24, stageTrackPillOnHome: true },
+                { stageTrackPillMode: 'auto', stageTrackPillTimeoutSec: 10, stageTrackPillOnHome: false },
+                unpinned,
+            );
+            expect(keys(p)).toEqual(['stageTrackPillMode', 'stageTrackPillTimeoutSec', 'stageTrackPillOnHome']);
+            expect(p.groups).toEqual(['trackCard']);
+        });
+
+        // false and 'never' are real values, not "the exporter had none", so both have to be offered.
+        it('offers turning the card off and taking it off the home page', () => {
+            const p = plan(
+                { stageTrackPillMode: 'never', stageTrackPillOnHome: false },
+                { stageTrackPillMode: 'auto', stageTrackPillOnHome: true },
+                unpinned,
+            );
+            expect(keys(p)).toEqual(['stageTrackPillMode', 'stageTrackPillOnHome']);
+        });
+
+        // Truthy-guarded to match the apply path, which only applies one of the three known values.
+        it('does not offer a mode the apply path would skip', () => {
+            const p = plan({ stageTrackPillMode: '' }, { stageTrackPillMode: 'auto' }, unpinned);
+            expect(keys(p)).toEqual([]);
+        });
+    });
+
+    // The bravais wall's collection stack edges: a library-wall row of its own, and false is a real value.
+    it('plans the collection stack edges under the library wall group', () => {
+        const p = plan({ libraryWallStackEdges: false }, { libraryWallStackEdges: true }, unpinned);
+        expect(keys(p)).toEqual(['libraryWallStackEdges']);
+        expect(p.groups).toEqual(['libraryWall']);
+    });
+
+    // The info strip's material and the picture behind the wall share that group; false is a real
+    // value, an empty preset is "the exporter had none" (the apply path only takes known presets).
+    it('plans the info strip and backdrop rows under the library wall group', () => {
+        const p = plan(
+            { libraryWallSeamClear: false, libraryWallSeamStyle: 'white', libraryWallBackdropLyrics: true, libraryWallBackdropBlur: false },
+            { libraryWallSeamClear: true, libraryWallSeamStyle: 'paper', libraryWallBackdropLyrics: false, libraryWallBackdropBlur: true },
+            unpinned,
+        );
+        expect(keys(p)).toEqual(['libraryWallSeamClear', 'libraryWallSeamStyle', 'libraryWallBackdropLyrics', 'libraryWallBackdropBlur']);
+        expect(p.groups).toEqual(['libraryWall']);
+        expect(keys(plan({ libraryWallSeamStyle: '' }, { libraryWallSeamStyle: 'dots' }, unpinned))).toEqual([]);
+    });
+
+    // The info strip direction joins the same group; an empty value is "the exporter had none".
+    it('plans the info strip direction under the library wall group', () => {
+        const p = plan({ libraryWallSeamDirection: 'horizontal' }, { libraryWallSeamDirection: 'auto' }, unpinned);
+        expect(keys(p)).toEqual(['libraryWallSeamDirection']);
+        expect(p.groups).toEqual(['libraryWall']);
+        expect(keys(plan({ libraryWallSeamDirection: '' }, { libraryWallSeamDirection: 'auto' }, unpinned))).toEqual([]);
+    });
+
+    // Numbering only the playing song styles the tiles of both walls: offered under the library wall group; false is a real value.
+    it('plans numbering only the playing song under the library wall group', () => {
+        const p = plan({ latticeBadgeCurrentOnly: true }, { latticeBadgeCurrentOnly: false }, unpinned);
+        expect(keys(p)).toEqual(['latticeBadgeCurrentOnly']);
+        expect(p.groups).toEqual(['libraryWall']);
+        expect(keys(plan({ latticeBadgeCurrentOnly: false }, { latticeBadgeCurrentOnly: true }, unpinned))).toEqual(['latticeBadgeCurrentOnly']);
+    });
+
+    // The blurred player header is a player-page look, offered under visualizer; false is a real value.
+    it('plans the blurred player header under the visualizer group', () => {
+        const p = plan({ playerHeaderBlur: false }, { playerHeaderBlur: true }, unpinned);
+        expect(keys(p)).toEqual(['playerHeaderBlur']);
+        expect(p.groups).toEqual(['visualizer']);
+    });
 });

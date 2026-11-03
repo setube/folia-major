@@ -47,6 +47,8 @@ export const applyMatchedMetadata = async (
     songPatch?: Partial<LocalSong>;
     protectOrigins?: LocalLibraryAssignmentOrigin[];
     assignmentOrigin?: Extract<LocalLibraryAssignmentOrigin, 'auto-match' | 'manual-match'>;
+    /** 自动匹配写回用：库里这首已被用户标记为纯音乐（匹配途中刚标上的也算）时整次不写，原样返回。 */
+    skipIfMarkedPureMusic?: boolean;
   } = {},
 ): Promise<LocalSong | undefined> => {
   return await appDatabase.transaction(
@@ -55,6 +57,7 @@ export const applyMatchedMetadata = async (
     async () => {
       const song = await appDatabase.local_music.get(songId);
       if (!song) return undefined;
+      if (options.skipIfMarkedPureMusic && song.markedPureMusic) return song;
       const updatedSong: LocalSong = { ...song, ...options.songPatch };
       const assignmentOrigin = options.assignmentOrigin || 'auto-match';
       if (metadata.source) {

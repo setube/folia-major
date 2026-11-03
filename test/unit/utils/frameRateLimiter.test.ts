@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createFrameRateLimitedRaf, installGlobalVisualizerFrameRateLimiter, parseVisualizerFrameRate, setGlobalVisualizerFrameRate, shouldProcessFrameAtRate } from '../../../src/utils/frameRateLimiter';
+import { cancelUncappedAnimationFrame, createFrameRateLimitedRaf, installGlobalVisualizerFrameRateLimiter, parseVisualizerFrameRate, requestUncappedAnimationFrame, setGlobalVisualizerFrameRate, shouldProcessFrameAtRate } from '../../../src/utils/frameRateLimiter';
 
 // test/unit/utils/frameRateLimiter.test.ts
 
@@ -99,6 +99,52 @@ describe('frameRateLimiter', () => {
         }
     });
 
+    it('lets an earlier callback cancel a self-scheduling callback in the same frame', () => {
+        const nativeCallbacks: FrameRequestCallback[] = [];
+        const limiter = createFrameRateLimitedRaf(callback => {
+            nativeCallbacks.push(callback);
+            return nativeCallbacks.length;
+        }, () => undefined);
+        const processed: string[] = [];
+        limiter.requestAnimationFrame(() => {
+            processed.push('cancel');
+            limiter.cancelAnimationFrame(rendererHandle);
+        });
+        const rendererHandle = limiter.requestAnimationFrame(() => {
+            processed.push('renderer');
+            limiter.requestAnimationFrame(() => processed.push('orphan'));
+        });
+        nativeCallbacks[0](1000);
+        expect(processed).toEqual(['cancel']);
+        expect(nativeCallbacks).toHaveLength(1);
+    });
+
+    it('cancels the native frame when the last queued callback is removed', () => {
+        const cancelled: number[] = [];
+        let requests = 0;
+        const limiter = createFrameRateLimitedRaf(() => ++requests, handle => cancelled.push(handle));
+        const first = limiter.requestAnimationFrame(() => undefined);
+        const second = limiter.requestAnimationFrame(() => undefined);
+        limiter.cancelAnimationFrame(first);
+        expect(cancelled).toEqual([]);
+        limiter.cancelAnimationFrame(second);
+        expect(cancelled).toEqual([1]);
+        limiter.requestAnimationFrame(() => undefined);
+        expect(requests).toBe(2);
+    });
+
+    it('defers callbacks scheduled during a flush until the next frame', () => {
+        const nativeCallbacks: FrameRequestCallback[] = [];
+        const limiter = createFrameRateLimitedRaf(callback => { nativeCallbacks.push(callback); return nativeCallbacks.length; }, () => undefined);
+        const processed: string[] = [];
+        limiter.requestAnimationFrame(() => {
+            processed.push('first');
+            limiter.requestAnimationFrame(() => processed.push('next'));
+        });
+        nativeCallbacks[0](1000); expect(processed).toEqual(['first']);
+        nativeCallbacks[1](1016); expect(processed).toEqual(['first', 'next']);
+    });
+
     it('restores native requestAnimationFrame when disabled globally', () => {
         const previousWindow = (globalThis as { window?: Window; }).window;
         const originalRequestAnimationFrame = () => 1;
@@ -120,6 +166,69 @@ describe('frameRateLimiter', () => {
             expect(globalThis.window.requestAnimationFrame).toBe(originalRequestAnimationFrame);
             expect(globalThis.window.cancelAnimationFrame).toBe(originalCancelAnimationFrame);
         } finally {
+            Object.defineProperty(globalThis, 'window', {
+                configurable: true,
+                value: previousWindow,
+            });
+        }
+    });
+
+    it('reaches every display frame through the uncapped request while the cap is on', () => {
+        const previousWindow = (globalThis as { window?: Window; }).window;
+        const displayQueue = new Map<number, FrameRequestCallback>();
+        let nextDisplayHandle = 1;
+        Object.defineProperty(globalThis, 'window', {
+            configurable: true,
+            value: {
+                requestAnimationFrame: (callback: FrameRequestCallback) => {
+                    displayQueue.set(nextDisplayHandle, callback);
+                    nextDisplayHandle += 1;
+                    return nextDisplayHandle - 1;
+                },
+                cancelAnimationFrame: (handle: number) => {
+                    displayQueue.delete(handle);
+                },
+                localStorage: { getItem: () => null },
+            },
+        });
+        const runDisplayFrame = (timestamp: number) => {
+            const callbacks = Array.from(displayQueue.values());
+            displayQueue.clear();
+            callbacks.forEach(callback => callback(timestamp));
+        };
+
+        try {
+            // Asked for before the cap is switched on and cancelled after it: the handle is the display's own.
+            let cancelledRan = false;
+            const cancelled = requestUncappedAnimationFrame(() => {
+                cancelledRan = true;
+            });
+            installGlobalVisualizerFrameRateLimiter(60);
+            cancelUncappedAnimationFrame(cancelled);
+
+            let capped = 0;
+            let uncapped = 0;
+            const countCapped = () => {
+                capped += 1;
+                globalThis.window.requestAnimationFrame(countCapped);
+            };
+            const countUncapped = () => {
+                uncapped += 1;
+                requestUncappedAnimationFrame(countUncapped);
+            };
+            globalThis.window.requestAnimationFrame(countCapped);
+            requestUncappedAnimationFrame(countUncapped);
+
+            // Twelve frames of a 120 Hz display under a cap of 60.
+            for (let frame = 1; frame <= 12; frame += 1) {
+                runDisplayFrame(frame * (1000 / 120));
+            }
+
+            expect(cancelledRan).toBe(false);
+            expect(uncapped).toBe(12);
+            expect(capped).toBe(6);
+        } finally {
+            setGlobalVisualizerFrameRate('off');
             Object.defineProperty(globalThis, 'window', {
                 configurable: true,
                 value: previousWindow,

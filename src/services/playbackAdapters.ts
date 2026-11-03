@@ -3,6 +3,7 @@ import { NavidromeSong } from '../types/navidrome';
 import type { LocalLibraryAssignment, LocalLibraryEntity } from '../types/localLibrary';
 import { buildLocalLibraryIndex, followEntityRedirect, type LocalLibraryIndex } from '../utils/localLibraryIndex';
 import { getLocalCoverAssetUrl } from './localCoverAssetUrl';
+import { buildLocalSourceRevision, buildNavidromeSourceRevision } from './playbackRecovery/sourceRevision';
 
 export type LocalLibraryDisplayCatalog = {
     entities: LocalLibraryEntity[];
@@ -146,9 +147,10 @@ export function buildUnifiedLocalSong({
     coverUrl: string | null;
     preferOnlineMetadata: boolean;
 }): UnifiedSong {
+    // 与 selectLocalSongLyricsSource 同一条规则：标记为纯音乐的歌在自动来源下也用在线判定（纯音乐）。
     const useMatchedLyrics =
         localSong.lyricsSource === 'online'
-        || (!localSong.lyricsSource && !localSong.hasLocalLyrics && !localSong.hasEmbeddedLyrics);
+        || (!localSong.lyricsSource && (Boolean(localSong.markedPureMusic) || (!localSong.hasLocalLyrics && !localSong.hasEmbeddedLyrics)));
     const displayTitle = localSong.title;
     const displayArtists = (localSong.titleOrigin === 'import'
         ? localSong.importedMetadata.artistNames
@@ -162,12 +164,15 @@ export function buildUnifiedLocalSong({
         id: getLocalSongId(localSong),
         name: displayTitle,
         artists: displayArtists,
-        album: displayAlbum ? { id: 0, name: displayAlbum, coverUrl: coverUrl || undefined } : { id: 0, name: '' },
+        // The cover has to survive an empty album tag: a file with artwork but no album name still
+        // needs `album.coverUrl`, which is the only cover channel queue-derived surfaces read.
+        album: { id: 0, name: displayAlbum || '', ...(coverUrl ? { coverUrl } : {}) },
         durationMs: localSong.duration,
         isPureMusic: useMatchedLyrics ? localSong.matchedIsPureMusic : false,
         isLocal: true,
         localRef: { songId: localSong.id },
         sourceRef: { kind: 'local', mediaId: localSong.id },
+        playbackSourceRevision: buildLocalSourceRevision(localSong),
     };
 
     if (!matchedSong) {
@@ -183,16 +188,23 @@ export function buildUnifiedLocalSong({
     return unifiedSong;
 }
 
+// Local covers are served in two thumbnail buckets. Player surfaces render the artwork full-bleed
+// and take the large one; list rows ask for the small one so a long list does not decode four times
+// the pixels it shows, and so both callers land in the same bucket the preloader warmed.
+export const QUEUE_COVER_SIZE = 1024;
+export const LIST_ROW_COVER_SIZE = 512;
+
 export function buildLocalQueue(
     queue: LocalSong[],
     currentSong?: UnifiedSong,
     catalog?: LocalLibraryDisplayCatalog,
+    coverSize: number = QUEUE_COVER_SIZE,
 ): UnifiedSong[] {
     const catalogIndex = catalog
         ? buildLocalLibraryIndex(catalog.entities, catalog.assignments)
         : undefined;
     const convertedQueue = queue.map(song => {
-        const localCoverUrl = getLocalCoverAssetUrl(song.localCoverAssetId, 1024);
+        const localCoverUrl = getLocalCoverAssetUrl(song.localCoverAssetId, coverSize);
         return applyLocalLibraryEntityDisplay(buildUnifiedLocalSong({
             localSong: song,
             matchedSong: null,
@@ -234,7 +246,7 @@ export function buildUnifiedNavidromeSong(
         ? { ...displayAlbum, coverUrl: options.coverUrl }
         : displayAlbum;
 
-    return {
+    const unifiedSong = {
         id: navidromeSong.id,
         name: (options?.useOnlineMetadata && options.matchedAlbumName) ? options.matchedAlbumName : navidromeSong.name,
         artists: displayArtists,
@@ -246,21 +258,16 @@ export function buildUnifiedNavidromeSong(
         sourceRef: { kind: 'navidrome', mediaId: navidromeSong.navidromeData.id },
         matchedLyricsSource: options?.matchedLyricsSource,
         matchedLyricsProviderPlatform: options?.matchedLyricsProviderPlatform
-    } as any;
+    } as SongResult;
+    unifiedSong.playbackSourceRevision = buildNavidromeSourceRevision(
+        unifiedSong,
+        navidromeSong.navidromeData.streamUrl,
+    );
+    return unifiedSong;
 }
 
 export function buildNavidromeQueue(queue: NavidromeSong[], currentSong?: SongResult): SongResult[] {
-    const convertedQueue = queue.map(song => ({
-        id: song.id,
-        name: song.name,
-        artists: song.artists || [],
-        album: song.album || { id: 0, name: '' },
-        durationMs: song.durationMs || 0,
-        isPureMusic: song.lyricsSource === 'online' ? song.matchedIsPureMusic : false,
-        isNavidrome: true,
-        navidromeData: song,
-        sourceRef: { kind: 'navidrome', mediaId: song.navidromeData.id },
-    } as any));
+    const convertedQueue = queue.map(song => buildUnifiedNavidromeSong(song));
 
     if (!currentSong) {
         return convertedQueue;

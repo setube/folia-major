@@ -1,4 +1,4 @@
-import type { DualTheme, SubtitleContentMode, Theme, VisualizerBackgroundMode, VisualizerMode } from '../../types';
+import type { DualTheme, SubtitleContentMode, SubtitleOverlayLayout, Theme, VisualizerBackgroundMode, VisualizerMode } from '../../types';
 import type { VisualizerTuningBundle } from '../../components/visualizer/tuningRegistry';
 
 // src/services/sync/syncTypes.ts
@@ -28,13 +28,16 @@ export type SyncedVisualSettings = {
     followSystemTheme?: boolean;
     visualizerMode?: VisualizerMode;
     randomVisualizerModePerSong?: boolean;
+    randomVisualizerModes?: VisualizerMode[];
     visualizerBackgroundMode?: VisualizerBackgroundMode | null;
     backgroundOpacity?: number;
     visualizerOpacity?: number;
     hidePlayerTranslationSubtitle?: boolean;
     showSubtitleTranslation?: boolean;
     subtitleContentMode?: SubtitleContentMode;
+    subtitleOverlayLayout?: SubtitleOverlayLayout;
     subtitleOverlayBackground?: boolean;
+    subtitleUpcomingLyricsBlur?: boolean;
     lyricsFontStyle?: Theme['fontStyle'];
     lyricsFontScale?: number;
     lyricsFontWeight?: number | null;
@@ -45,6 +48,8 @@ export type SyncedVisualSettings = {
     subtitleFontFamily?: string | null;
     subtitleFontFallbackFamilies?: string[];
     visualizerTunings?: VisualizerTuningBundle;
+    // Frozen: the 13 lyric-style tunings below predate the visualizerTunings bundle, which carries any
+    // new style. Do not add a lyric style here.
     classicTuning?: unknown;
     cadenzaTuning?: unknown;
     partitaTuning?: unknown;
@@ -56,10 +61,14 @@ export type SyncedVisualSettings = {
     monetBackgroundTuning?: unknown;
     nomandBackgroundTuning?: unknown;
     latentBackgroundTuning?: unknown;
+    soraBackgroundTuning?: unknown;
     monetTuning?: unknown;
     pendoloTuning?: unknown;
     sonnetTuning?: unknown;
+    /** 智能动感模式; one setting for every visualizer, so outside the tuning bundle. */
+    smartBeat?: unknown;
     temperaTuning?: unknown;
+    lumiereTuning?: unknown;
     urlBackgroundList?: unknown[];
     urlBackgroundSelectedId?: string | null;
     homeLayoutStyle?: 'carousel' | 'grid';

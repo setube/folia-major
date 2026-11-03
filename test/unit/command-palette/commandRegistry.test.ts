@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlayerState, type SongResult } from '../../../src/types';
 import { COMMAND_PALETTE_COMMANDS, getAvailableCommandPaletteCommands, getCommandPaletteMatches, getQueueSongMatches } from '../../../src/components/command-palette/commandRegistry';
+import { sleepTimerSurface } from '../../../src/components/command-palette/surfaces/sleepTimerSurface';
+import { latticePosterTintSurface } from '../../../src/components/command-palette/surfaces/latticePosterTintSurface';
 import type { CommandPaletteContext } from '../../../src/components/command-palette/types';
+import { buildExecuteShortcutIndex, resolveExecuteShortcut } from '../../../src/components/command-palette/executeShortcuts';
 
 type CommandPaletteContextOverrides = {
     [Namespace in keyof CommandPaletteContext]?: Partial<CommandPaletteContext[Namespace]>;
@@ -11,10 +14,13 @@ type CommandPaletteContextOverrides = {
 // fields it actually cares about.
 const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandPaletteContext => {
     const base: CommandPaletteContext = {
+        // The palette's original and still most common surface; the home cases say so explicitly.
+        scope: { view: 'player', filter: null, grid: null, directory: null, artist: null, chrome: null },
         shared: {
             t: (_key: string, fallback?: string) => fallback ?? '',
             setStatusMsg: vi.fn(),
             currentSong: null,
+            lyrics: null,
             playerState: PlayerState.PAUSED,
         },
         search: {
@@ -28,6 +34,12 @@ const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandP
             volume: 0.5,
             isMuted: false,
             setVolume: vi.fn(),
+            stepVolume: vi.fn(),
+            toggleMute: vi.fn(),
+            toggleSongLike: vi.fn(),
+            isSongLiked: false,
+            openAddToPlaylist: vi.fn(),
+            canAddCurrentSongToPlaylist: true,
             previewVolume: vi.fn(),
             isFmMode: false,
             personalFmSelection: { mode: 'DEFAULT' as const, scene: null },
@@ -38,6 +50,8 @@ const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandP
             next: vi.fn(),
             prev: vi.fn(),
             queue: [],
+            queuePaletteKeepOpen: false,
+            setQueuePaletteKeepOpen: vi.fn(),
             playSong: vi.fn(),
             shuffleQueue: vi.fn(),
             clearQueue: vi.fn(),
@@ -48,23 +62,38 @@ const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandP
             setReplayGainMode: vi.fn(),
             openAudioEqualizer: vi.fn(),
             applyAudioSoundPreset: vi.fn(),
+            hasModEqualizerCurve: () => false,
+            releaseModEqualizerCurve: vi.fn(),
             runAutoMatchBestLyric: vi.fn(async () => true),
+            toggleCurrentSongPureMusicMark: vi.fn(async () => true),
+            canToggleCurrentSongPureMusicMark: true,
+            isHifiRoute: () => false,
+            openHifiSignalPath: vi.fn(),
         },
         navigation: {
-            navigateToHome: vi.fn(),
-            navigateToPlayer: vi.fn(),
-            setHomeViewTab: vi.fn(),
+        navigateToHome: vi.fn(),
+        navigateToPlayer: vi.fn(),
+        navigateToLattice: vi.fn(),
+            locatePlayingSongOnWall: vi.fn(),
+            locatePlayingSong: vi.fn(),
+            selectHomeViewTab: vi.fn(),
             toggleBrowserFullscreen: vi.fn(async () => true),
             toggleRemoteControlWindow: vi.fn(async () => true),
             toggleMainWindowAlwaysOnTop: vi.fn(async () => true),
+            isWallpaperMode: false,
+            isWindowAlwaysOnTopSupported: true,
         },
         panel: {
             setPanelTab: vi.fn(),
             setIsPanelOpen: vi.fn(),
         },
         settings: {
+            toggleRememberHomeCardPosition: vi.fn(),
             openSettings: vi.fn(),
-            setIsUserGuideModalOpen: vi.fn(),
+            lyricStaffPolicy: 'smart' as const,
+            cycleLyricStaffPolicy: vi.fn(),
+            lyricStaffAbsorbMode: 'off' as const,
+            cycleLyricStaffAbsorbMode: vi.fn(),
             setAppLanguagePreference: vi.fn(async () => undefined),
             toggleTransparentBackground: vi.fn(),
             toggleDaylightMode: vi.fn(),
@@ -72,18 +101,89 @@ const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandP
             subtitleContentMode: 'translation',
             cycleSubtitleContentMode: vi.fn(),
             toggleSubtitleOverlayBackground: vi.fn(),
+            playbackEntryView: 'player' as const,
+            setPlaybackEntryView: vi.fn(),
+            librarySuiteOptions: vi.fn(() => [{ id: 'grid', labelKey: 'libraryTui.rendererGrid' }, { id: 'tui', labelKey: 'libraryTui.rendererTui' }]),
+            activeLibrarySuite: vi.fn(() => 'grid'),
+            canChooseLibrarySuite: vi.fn(() => true),
+            chooseLibrarySuite: vi.fn(),
+            isLibraryWallLookAvailable: vi.fn(() => false),
+            isGridLibraryActive: vi.fn(() => true),
+            libraryWallLook: vi.fn(() => 'partial' as const),
+            setLibraryWallLook: vi.fn(),
+            libraryWallWindowsPerBlock: vi.fn(() => 3),
+            setLibraryWallWindowsPerBlock: vi.fn(),
+            toggleLibraryWallStackEdges: vi.fn(),
+            libraryWallSeamClear: vi.fn(() => false),
+            toggleLibraryWallSeamClear: vi.fn(),
+            libraryWallSeamStyle: vi.fn(() => 'paper' as const),
+            setLibraryWallSeamStyle: vi.fn(),
+            toggleLibraryWallBackdropLyrics: vi.fn(),
+            toggleLibraryWallBackdropBlur: vi.fn(),
+            libraryWallSeamDirection: () => 'auto' as const,
+            setLibraryWallSeamDirection: vi.fn(),
+            ponderHintVisibility: 'always' as const,
+            setPonderHintVisibility: vi.fn(),
+            togglePonderTouchButton: vi.fn(),
+            startPlayerBottomBarPositioning: vi.fn(),
+            canStartPlayerBottomBarPositioning: true,
             toggleAlwaysShowPlayerBackButton: vi.fn(),
+            toggleGridViewFullBleedCover: vi.fn(),
+            toggleGridViewSquareCards: vi.fn(),
+            canUseGridViewSquareCards: vi.fn(() => true),
+            toggleLatticeVignette: vi.fn(),
+            toggleLatticeBadgeCurrentOnly: vi.fn(),
+            toggleLatticeAutoFocusOnSongChange: vi.fn(),
+            toggleReduceLatticeMotion: vi.fn(),
+            toggleFollowSystemReducedMotion: vi.fn(),
+            latticePosterTintEnabled: true,
+            latticePosterTintUseCustomColor: false,
+            latticePosterTintColor: '#161419',
+            latticePosterTintIntensity: 0.5,
+            setLatticePosterTintEnabled: vi.fn(),
+            setLatticePosterTintUseCustomColor: vi.fn(),
+            setLatticePosterTintColor: vi.fn(),
+            setLatticePosterTintIntensity: vi.fn(),
             toggleAlwaysShowTrackSwitchButtons: vi.fn(),
+            toggleAutoPlayOnLaunch: vi.fn(),
+            toggleTranscodeFallback: vi.fn(),
+            togglePlaybackFade: vi.fn(),
+            toggleAutoSkipUnplayable: vi.fn(),
             toggleAlwaysShowMainWindowTitlebar: vi.fn(),
+            togglePlayerHeaderBlur: vi.fn(),
+            toggleHideFullscreenButton: vi.fn(),
+            toggleNativeMacFullscreenButton: vi.fn(),
+            toggleAutoHideCursorWithPlayerChrome: vi.fn(),
+            toggleHideCursorWhenIdle: vi.fn(),
+            canAutoScanLocalLibrary: vi.fn(() => false),
+            toggleLocalLibraryAutoScan: vi.fn(),
+            canReportPlayback: vi.fn(() => false),
+            togglePlaybackReport: vi.fn(),
             voiceInputPauseSupported: false,
+            modSystemEnabled: false,
             toggleVoiceInputPause: vi.fn(),
-            toggleCloseMainPanel: vi.fn(),
             launchAtLoginSupported: true,
             toggleLaunchAtLogin: vi.fn(),
-            toggleAutoplayOnLaunch: vi.fn(),
             toggleRememberPlaybackPosition: vi.fn(),
             togglePreventDisplaySleepDuringPlayback: vi.fn(),
+            toggleBackgroundThrottling: vi.fn(),
             toggleWallpaperMode: vi.fn(),
+            toggleCloseToTray: vi.fn(),
+            toggleHideRemoteControlTitlebar: vi.fn(),
+            toggleRemoteControlExpandCover: vi.fn(),
+            toggleRemoteControlTextShade: vi.fn(),
+            unlockRemoteControl: vi.fn(),
+            toggleObsKeepMainWindowAnimation: vi.fn(),
+            toggleWallpaperMacAutohideDock: vi.fn(),
+            gpuPreference: () => 'auto',
+            setGpuPreference: vi.fn(),
+            sleepTimerEnabled: false,
+            setSleepTimerEnabled: vi.fn(),
+            sleepTimerHours: 0,
+            setSleepTimerHours: vi.fn(),
+            sleepTimerMinutes: 0,
+            setSleepTimerMinutes: vi.fn(),
+            sleepTimerDeadlineMs: null,
             canGenerateAITheme: true,
             isGeneratingTheme: false,
             generateAITheme: vi.fn(),
@@ -91,15 +191,47 @@ const createContext = (overrides: CommandPaletteContextOverrides = {}): CommandP
             canOpenThemeQuickEditor: true,
             themeGenerationSource: 'ai',
             setThemeGenerationSource: vi.fn(),
+            automixEnabled: false,
+            transitionMode: 'crossfade',
+            transitionPerformance: false,
+            toggleAutomix: vi.fn(),
+            setTransitionMode: vi.fn(),
+            toggleTransitionPerformance: vi.fn(),
+            canUseTransitionPerformance: vi.fn(() => true),
+            isHifiSupported: () => true,
+            isHifiEnabled: () => false,
+            isHifiVolumeConfirmed: () => false,
+            setHifiEnabled: vi.fn(),
+            toggleHifiExclusive: vi.fn(),
+            toggleHifiNavidrome: vi.fn(),
+            toggleHifiSoftwareVolume: vi.fn(),
+            canRedetectHifiRuntime: () => true,
+            redetectHifiRuntime: vi.fn(async () => null),
+            canInstallHifiRuntime: () => false,
+            installHifiRuntime: vi.fn(async () => null),
         },
         visualizer: {
             visualizerMode: 'classic',
             visualizerBackgroundMode: 'latent',
             setVisualizerMode: vi.fn(),
             toggleRandomVisualizerModePerSong: vi.fn(),
+            toggleGlowBlurQuantize: vi.fn(),
             setVisualizerBackgroundMode: vi.fn(),
             setMonetBackgroundTuning: vi.fn(),
             setLatentBackgroundTuning: vi.fn(),
+            cycleNebbiaBehind: vi.fn(() => 'aquarium' as const),
+            cycleNebbiaGlass: vi.fn(() => 'dew' as const),
+            toggleVideoLayer: vi.fn(),
+            setSmartBeatMode: vi.fn(),
+            toggleSmartBeat: vi.fn(),
+            pickVideoLayerFile: vi.fn(async () => null),
+            usesWordSegmentation: true,
+            lyricSegmentation: {
+                record: null,
+                isAiAvailable: true,
+                save: vi.fn(async () => {}),
+                reset: vi.fn(async () => {}),
+            },
         },
     };
 
@@ -159,7 +291,9 @@ describe('command palette registry', () => {
         expect(match.command.id).toBe('settings-local-lyrics-priority');
         match.command.execute(match.input, context);
 
-        expect(context.settings.openSettings).toHaveBeenCalledWith('options', 'playback');
+        // The top of the lyrics page is not the destination — the lyrics group on it is, which is
+        // what an anchor-level command exists to reach.
+        expect(context.settings.openSettings).toHaveBeenCalledWith('options', 'lyrics', null, 'lyrics');
     });
 
     it('switches ReplayGain modes from the command palette', () => {
@@ -209,6 +343,61 @@ describe('command palette registry', () => {
         expect(context.playback.setVolume).toHaveBeenCalledTimes(1);
     });
 
+    it('sets, enables, and disables the sleep timer from minute input and flags', () => {
+        const context = createContext();
+        const command = COMMAND_PALETTE_COMMANDS.find(entry => entry.id === 'sleep-timer');
+        const [directMatch] = getCommandPaletteMatches('sleep timer --on 90', context);
+
+        expect(command).toBeDefined();
+        expect(command!.syntax).toBeDefined();
+        expect(directMatch.command.id).toBe('sleep-timer');
+        expect(directMatch.input).toBe('--on 90');
+        expect(directMatch.command.execute(directMatch.input, context)).toBe(true);
+        expect(context.settings.setSleepTimerHours).toHaveBeenCalledWith(1);
+        expect(context.settings.setSleepTimerMinutes).toHaveBeenCalledWith(30);
+        expect(context.settings.setSleepTimerEnabled).toHaveBeenCalledWith(true);
+
+        expect(command!.execute('--off', context)).toBe(true);
+        expect(context.settings.setSleepTimerEnabled).toHaveBeenLastCalledWith(false);
+    });
+
+    it('keeps the sleep timer unchanged when command input is invalid', () => {
+        const context = createContext();
+        const command = COMMAND_PALETTE_COMMANDS.find(entry => entry.id === 'sleep-timer')!;
+
+        expect(command.execute('--on nope', context)).toBe(false);
+        expect(context.settings.setSleepTimerHours).not.toHaveBeenCalled();
+        expect(context.settings.setSleepTimerMinutes).not.toHaveBeenCalled();
+        expect(context.settings.setSleepTimerEnabled).not.toHaveBeenCalled();
+        expect(context.shared.setStatusMsg).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+
+    it('previews command input in the sleep timer surface without changing its settings', () => {
+        const context = createContext({
+            settings: { sleepTimerHours: 0, sleepTimerMinutes: 15 },
+        });
+
+        // This surface always declares a body; `mapProps` is only optional for the inline ones.
+        const props = sleepTimerSurface.mapProps!({
+            context,
+            query: '--on 90',
+            setQuery: vi.fn(),
+            matches: [],
+            activeIndex: 0,
+            setActiveIndex: vi.fn(),
+            isExecuting: false,
+            executeMatch: vi.fn(),
+            executeCommand: vi.fn(),
+            close: vi.fn(),
+            isDaylight: false,
+            theme: {} as never,
+        });
+
+        expect(props).toMatchObject({ hours: 1, minutes: 30 });
+        expect(context.settings.setSleepTimerHours).not.toHaveBeenCalled();
+        expect(context.settings.setSleepTimerMinutes).not.toHaveBeenCalled();
+    });
+
     it('applies a full sound preset from the command palette', () => {
         const context = createContext();
         const [match] = getCommandPaletteMatches('低保真', context);
@@ -232,7 +421,7 @@ describe('command palette registry', () => {
 
         expect(context.shared.setStatusMsg).toHaveBeenCalledWith({
             type: 'info',
-            text: 'Sync is not enabled. Configure and enable it in Storage settings first.',
+            text: 'Sync is not enabled. Configure and enable it in Connections settings first.',
         });
     });
 
@@ -243,6 +432,15 @@ describe('command palette registry', () => {
         expect(generalMatch.command.id).toBe('settings-general');
         generalMatch.command.execute(generalMatch.input, context);
         expect(context.settings.openSettings).toHaveBeenCalledWith('options', 'general');
+
+        const playerControlSlotsCommand = COMMAND_PALETTE_COMMANDS.find(
+            command => command.id === 'settings-player-control-slots',
+        );
+        expect(playerControlSlotsCommand).toBeDefined();
+        playerControlSlotsCommand!.execute('', context);
+        // 必须带上锚点：槽位选择器在「播放页」的控制栏那一组里，
+        // 只传页面的话打开的是这一页的顶部，等于没跳过去。
+        expect(context.settings.openSettings).toHaveBeenLastCalledWith('options', 'player', null, 'bottomUiSettings');
 
         const [systemLanguageMatch] = getCommandPaletteMatches('跟随系统');
         expect(systemLanguageMatch.command.id).toBe('settings-language-system');
@@ -316,6 +514,24 @@ describe('command palette registry', () => {
 
         expect(getCommandPaletteMatches('清空队列', createContext())
             .some(entry => entry.command.id === 'playback-clear-queue')).toBe(false);
+    });
+
+    it('switches Nebbia\'s window scene and front glass, only while Nebbia is on screen', () => {
+        const context = createContext({ visualizer: { visualizerMode: 'nebbia' } });
+
+        const [scene] = getCommandPaletteMatches('切换窗外', context);
+        expect(scene.command.id).toBe('visualizer-nebbia-behind-cycle');
+        expect(scene.command.execute(scene.input, context)).toBe(true);
+        expect(context.visualizer.cycleNebbiaBehind).toHaveBeenCalled();
+        expect(context.shared.setStatusMsg).toHaveBeenCalledWith({ type: 'success', text: 'Outside the window: aquarium' });
+
+        const [glass] = getCommandPaletteMatches('glass style', context);
+        expect(glass.command.id).toBe('visualizer-nebbia-glass-cycle');
+        expect(glass.command.execute(glass.input, context)).toBe(true);
+        expect(context.visualizer.cycleNebbiaGlass).toHaveBeenCalled();
+
+        expect(getCommandPaletteMatches('切换玻璃', createContext())
+            .some(entry => entry.command.id === 'visualizer-nebbia-glass-cycle')).toBe(false);
     });
 
     it('matches commands by Chinese keyword and pinyin', () => {
@@ -460,7 +676,7 @@ describe('command palette registry', () => {
         const [matchLocalTab] = getCommandPaletteMatches('local music');
         expect(matchLocalTab.command.id).toBe('home-local');
         matchLocalTab.command.execute('', context);
-        expect(context.navigation.setHomeViewTab).toHaveBeenCalledWith('local');
+        expect(context.navigation.selectHomeViewTab).toHaveBeenCalledWith('local');
         expect(context.navigation.navigateToHome).toHaveBeenCalled();
     });
 
@@ -550,7 +766,11 @@ describe('command palette registry', () => {
             'settings-general',
         ];
 
-        expect(getCommandPaletteMatches('', createContext(), recentIds).map(match => match.command.id))
+        // Two queued songs: shuffle is only offered when there is something to shuffle.
+        const context = createContext({
+            playback: { queue: [{ id: 1, name: 'One' }, { id: 2, name: 'Two' }] as unknown as SongResult[] },
+        });
+        expect(getCommandPaletteMatches('', context, recentIds).map(match => match.command.id))
             .toEqual(recentIds);
     });
 
@@ -658,6 +878,20 @@ describe('command palette registry', () => {
         }
     });
 
+    it('hides the always-on-top command where the window cannot stay on top (native Wayland)', () => {
+        vi.stubGlobal('window', { electron: {} });
+
+        try {
+            const context = createContext();
+            context.navigation.isWindowAlwaysOnTopSupported = false;
+
+            const matches = getCommandPaletteMatches('主窗口置顶', context);
+            expect(matches.map(match => match.command.id)).not.toContain('desktop-toggle-main-window-always-on-top');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('toggles the desktop-local lyrics API', async () => {
         const getLyricApiStatus = vi.fn().mockResolvedValue({ enabled: false, running: false });
         const setLyricApiEnabled = vi.fn().mockResolvedValue({ enabled: true, running: true });
@@ -688,6 +922,19 @@ describe('command palette registry', () => {
         }
     });
 
+    it('matches and executes the desktop background throttling toggle', async () => {
+        vi.stubGlobal('window', { electron: {} });
+        try {
+            const context = createContext();
+            const [match] = getCommandPaletteMatches('后台节流', context);
+            expect(match.command.id).toBe('desktop-toggle-background-throttling');
+            await match.command.execute('', context);
+            expect(context.settings.toggleBackgroundThrottling).toHaveBeenCalled();
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('toggles random visualizer mode for each song', () => {
         const context = createContext();
         const [match] = getCommandPaletteMatches('每首歌随机动画');
@@ -696,6 +943,119 @@ describe('command palette registry', () => {
         match.command.execute('', context);
         expect(context.visualizer.toggleRandomVisualizerModePerSong).toHaveBeenCalled();
     });
+
+    it('toggles the stepped glow radius', () => {
+        const context = createContext();
+        const [match] = getCommandPaletteMatches('发光半径分档');
+
+        expect(match.command.id).toBe('visualizer-toggle-glow-blur-quantize');
+        match.command.execute('', context);
+        expect(context.visualizer.toggleGlowBlurQuantize).toHaveBeenCalled();
+    });
+});
+
+describe('filter-view stands in for the grids own search box', () => {
+    // 这条命令只有在有人「读键入」时才成立：它写的是注册方，不是自己的状态。
+    const withFilter = (query = '') => {
+        const setQuery = vi.fn();
+        const context = createContext({
+            scope: { view: 'home', filter: { getQuery: () => query, setQuery, getAnchor: () => null } },
+        });
+        return { context, setQuery };
+    };
+
+    const surface = () => COMMAND_PALETTE_COMMANDS.find(command => command.id === 'filter-view')!.surface!;
+
+    const surfaceArgs = (context: CommandPaletteContext, query: string) => ({
+        context,
+        query,
+        setQuery: vi.fn(),
+        matches: [],
+        activeIndex: 0,
+        setActiveIndex: vi.fn(),
+        isExecuting: false,
+        executeMatch: vi.fn(async () => true),
+        executeCommand: vi.fn(async () => true),
+        close: vi.fn(),
+    });
+
+    it('is withheld where nothing reads typed characters', () => {
+        const ids = getAvailableCommandPaletteCommands(createContext()).map(command => command.id);
+        expect(ids).not.toContain('filter-view');
+    });
+
+    it('is offered as soon as a surface registers one', () => {
+        const ids = getAvailableCommandPaletteCommands(withFilter().context).map(command => command.id);
+        expect(ids).toContain('filter-view');
+    });
+
+    it('resumes the filter already in place instead of discarding it', () => {
+        const command = COMMAND_PALETTE_COMMANDS.find(entry => entry.id === 'filter-view')!;
+        expect(command.getInitialInput!(withFilter('blue').context)).toBe('blue');
+    });
+
+    it('writes every keystroke straight through', () => {
+        const { context, setQuery } = withFilter();
+        surface().onQueryChange!(surfaceArgs(context, 'blu'));
+        expect(setQuery).toHaveBeenCalledWith('blu');
+    });
+
+    it('clears the filter on escape, then lets the box close', () => {
+        const { context, setQuery } = withFilter('blue');
+        const keepOpen = surface().onEscape!(surfaceArgs(context, 'blue'));
+        expect(setQuery).toHaveBeenCalledWith('');
+        expect(keepOpen).toBe(false);
+    });
+
+    it('swallows Enter, because closing would hide the only sign the view is filtered', () => {
+        const { context } = withFilter('blue');
+        const args = surfaceArgs(context, 'blue');
+        expect(surface().onSubmit!(args)).toBe(true);
+        expect(args.close).not.toHaveBeenCalled();
+    });
+
+    it('draws itself inline, with no body of its own', () => {
+        expect(surface().presentation).toBe('inline');
+        expect(surface().load).toBeUndefined();
+    });
+});
+
+describe('the player surface gates the panel commands', () => {
+    // 面板长在播放页上；命令面板放开到全 app 之后，这些命令在首页没有可开的东西。
+    // 置灰而不是隐藏——它们在播放页始终存在，凭视图消失会让列表看起来在闪。
+    const PLAYER_SURFACE_COMMAND_IDS = [
+        'panel-cover', 'panel-controls', 'panel-queue', 'panel-account',
+        'panel-local', 'panel-navi', 'panel-onlineLyrics', 'playback-equalizer',
+    ];
+
+    const availableIds = (view: 'home' | 'player') => (
+        getAvailableCommandPaletteCommands(createContext({ scope: { view, filter: null } })).map(command => command.id)
+    );
+
+    it('offers them on the player', () => {
+        const ids = availableIds('player');
+        PLAYER_SURFACE_COMMAND_IDS.forEach(id => expect(ids).toContain(id));
+    });
+
+    it('withdraws them on home', () => {
+        const ids = availableIds('home');
+        PLAYER_SURFACE_COMMAND_IDS.forEach(id => expect(ids).not.toContain(id));
+    });
+
+    it('leaves the rest of the registry alone on home', () => {
+        const ids = availableIds('home');
+        expect(ids).toContain('playback-next');
+        expect(ids).toContain('navigate-player');
+        expect(ids).toContain('visualizer-picker');
+    });
+
+    it('keeps them listed when nobody states a scope', () => {
+        // 契约测试与固定命令选择器都在没有 app 的情况下问可用性，两者都要看到完整注册表。
+        const ids = COMMAND_PALETTE_COMMANDS
+            .filter(command => command.isAvailable?.(undefined) ?? true)
+            .map(command => command.id);
+        PLAYER_SURFACE_COMMAND_IDS.forEach(id => expect(ids).toContain(id));
+    });
 });
 
 describe('personal FM withdraws the queue commands', () => {
@@ -703,8 +1063,12 @@ describe('personal FM withdraws the queue commands', () => {
     // 才活着——所以 FM 播放期间这些命令整体下线，而不是让用户操作完才发现掉出了电台。
     const QUEUE_COMMAND_IDS = ['queue', 'playback-shuffle', 'playback-clear-queue'];
 
-    const availableIds = (isFmMode: boolean) => getAvailableCommandPaletteCommands(createContext({
-        playback: { isFmMode, queue: [{ id: 1, name: 'Song' } as unknown as SongResult] },
+    const queueOf = (length: number) => Array.from({ length }, (_, index) => (
+        { id: index + 1, name: `Song ${index + 1}` } as unknown as SongResult
+    ));
+    // 两首：只有一首时「打乱队列」本来就不出现。
+    const availableIds = (isFmMode: boolean, queue = queueOf(2)) => getAvailableCommandPaletteCommands(createContext({
+        playback: { isFmMode, queue },
     })).map(command => command.id);
 
     it('offers them while Personal FM is off', () => {
@@ -712,15 +1076,24 @@ describe('personal FM withdraws the queue commands', () => {
         QUEUE_COMMAND_IDS.forEach(id => expect(ids).toContain(id));
     });
 
+    it('offers shuffle only for a queue of more than one song', () => {
+        expect(availableIds(false, queueOf(0))).not.toContain('playback-shuffle');
+        expect(availableIds(false, queueOf(1))).not.toContain('playback-shuffle');
+        expect(availableIds(false, queueOf(2))).toContain('playback-shuffle');
+        // 没有 app 时（固定命令的选择器、契约测试）照旧列出来。
+        expect(COMMAND_PALETTE_COMMANDS.find(command => command.id === 'playback-shuffle')?.isAvailable?.(undefined)).toBe(true);
+    });
+
     it('withdraws them while Personal FM is on air', () => {
         const ids = availableIds(true);
         QUEUE_COMMAND_IDS.forEach(id => expect(ids).not.toContain(id));
     });
 
-    it('keeps the FM mode picker and transport reachable', () => {
+    it('keeps the FM controls and the guarded Lattice entry reachable', () => {
         const ids = availableIds(true);
         expect(ids).toContain('playback-fm-mode');
         expect(ids).toContain('playback-next');
+        expect(ids).toContain('navigate-lattice');
     });
 });
 
@@ -749,5 +1122,94 @@ describe('theme generation source commands', () => {
         const ids = getCommandPaletteMatches('封面取色', createContext({ settings: { themeGenerationSource: 'ai' } }))
             .map(match => match.command.id);
         expect(ids).toContain('theme-source-cover');
+    });
+});
+
+// The settings panel disables the performance switch when there is no stem model to run it. The
+// command has to ask the same question: otherwise it can persist `transitionPerformance = true` in
+// a state the panel refuses to produce, and the mode is silently on once a model does arrive.
+describe('transition performance command', () => {
+    const availableIds = (canUseTransitionPerformance: boolean) => (
+        getAvailableCommandPaletteCommands(createContext({ settings: { canUseTransitionPerformance: () => canUseTransitionPerformance } }))
+            .map(command => command.id)
+    );
+
+    it('is offered once a stem model can run', () => {
+        expect(availableIds(true)).toContain('transition-performance-toggle');
+    });
+
+    it('is withdrawn while no stem model is installed', () => {
+        expect(availableIds(false)).not.toContain('transition-performance-toggle');
+    });
+
+    it('stays out of the matches for a direct search', () => {
+        const context = createContext({ settings: { canUseTransitionPerformance: () => false } });
+        const ids = getCommandPaletteMatches('performance mode', context).map(match => match.command.id);
+        expect(ids).not.toContain('transition-performance-toggle');
+    });
+});
+
+// Both commands read one state and act on it, so what matters here is that each acts only on the
+// state that calls for it. Which state they are handed is App's side of the contract: a blend must
+// pass the DISPLAY transport, since the raw one goes IDLE for the length of an arm while the
+// outgoing deck is still sounding - given the raw state, Play called toggle (which during a blend
+// pauses) and Pause found no PLAYING to toggle, so both named the opposite of what they did.
+describe('play and pause commands', () => {
+    const execute = (id: string, playerState: PlayerState) => {
+        const context = createContext({ shared: { playerState } });
+        COMMAND_PALETTE_COMMANDS.find(entry => entry.id === id)!.execute('', context);
+        return context.playback.togglePlay;
+    };
+
+    it('pauses audible playback and leaves Play alone', () => {
+        expect(execute('playback-pause', PlayerState.PLAYING)).toHaveBeenCalled();
+        expect(execute('playback-play', PlayerState.PLAYING)).not.toHaveBeenCalled();
+    });
+
+    it('starts paused playback and leaves Pause alone', () => {
+        expect(execute('playback-play', PlayerState.PAUSED)).toHaveBeenCalled();
+        expect(execute('playback-pause', PlayerState.PAUSED)).not.toHaveBeenCalled();
+    });
+});
+
+
+describe('lattice focus command', () => {
+    // The command is the wall's locate button from the keyboard, and is there when that button is: while a song plays.
+    const playing = { currentSong: { id: 1, name: 'Song' } as unknown as SongResult };
+    it.each(['home', 'player', 'lattice'] as const)('gates focus to lattice from %s', view => {
+        const context = createContext({ scope: { view, filter: null }, shared: playing });
+        const ids = getAvailableCommandPaletteCommands(context).map(command => command.id);
+        expect(ids.includes('lattice-focus-current')).toBe(view === 'lattice');
+    });
+    it('uses c in execute mode only on lattice', () => {
+        const resolveInView = (view: 'player' | 'lattice') => resolveExecuteShortcut(
+            buildExecuteShortcutIndex(getAvailableCommandPaletteCommands(createContext({ scope: { view, filter: null }, shared: playing }))),
+            'c',
+        );
+        const playerResolution = resolveInView('player');
+        const latticeResolution = resolveInView('lattice');
+
+        expect(playerResolution.status === 'exact' && playerResolution.command.id).toBe('panel-cover');
+        expect(latticeResolution.status === 'exact' && latticeResolution.command.id).toBe('lattice-focus-current');
+    });
+    it('presses the locate of the wall and is unavailable while no song plays', async () => {
+        const locatePlayingSongOnWall = vi.fn();
+        const context = createContext({ scope: { view: 'lattice', filter: null }, shared: playing, navigation: { locatePlayingSongOnWall } });
+        const command = getAvailableCommandPaletteCommands(context).find(command => command.id === 'lattice-focus-current')!;
+        expect(await command.execute('', context)).toBe(true);
+        expect(locatePlayingSongOnWall).toHaveBeenCalledOnce();
+        expect(getAvailableCommandPaletteCommands(createContext({
+            scope: { view: 'lattice', filter: null },
+        })).some(command => command.id === 'lattice-focus-current')).toBe(false);
+    });
+});
+
+describe('lattice poster tint command', () => {
+    it('opens the dedicated control surface and is searchable in Chinese', () => {
+        const [match] = getCommandPaletteMatches('海报叠色', createContext());
+
+        expect(match.command.id).toBe('lattice-poster-tint');
+        expect(match.command.requiresInput).toBe(true);
+        expect(match.command.surface).toBe(latticePosterTintSurface);
     });
 });

@@ -6,23 +6,31 @@ import {
     resolveSonnetIconEntryDelay,
     resolveSonnetIconEntryDuration,
     resolveSonnetIconEntryPhase,
-    resolveSonnetIconNames,
+    loadSonnetIconNames,
 } from '@/components/visualizer/sonnet/sonnetIcons';
+import { loadLucideIcons } from '@/services/lucideIconResolver';
 
 // test/unit/visualizer/sonnetIcons.test.ts
 // Locks Sonnet theme-icon validation and complete deterministic particle coverage.
 describe('Sonnet theme icons', () => {
-    it('keeps valid unique Lucide names and ignores invalid values', () => {
-        expect(resolveSonnetIconNames(['Moon', 'moon', 'heart', 'not-a-lucide-icon'])).toEqual(['Moon', 'Heart']);
+    it('keeps valid unique Lucide names and ignores invalid values', async () => {
+        await expect(loadSonnetIconNames(['Moon', 'moon', 'heart', 'not-a-lucide-icon'])).resolves.toEqual(['Moon', 'Heart']);
     });
 
-    it('falls back to the Lucide flower when the theme provides no usable icon', () => {
-        expect(resolveSonnetIconNames(undefined)).toEqual(['Flower']);
-        expect(resolveSonnetIconNames([])).toEqual(['Flower']);
-        expect(resolveSonnetIconNames(['not-a-lucide-icon'])).toEqual(['Flower']);
+    it('falls back to the Lucide flower when the theme provides no usable icon', async () => {
+        await expect(loadSonnetIconNames(undefined)).resolves.toEqual(['Flower']);
+        await expect(loadSonnetIconNames([])).resolves.toEqual(['Flower']);
+        await expect(loadSonnetIconNames(['not-a-lucide-icon'])).resolves.toEqual(['Flower']);
     });
 
-    it('builds theme-colored SVG data and complete cache keys', () => {
+    it('draws every name it returns, the fallback included', async () => {
+        const names = [...await loadSonnetIconNames(['Sun', 'Leaf']), ...await loadSonnetIconNames(undefined)];
+        names.forEach(name => expect(buildSonnetIconDataUrl(name, '#fff', 1.5, 64), name).toContain('data:image/svg+xml'));
+    });
+
+    it('builds theme-colored SVG data and complete cache keys', async () => {
+        expect(buildSonnetIconDataUrl('Sparkles', '#ff00aa', 1.5, 192)).toBeNull();
+        await loadLucideIcons(['Sparkles']);
         const url = buildSonnetIconDataUrl('Sparkles', '#ff00aa', 1.5, 192);
         expect(url).toContain('data:image/svg+xml');
         expect(decodeURIComponent(url ?? '')).toContain('#ff00aa');

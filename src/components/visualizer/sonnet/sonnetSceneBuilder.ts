@@ -41,6 +41,8 @@ export interface ShotView {
     basePivotX: number;
     basePivotY: number;
     haloLayer: import('pixi.js').Container;
+    /** The halo's alpha as built; 智能动感模式's downbeat flare lifts from it and returns to it. */
+    haloBaseAlpha: number;
     mgLayer: import('pixi.js').Container;
     mgBackgroundLayer?: import('pixi.js').Container;
     mgGeoLayer?: import('pixi.js').Container;
@@ -64,6 +66,8 @@ export interface SonnetSceneBuildOptions {
     host: HTMLDivElement;
     theme: Theme;
     tuning: SonnetTuning;
+    /** 智能动感模式 (`smartBeatActive`: on or cached): builds the MG onset pop and the downbeat tear's filter. */
+    smartBeatEnabled: boolean;
     lyricsFontScale: number;
     staticMode: boolean;
     transparentBackground: boolean;
@@ -200,7 +204,8 @@ export const buildSonnetScene = (
             width,
             height,
             shotSeed,
-            iconTextures
+            iconTextures,
+            options.smartBeatEnabled,
         );
         shotContainer.addChild(mgLayer);
         const mgBackgroundLayer = (mgLayer as any).bgLayer as import('pixi.js').Container | undefined;
@@ -218,6 +223,13 @@ export const buildSonnetScene = (
         );
         const guideLayer = new Container();
         const textLayer = new Container();
+        // Every glyph's screen-blended aberration copies share this one layer instead of sitting in
+        // the glyph wrapper. Interleaved screen/normal children break Pixi's batch on each switch,
+        // turning a shot into ~2 draws per glyph; an Intel iGPU has hung on exactly that stream and
+        // the failed engine reset took the compositor down with it. Added first, so the bg shapes
+        // and frame decor later inserted at index 0 still sit below the aberration.
+        const caLayer = new Container();
+        textLayer.addChild(caLayer);
         guideLayer.visible = showGuide;
         haloLayer.visible = !showOnlyText;
         shotContainer.addChild(guideLayer, haloLayer, textLayer);
@@ -249,6 +261,7 @@ export const buildSonnetScene = (
                     guideLayer,
                     haloLayer,
                     textLayer,
+                    caLayer,
                 },
             ));
         });
@@ -302,6 +315,7 @@ export const buildSonnetScene = (
             basePivotX: focusX,
             basePivotY: focusY,
             haloLayer,
+            haloBaseAlpha: haloLayer.alpha,
             mgLayer,
             mgBackgroundLayer,
             mgGeoLayer,
@@ -338,12 +352,20 @@ export const buildSonnetScene = (
         container.filters = [...(container.filters ?? []), transitionBlurFilter];
         postProcessFilters.push(transitionBlurFilter);
     }
-    const transitionGlitchEffect = options.tuning.enableTransitions && !options.staticMode
+    // 智能动感模式 reuses this filter for the downbeat tear.
+    const transitionGlitchEffect = (options.tuning.enableTransitions || options.smartBeatEnabled) && !options.staticMode
         ? createSonnetGlitchEffect(pixi)
         : null;
     if (transitionGlitchEffect) {
         container.filters = [...(container.filters ?? []), transitionGlitchEffect.filter];
         postProcessFilters.push(transitionGlitchEffect.filter);
+    }
+    if (transitionBlurFilter || transitionGlitchEffect) {
+        // Without a filterArea the transition filters run over the scene's content bounds, and those
+        // follow what has drawn in so far: AnimatedGraphics skips commands that have not started yet,
+        // so the glitch's slice offsets would depend on stagger progress. Pin the frame to the
+        // viewport, as the post-process above does.
+        container.filterArea = new pixi.Rectangle(0, 0, width, height);
     }
     container.visible = false;
     return {

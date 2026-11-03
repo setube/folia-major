@@ -1,0 +1,10 @@
+{
+  "format": "folium-signature",
+  "version": 1,
+  "modId": "transparent-mov-export",
+  "modVersion": "1.0.1",
+  "digest": "sha256:29e37ac988a835166d1c10df577b3025752853fa5e4596457e442b5251bf7ad0",
+  "keyId": "folium-2026-1",
+  "signedAt": "2026-10-17T07:54:59.483Z",
+  "signature": "NXeXtsIy6jgggvyMzcvySOm7r8jMraBSA+tjlGeezdVWejWyKYGs9GKY5r20TcC6aXCDuH8QY1nhmI8FExgNCA=="
+}

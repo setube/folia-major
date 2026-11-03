@@ -5,12 +5,20 @@ import type { Line } from '../../../types';
 import { extractRepresentativeColors } from '../../../utils/colorExtractor';
 import { loadTemperaLayerImageBlobs } from '../../../services/temperaLayerImages';
 import { resolveThemeFontStack, resolveThemeFontWeight } from '../../../utils/fontStacks';
+import { resolveLyricAntialias } from '../../../utils/lyricRenderQuality';
 import { getLineRenderEndTime } from '../../../utils/lyrics/renderHints';
 import type { VisualizerSharedProps } from '../definition';
+import { useVisualizerPixiHost } from '../pixi/pixiRuntimeHost';
+import { useLyricRenderQuality } from '../renderQuality/useLyricRenderQuality';
 import { useVisualizerRuntime } from '../runtime';
+import { useVisualizerSongCommit } from '../songHandover';
 import VisualizerShell from '../VisualizerShell';
 import VisualizerSubtitleOverlay from '../VisualizerSubtitleOverlay';
-import type { TemperaPixiRuntime, TemperaSongMetadata } from './createTemperaPixiRuntime';
+import type {
+    TemperaPixiRuntime,
+    TemperaSongContext,
+    TemperaSongMetadata,
+} from './createTemperaPixiRuntime';
 import { compileTemperaProgram } from './temperaProgram';
 
 // src/components/visualizer/tempera/VisualizerTempera.tsx
@@ -37,21 +45,29 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
         songAlbum,
         isPlayerChromeHidden = false,
         hideTranslationSubtitle = false,
-        showSubtitleTranslation = true,
-        subtitleContentMode,
+        subtitleOverlayLayout,
         subtitleTheme,
         subtitleFontScale,
         subtitleOverlayOpacity,
         subtitleOverlayBackground,
+        subtitleUpcomingLyricsBlur,
+        isPreviewMode = false,
         temperaTuning = DEFAULT_TEMPERA_TUNING,
     } = props;
     const { t } = useTranslation();
     const hostRef = useRef<HTMLDivElement>(null);
-    const runtimeRef = useRef<TemperaPixiRuntime | null>(null);
     const pausedRef = useRef(paused);
     pausedRef.current = paused;
     const temperaTuningRef = useRef(temperaTuning);
     temperaTuningRef.current = temperaTuning;
+    // 分辨率与抗锯齿（#929）：全局挡位叠上本样式的覆盖。倍数乘在 textureResolution 上；抗锯齿「自动」是原来的
+    // !postProcessEnabled（开了后处理画面画进滤镜自己的多重采样目标，画布 MSAA 只剩画框边缘受益）。
+    // 预览（样式架小图、样式窗口、主题乐园）保持原来的密度和抗锯齿，不跟这两个设置。
+    const renderQuality = useLyricRenderQuality(temperaTuning.render);
+    const renderScale = isPreviewMode ? 1 : renderQuality.scale;
+    const antialias = resolveLyricAntialias(isPreviewMode ? 'auto' : renderQuality.antialias, !temperaTuning.postProcessEnabled);
+    const renderScaleRef = useRef(renderScale);
+    renderScaleRef.current = renderScale;
     const latestSongMetadataRef = useRef<TemperaSongMetadata>({
         title: songTitle,
         artist: songArtist,
@@ -65,37 +81,18 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
     const [coverColors, setCoverColors] = useState<string[]>([]);
     const [imageBlobs, setImageBlobs] = useState<Map<string, Blob>>(() => new Map());
     const [runtimeFailed, setRuntimeFailed] = useState(false);
-    const [isInstrumental, setIsInstrumental] = useState(false);
-    const lyricsSig = lines.length === 0 ? '' : `${lines.length}|${lines[0]?.fullText ?? ''}`;
-    const seedRef = useRef(seed);
 
-    useEffect(() => {
-        if (lyricsSig !== '') {
-            setIsInstrumental(false);
-            seedRef.current = seed;
-            return undefined;
-        }
-        if (seed !== seedRef.current) {
-            setIsInstrumental(false);
-            seedRef.current = seed;
-        }
-
-        let raf = 0;
-        let sawReset = false;
-        const startWall = performance.now();
-        const watch = () => {
-            const time = currentTime.get();
-            const capped = performance.now() - startWall >= 3000;
-            if (!sawReset && time < 1) sawReset = true;
-            if ((sawReset && time >= 2) || capped) {
-                setIsInstrumental(true);
-                return;
-            }
-            raf = requestAnimationFrame(watch);
-        };
-        raf = requestAnimationFrame(watch);
-        return () => cancelAnimationFrame(raf);
-    }, [seed, lyricsSig, currentTime]);
+    // The song actually on screen. It lags the props across a switch so the scene is never
+    // rebuilt against lyrics that have not arrived yet - see songHandover.ts.
+    const committedSong = useVisualizerSongCommit({
+        seed,
+        lines,
+        currentTime,
+        readyGraceMs: 3000,
+    });
+    const committedSeed = committedSong.seed;
+    const committedLines = committedSong.lines;
+    const isInstrumental = committedSong.isInstrumental;
 
     const virtualLines = useMemo(() => {
         if (!isInstrumental) return EMPTY_TEMPERA_LINES;
@@ -113,10 +110,13 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
         return generated;
     }, [isInstrumental]);
 
-    const programLines = showText ? (lines.length > 0 ? lines : virtualLines) : EMPTY_TEMPERA_LINES;
+    const programLines = showText
+        ? (committedLines.length > 0 ? committedLines : virtualLines)
+        : EMPTY_TEMPERA_LINES;
+    const wholeLineLyrics = temperaTuning.wholeLineLyrics;
     const program = useMemo(
-        () => compileTemperaProgram(programLines, seed),
-        [programLines, seed],
+        () => compileTemperaProgram(programLines, committedSeed, { wholeLineLyrics }),
+        [programLines, committedSeed, wholeLineLyrics],
     );
     const { activeLine, recentCompletedLine, nextLines } = useVisualizerRuntime({
         currentTime,
@@ -160,7 +160,9 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
         const placements = layerImagesRef.current;
         const injected = injectedAssetsRef.current;
         if (placements.length === 0) {
-            setImageBlobs(new Map());
+            // The map is part of the runtime's rebuild key: a new empty one in place of the empty one
+            // it mounted with threw away the WebGL runtime being made and made another.
+            setImageBlobs(blobs => (blobs.size === 0 ? blobs : new Map()));
             return undefined;
         }
         let active = true;
@@ -182,78 +184,65 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
         };
     }, [layerImageIds, injectedAssetIds]);
 
+    // Song-scoped inputs, kept as one object so a track change is a single identity change.
+    const songContext = useMemo<TemperaSongContext>(
+        () => ({ seed: committedSeed, program, theme, coverColors }),
+        [committedSeed, coverColors, program, theme],
+    );
+
+    const runtimeRef = useVisualizerPixiHost<TemperaPixiRuntime, TemperaSongContext>({
+        hostRef,
+        label: 'Tempera',
+        // Only inputs that genuinely need a new WebGL context and texture pool. The song is
+        // handed to the live runtime instead - see TemperaPixiRuntime.swapSong. Whether the canvas
+        // is antialiased is fixed when the context is made: post-processing decides it unless the
+        // 抗锯齿 setting forces it. The 分辨率 multiplier is pushed in place (setRenderScale).
+        rebuildKey: [currentTime, imageBlobs, lyricsFontScale, staticMode, antialias],
+        song: songContext,
+        create: async (host, song, signal) => {
+            const { TemperaPixiRuntime } = await import('./createTemperaPixiRuntime');
+            const metadata = latestSongMetadataRef.current;
+            const runtime = await TemperaPixiRuntime.create({
+                host,
+                songSeed: song.seed,
+                program: song.program,
+                theme: song.theme,
+                tuning: temperaTuningRef.current,
+                renderScale: renderScaleRef.current,
+                antialias,
+                currentTime,
+                lyricsFontScale,
+                staticMode,
+                coverColors: song.coverColors,
+                imageBlobs,
+                paused: pausedRef.current,
+                songTitle: metadata.title,
+                songArtist: metadata.artist,
+                songAlbum: metadata.album,
+                signal,
+            });
+            runtime.setSongMetadata(latestSongMetadataRef.current);
+            // The tuning may have moved on while Pixi was importing or initializing.
+            runtime.setTuning(temperaTuningRef.current);
+            runtime.setRenderScale(renderScaleRef.current);
+            // The pause state may have changed while Pixi was importing or initializing.
+            runtime.setPaused(pausedRef.current);
+            return runtime;
+        },
+        swap: (runtime, song, signal) => runtime.swapSong(song, signal),
+        destroy: runtime => runtime.destroy(),
+        onFailedChange: setRuntimeFailed,
+    });
+
     // Tuning is pushed into the live renderer rather than rebuilding it. A rebuild per pointer
     // move re-initialises WebGL, re-decodes every placed image and re-measures every line.
     useEffect(() => {
         runtimeRef.current?.setTuning(temperaTuning);
-    }, [temperaTuning]);
+    }, [temperaTuning, runtimeRef]);
 
     useEffect(() => {
-        const host = hostRef.current;
-        if (!host) return undefined;
-        let disposed = false;
-        let createdRuntime: TemperaPixiRuntime | null = null;
-        const abortController = new AbortController();
-        setRuntimeFailed(false);
-        void import('./createTemperaPixiRuntime')
-            .then(({ TemperaPixiRuntime }) => {
-                const metadata = latestSongMetadataRef.current;
-                return TemperaPixiRuntime.create({
-                    host,
-                    program,
-                    theme,
-                    tuning: temperaTuningRef.current,
-                    currentTime,
-                    lyricsFontScale,
-                    staticMode,
-                    coverColors,
-                    imageBlobs,
-                    paused: pausedRef.current,
-                    songTitle: metadata.title,
-                    songArtist: metadata.artist,
-                    songAlbum: metadata.album,
-                    signal: abortController.signal,
-                });
-            })
-            .then(runtime => {
-                if (disposed) {
-                    runtime.destroy();
-                    return;
-                }
-                createdRuntime = runtime;
-                runtimeRef.current = runtime;
-                runtime.setSongMetadata(latestSongMetadataRef.current);
-                // The tuning may have moved on while Pixi was importing or initializing.
-                runtime.setTuning(temperaTuningRef.current);
-                // The pause state may have changed while Pixi was importing or initializing.
-                runtime.setPaused(pausedRef.current);
-            })
-            .catch(error => {
-                if (error instanceof DOMException && error.name === 'AbortError') return;
-                console.error('[Tempera] Pixi runtime initialization failed', error);
-                if (!disposed) setRuntimeFailed(true);
-            });
-        return () => {
-            disposed = true;
-            abortController.abort();
-            if (createdRuntime) {
-                createdRuntime.destroy();
-                if (runtimeRef.current === createdRuntime) runtimeRef.current = null;
-            } else if (runtimeRef.current) {
-                runtimeRef.current.destroy();
-                runtimeRef.current = null;
-            }
-            host.replaceChildren();
-        };
-    }, [
-        coverColors,
-        currentTime,
-        imageBlobs,
-        lyricsFontScale,
-        program,
-        staticMode,
-        theme,
-    ]);
+        runtimeRef.current?.setRenderScale(renderScale);
+    }, [renderScale, runtimeRef]);
 
     useEffect(() => {
         runtimeRef.current?.setSongMetadata(latestSongMetadataRef.current);
@@ -310,10 +299,10 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
                 subtitleFontScale={subtitleFontScale}
                 subtitleOverlayOpacity={subtitleOverlayOpacity}
                 subtitleOverlayBackground={subtitleOverlayBackground}
+                subtitleUpcomingLyricsBlur={subtitleUpcomingLyricsBlur}
                 isPlayerChromeHidden={isPlayerChromeHidden}
                 hideTranslationSubtitle={hideTranslationSubtitle}
-                showSubtitleTranslation={showSubtitleTranslation}
-                subtitleContentMode={subtitleContentMode}
+                subtitleOverlayLayout={subtitleOverlayLayout}
             />
         </VisualizerShell>
     );

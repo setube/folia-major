@@ -21,7 +21,7 @@ import {
     resolveGradientEnergy,
     resolveTextLife,
     shouldResetDioramaUnitState,
-} from '@/components/visualizer/diorama/DioramaScene';
+} from '@/components/visualizer/diorama/dioramaSceneUnits';
 import {
     getDioramaKeywordDisplayedContrastRatio,
     prepareDioramaKeywordMatchers,
@@ -65,7 +65,7 @@ import {
     type DioramaParticleCorridorSpan,
 } from '@/components/visualizer/diorama/dioramaParticleCorridor';
 import { appendSegment, createSequencerState } from '@/components/visualizer/diorama/dioramaSequencer';
-import { resolveStoredDioramaTuning } from '@/stores/useSettingsUiStore';
+import { resolveStoredDioramaTuning } from '@/components/visualizer/diorama/tuning';
 import {
     getDioramaParticleContrastRatio,
     getDioramaParticleDisplayedContrastRatio,

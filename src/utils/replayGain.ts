@@ -7,8 +7,6 @@ export interface ReplayGainCalculation {
     effectiveGainDb: number;
     peak?: number;
     linearGain: number;
-    /** 这首歌是否带 ReplayGain 标签。auto 模式据此决定要不要退回实时测量。 */
-    hasTagGain: boolean;
 }
 
 export const toFiniteNumber = (value: unknown): number | undefined => {
@@ -24,23 +22,21 @@ export const decibelsToLinearPeak = (decibels: unknown): number | undefined => {
 };
 
 // Selects the requested mode, applies album-to-track fallback, and prevents positive gain from clipping.
+// 'auto' (智能平衡) decides per song from what it knows of the song: services/volumeBalance.
 export const calculateReplayGain = (
     replayGain: ReplayGainInfo | null | undefined,
-    mode: ReplayGainMode,
+    mode: Exclude<ReplayGainMode, 'auto'>,
 ): ReplayGainCalculation => {
     if (!replayGain || mode === 'off') {
-        return { gainDb: 0, effectiveGainDb: 0, linearGain: 1, hasTagGain: false };
+        return { gainDb: 0, effectiveGainDb: 0, linearGain: 1 };
     }
 
-    // auto 与 track 都以单曲增益为准，只在缺失时借专辑值顶上——
-    // 有值总比退回实时测量准确，测量拿不到整首歌的全貌。
-    const taggedGainDb = mode === 'album'
-        ? toFiniteNumber(replayGain.albumGain) ?? toFiniteNumber(replayGain.trackGain)
-        : toFiniteNumber(replayGain.trackGain) ?? (mode === 'auto' ? toFiniteNumber(replayGain.albumGain) : undefined);
-    const gainDb = taggedGainDb ?? 0;
+    const gainDb = mode === 'album'
+        ? toFiniteNumber(replayGain.albumGain) ?? toFiniteNumber(replayGain.trackGain) ?? 0
+        : toFiniteNumber(replayGain.trackGain) ?? 0;
     const peak = mode === 'album'
         ? toFiniteNumber(replayGain.albumPeak) ?? toFiniteNumber(replayGain.trackPeak)
-        : toFiniteNumber(replayGain.trackPeak) ?? (mode === 'auto' ? toFiniteNumber(replayGain.albumPeak) : undefined);
+        : toFiniteNumber(replayGain.trackPeak);
 
     let effectiveGainDb = gainDb;
     if (gainDb > 0 && peak !== undefined && peak > 0) {
@@ -53,6 +49,5 @@ export const calculateReplayGain = (
         effectiveGainDb,
         peak,
         linearGain: Math.pow(10, effectiveGainDb / 20),
-        hasTagGain: taggedGainDb !== undefined,
     };
 };

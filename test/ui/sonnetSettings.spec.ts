@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { APP_VERSION } from './helpers/appState';
+import { APP_VERSION, waitForAppMounted } from '../helpers/appState';
 
 // test/ui/sonnetSettings.spec.ts
 // Verifies entering Sonnet from the real settings UI and the visibility tuning controls it exposes.
@@ -9,22 +9,24 @@ import { APP_VERSION } from './helpers/appState';
 test('enters Sonnet from settings and exposes its layer controls', async ({ page }) => {
     await page.addInitScript((version) => {
         localStorage.clear();
-        localStorage.setItem('i18nextLng', 'en');
+        localStorage.setItem('library_suite_prompt_seen', 'true');
+        localStorage.setItem('folia_app_language', 'en');
         localStorage.setItem('visualizer_mode', 'classic');
         localStorage.setItem('static_mode', 'true');
-        localStorage.setItem('folia_last_seen_guide_version', version);
+        localStorage.setItem('folia_last_seen_ponder_onboarding_version', version);
     }, APP_VERSION);
     await page.route('**/__mock_netease__/**', async (route) => {
         await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
     await page.goto('/');
+    await waitForAppMounted(page);
     await page.evaluate(async () => {
-        const storeModulePath = '/src/stores/useSettingsUiStore.ts';
-        const { useSettingsUiStore } = await import(storeModulePath);
-        useSettingsUiStore.getState().openSettings('options', 'visualizer', 'visualizer');
+        const storeModulePath = '/src/stores/useSettingsModalStore.ts';
+        const { useSettingsModalStore } = await import(storeModulePath);
+        useSettingsModalStore.getState().openSettings('options', 'visualizer', 'visualizer');
     });
 
-    const sonnetMode = page.getByRole('button', { name: 'Sonnet', exact: true });
+    const sonnetMode = page.getByRole('radio', { name: 'Sonnet', exact: true });
     await expect(sonnetMode).toBeVisible();
     await sonnetMode.click();
 
@@ -36,9 +38,9 @@ test('enters Sonnet from settings and exposes its layer controls', async ({ page
     await expect(page.getByText('Background decorations', { exact: true })).toBeVisible();
 
     const visualizerMode = await page.evaluate(async () => {
-        const storeModulePath = '/src/stores/useSettingsUiStore.ts';
-        const { useSettingsUiStore } = await import(storeModulePath);
-        return useSettingsUiStore.getState().visualizerMode;
+        const storeModulePath = '/src/stores/useVisualizerSettingsStore.ts';
+        const { useVisualizerSettingsStore } = await import(storeModulePath);
+        return useVisualizerSettingsStore.getState().visualizerMode;
     });
     expect(visualizerMode).toBe('sonnet');
 });

@@ -1,0 +1,69 @@
+/* src/library/suites/bravais/bravaisAccount.css
+   B10 账户的样式（设计稿 §10.7）：首页在线页签窄缝里的平台切换。登录与切换确认不在缝里（共用的登录窗口与
+   grid 的确认框）。单独成文件，不改 bravais.css / bravaisCollection.css / bravaisHome.css 的已有块。
+   颜色都跟主题变量走。 */
+
+/* ---------- 首页窄缝：平台切换 ---------- */
+
+.bravais-account-switcher { position: relative; display: flex; width: 100%; flex-direction: column; gap: 4px; }
+
+/* fb8（用户实测）：入口改成 grid 账户切换器的样子——圆形头像 / 平台徽章（BravaisProviderAvatar）在上，名字在下
+   （已登录是昵称，无需登录是平台名，未登录是「连接在线平台」）；不再显示账户状态字（挪进 aria-label / title）。
+   窄缝只有约 100px 宽，横排放不下昵称，所以竖排居中。
+   fb9 追加（用户实测）：不要描边。静止时无框（透明边只占位），悬停 / 菜单展开是浅底，键盘焦点用缝里按钮共用的
+   focus-visible 环；书脊上的那颗（.bravais-account-spine）悬停也只出底色，不出 .bravais-seam-icon 的悬停框。 */
+.bravais-seam .bravais-account-entry {
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    color: var(--text-primary, #f7f4ee);
+    background: none;
+    cursor: pointer;
+}
+
+.bravais-seam .bravais-account-entry:hover,
+.bravais-seam .bravais-account-entry[aria-expanded='true'] { background: color-mix(in srgb, currentColor 12%, transparent); }
+
+.bravais-account-entry .is-name {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 「连接在线平台」可以折行（四到五个字一行），昵称与平台名一行截断。 */
+.bravais-account-connect .is-name { text-align: center; white-space: normal; overflow-wrap: anywhere; }
+
+/* 头像 / 徽章：圆形；徽章是纯色底 + 白字（与 grid 切换器同一套），连接图标是浅底圆。 */
+.bravais-account-avatar {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    box-sizing: border-box;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 999px;
+    object-fit: cover;
+}
+
+.bravais-account-avatar.is-badge { color: #fff; font-size: 14px; font-weight: 900; line-height: 1; }
+.bravais-account-avatar.is-connect { background: color-mix(in srgb, currentColor 12%, transparent); }
+.bravais-account-avatar.is-connect svg { width: 16px; height: 16px; }
+
+/* 书脊：36px 的图标按钮里放 28px 的头像 / 徽章 / 连接图标。 */
+.bravais-seam .bravais-account-spine { padding: 0; }
+.bravais-seam .bravais-account-spine:hover { border-color: transparent; }
+.bravais-account-spine .bravais-account-avatar { width: 28px; height: 28px; }
+.bravais-account-spine .bravais-account-avatar.is-badge { font-size: 12px; }
+
+/* 书脊上只留一个图标按钮：点它打开登录窗口。 */
+.bravais-account-switcher.is-compact { align-items: center; }

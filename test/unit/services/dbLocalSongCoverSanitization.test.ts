@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appDatabase } from '../../../src/services/appDatabase';
-import { getLocalSongs, saveLocalSong, saveLocalSongs } from '../../../src/services/db';
+import { getLocalSong, getLocalSongs, saveLocalSong, saveLocalSongs } from '../../../src/services/db';
 import type { LocalSong } from '../../../src/types';
 
 // test/unit/services/dbLocalSongCoverSanitization.test.ts
@@ -67,6 +67,20 @@ describe('db local song cover sanitization', () => {
 
         expect(songs[0]).not.toHaveProperty('embeddedCover');
         expect(await appDatabase.local_music.get('invalid-cover-song')).not.toHaveProperty('embeddedCover');
+    });
+
+    it('reads one local song by id with the same sanitization and without a full-table read', async () => {
+        const legacy = { ...buildLocalSong('single-read-song'), embeddedCover: new Blob(['cover'], { type: 'image/png' }) };
+        await appDatabase.local_music.put(legacy as LegacyLocalSong);
+        await appDatabase.local_music.put(buildLocalSong('other-song'));
+        const fullRead = vi.spyOn(appDatabase.local_music, 'toArray');
+
+        const song = await getLocalSong('single-read-song');
+
+        expect(song).toMatchObject({ id: 'single-read-song' });
+        expect(song).not.toHaveProperty('embeddedCover');
+        expect(fullRead).not.toHaveBeenCalled();
+        expect(await getLocalSong('missing-song')).toBeUndefined();
     });
 
     it('rejects when saving one local song fails', async () => {

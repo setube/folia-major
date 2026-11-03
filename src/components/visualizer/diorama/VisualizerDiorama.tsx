@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { DEFAULT_DIORAMA_TUNING, type Line } from '../../../types';
+import { isInterludeLine } from '../../../utils/lyrics/parserCore';
+import { resolveLyricAntialias, resolveLyricPixelRatio } from '../../../utils/lyricRenderQuality';
 import { useVisualizerRuntime } from '../runtime';
 import { type VisualizerSharedProps } from '../definition';
 import VisualizerShell from '../VisualizerShell';
+import { useLyricRenderQuality } from '../renderQuality/useLyricRenderQuality';
 import VisualizerSubtitleOverlay from '../VisualizerSubtitleOverlay';
+import { resolveSubtitleFontSizes } from '../subtitleFontSizes';
 import CameraRig from './CameraRig';
 import DioramaScene from './DioramaScene';
 import { type DioramaVec, getFrame, resolveDioramaMotionParams } from './cameraPath';
@@ -18,6 +22,7 @@ import {
     updateActiveSegmentLines,
 } from './dioramaSequencer';
 import { pickTransitionOffset, TRANSITION_DURATION } from './dioramaTransition';
+import { useFirstFrameDrawn } from '../styleTransition/firstFrame';
 
 // src/components/visualizer/diorama/VisualizerDiorama.tsx
 // A 3D "flythrough" style: lyric lines are actual staged text objects along a winding path in world
@@ -95,6 +100,59 @@ const INSTRUMENTAL_COMMIT_SECONDS = 2;
 // advances (e.g. the new song is paused / fails to start). Far longer than a normal lyric load.
 const READY_GRACE_MS = 8000;
 
+/**
+ * Inside the Canvas: the scene is drawn the first time once its shader programs are linked, which the
+ * GPU process does side by side while the page goes on (KHR_parallel_shader_compile, as three's
+ * compileAsync), and once three has asked what it asks on a program's first use. Linked and asked on
+ * that first draw, they held the main thread: on four slow cores 160 ms the first time, 20 to 50 ms
+ * after, the questions waiting behind the draws queued before them. The programs are made in the first
+ * frame's callback, after what the scene sets up when it mounts. With a priority above 0 this callback
+ * draws each frame as the Canvas would, after the scene's own callbacks. `onDrawn` is called once the
+ * scene has been drawn the first time: a frame's callbacks run before it is drawn, so the second drawn
+ * frame's says the first one was.
+ */
+const FirstFrame: React.FC<{ onDrawn: () => void }> = ({ onDrawn }) => {
+    const linking = useRef<'not yet' | 'started' | 'done'>('not yet');
+    const frames = useRef(0);
+    const mounted = useRef(true);
+    useEffect(() => () => {
+        mounted.current = false;
+    }, []);
+    useFrame(({ gl, scene, camera }) => {
+        if (linking.current === 'not yet') {
+            linking.current = 'started';
+            // compileAsync would go on asking after the Canvas is gone: its lost context never answers.
+            const materials = gl.compile(scene, camera);
+            const look = () => {
+                if (!mounted.current) return;
+                const started = performance.now();
+                // Each question is an answer from the GPU process: in the order the programs were made,
+                // and the first unfinished one ends the look.
+                for (const material of materials) {
+                    const { currentProgram } = gl.properties.get(material) as {
+                        currentProgram?: { isReady: () => boolean; getUniforms: () => unknown };
+                    };
+                    if (currentProgram && !currentProgram.isReady()) break;
+                    currentProgram?.getUniforms();
+                    materials.delete(material);
+                    if (performance.now() - started > 4) break;
+                }
+                if (materials.size === 0) linking.current = 'done';
+                else window.setTimeout(look, 10);
+            };
+            look();
+        }
+        if (linking.current !== 'done') return;
+        gl.render(scene, camera);
+        frames.current += 1;
+        if (frames.current === 2) onDrawn();
+    }, 1);
+    return null;
+};
+
+/** 镜台原来的像素密度：r3f 的 dpr={[1, 2]}，即设备像素比夹在 1 到 2 之间。 */
+const DIORAMA_DPR_RANGE: [number, number] = [1, 2];
+
 const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
     const {
         currentTime,
@@ -109,13 +167,25 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
         subtitleFontScale = 1,
         subtitleOverlayOpacity,
         subtitleOverlayBackground,
+        subtitleUpcomingLyricsBlur,
         isPlayerChromeHidden = false,
         hideTranslationSubtitle = false,
-        subtitleContentMode,
+        subtitleOverlayLayout,
         seed,
         dioramaTuning,
+        isPreviewMode = false,
     } = props;
     const { t } = useTranslation();
+    // 分辨率与抗锯齿（#929）：全局挡位叠上这个样式的覆盖；预览（样式架小图等）保持原来的 dpr 与抗锯齿。
+    // 分辨率经 r3f 的 dpr 就地改（setPixelRatio，不重建上下文）；抗锯齿只在建上下文时生效，变了换 Canvas 的 key 重建。
+    const renderQuality = useLyricRenderQuality(dioramaTuning?.render);
+    const renderScale = isPreviewMode ? 1 : renderQuality.scale;
+    const canvasDpr = renderScale === 1
+        ? DIORAMA_DPR_RANGE
+        : resolveLyricPixelRatio(Math.min(DIORAMA_DPR_RANGE[1], Math.max(DIORAMA_DPR_RANGE[0], window.devicePixelRatio || 1)), renderScale);
+    const canvasAntialias = isPreviewMode ? true : resolveLyricAntialias(renderQuality.antialias, true);
+    // A style switch waits for the first draw of the scene (FirstFrame).
+    const firstFrameDrawn = useFirstFrameDrawn();
 
     const { activeLine, recentCompletedLine, nextLines } = useVisualizerRuntime({
         currentTime,
@@ -242,7 +312,22 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
     // makes the prune below drop the outgoing scene (it looks "already flown past"). It also then snaps back
     // to 0 a frame later, which the loop-restart test misreads as a loop.
     const instrumentalReadHead = instrumentalSeedRef.current === gatedSeed ? instrumentalIndex : 0;
-    const effectiveLineIndex = isInstrumental ? instrumentalReadHead : currentLineIndex;
+    // An INTERLUDE line ('......', which attachInterludes inserts into EVERY gap longer than 3s) is a
+    // placeholder, not a lyric - every other visualizer special-cases it (classic centres it, cadenza
+    // gives it its own drift, cappella swaps in an image). In a corridor the read-head IS the
+    // composition, so the diorama not special-casing it meant the camera left the line the viewer is
+    // reading, flew a full cinematic shot forward, and framed six dots for the length of the gap.
+    // That is what "the camera stops locking onto the lyric after a while" is: it is not drift, it is
+    // the camera being handed a new line to go and frame.
+    //
+    // Treat it exactly as the -1 the parent already sends mid-gap: the sticky index below keeps the
+    // last real line, and resolveHoldSettle then eases the shot back onto it. The interlude stays in
+    // the corridor (same geometry, same indices) - it just never becomes the thing being framed.
+    const onInterlude = !isInstrumental
+        && currentLineIndex >= 0
+        && !!gatedLines[currentLineIndex]
+        && isInterludeLine(gatedLines[currentLineIndex]);
+    const effectiveLineIndex = isInstrumental ? instrumentalReadHead : onInterlude ? -1 : currentLineIndex;
 
     // ── Transition state machine (spawn-offset + camera flight) ──────────────────────────────────
     // The diorama gets no explicit "song changed"/"looped" event, so both are inferred here from the
@@ -324,6 +409,16 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
     const startingTransition = (keyChanged && hadPrevious) || isLoopRestart;
     if (startingTransition) {
         transitionEpochRef.current += 1;
+        // One line per flight, saying WHICH of the two reasons started it. An automix blend should
+        // print exactly one "new song" when the hold releases. A "loop restart" at the moment a
+        // blend arms is the failure this is here to make visible: it means something reset the
+        // lyric read-head under the outgoing song, and the camera is about to fly a round trip to
+        // nowhere before the real change even happens.
+        console.log(
+            `[Diorama] camera flight #${transitionEpochRef.current}:`
+            + ` ${isNewSong ? 'new song' : 'loop restart'}, seed ${String(gatedSeed ?? 'none')},`
+            + ` leaving line ${outgoingGlobal}`,
+        );
         setTransition({ epoch: transitionEpochRef.current, outgoingIndex: outgoingGlobal });
     }
     if (effectiveLineIndex >= 0) {
@@ -362,8 +457,7 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
     const showWaiting = showText && !activeLine && !hasEverActiveRef.current;
 
     const emptyFontSize = `clamp(${(1.5 * lyricsFontScale).toFixed(3)}rem, ${(3.5 * lyricsFontScale).toFixed(3)}vw, ${(2.25 * lyricsFontScale).toFixed(3)}rem)`;
-    const translationFontSize = `clamp(${(1.125 * lyricsFontScale).toFixed(3)}rem, ${(2.6 * lyricsFontScale).toFixed(3)}vw, ${(1.25 * lyricsFontScale).toFixed(3)}rem)`;
-    const upcomingFontSize = `clamp(${(0.875 * lyricsFontScale).toFixed(3)}rem, ${(2 * lyricsFontScale).toFixed(3)}vw, ${(1 * lyricsFontScale).toFixed(3)}rem)`;
+    const { translationFontSize, upcomingFontSize } = resolveSubtitleFontSizes(lyricsFontScale);
 
     return (
         <VisualizerShell
@@ -374,11 +468,16 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
         >
             <div className="absolute inset-0 z-0">
                 <Canvas
+                    key={canvasAntialias ? 'antialias' : 'aliased'}
                     camera={{ position: [0, 0.6, 9], fov: 55 }}
-                    dpr={[1, 2]}
-                    gl={{ alpha: true, antialias: true }}
+                    dpr={canvasDpr}
+                    gl={{ alpha: true, antialias: canvasAntialias }}
+                    // The size it is laid out at, not the size on screen: drawn small through a CSS
+                    // scale (the pickers' pictures) it keeps the scene of the full page.
+                    resize={{ offsetSize: true }}
                     style={{ background: 'transparent' }}
                 >
+                    <FirstFrame onDrawn={firstFrameDrawn} />
                     <CameraRig
                         currentTime={currentTime}
                         sequencer={seq}
@@ -457,10 +556,11 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
                 upcomingFontSize={upcomingFontSize}
                 subtitleOverlayOpacity={subtitleOverlayOpacity}
                 subtitleOverlayBackground={subtitleOverlayBackground}
+                subtitleUpcomingLyricsBlur={subtitleUpcomingLyricsBlur}
                 subtitleFontScale={subtitleFontScale}
                 isPlayerChromeHidden={isPlayerChromeHidden}
                 hideTranslationSubtitle={hideTranslationSubtitle}
-                subtitleContentMode={subtitleContentMode}
+                subtitleOverlayLayout={subtitleOverlayLayout}
             />
         </VisualizerShell>
     );

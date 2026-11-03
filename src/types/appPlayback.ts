@@ -17,10 +17,49 @@ export type PlaybackNavigationOptions = {
     shouldNavigateToPlayer?: boolean;
     unavailableSkipCount?: number;
     unifiedQueue?: SongResult[];
+    /**
+     * Set only by the automix blend's own advance. That play skips extension `beforePlay` hooks:
+     * the blend starts the arriving track on a fixed schedule, and its cancel paths assume the
+     * advance has already moved playback to that track.
+     */
+    isAutomixAdvance?: boolean;
+    /**
+     * Set only by playSong when it hands a local or Navidrome song to the library controller (playSong
+     * itself never reads it): true once a whole-queue write (a mod's replaceQueue, its undo) came while
+     * the play waited and the play's queue was the store's, so the landing leaves the new queue standing.
+     */
+    queueRewritten?: () => boolean;
+    /**
+     * Where a local or Navidrome song starts, in seconds, instead of its beginning: the web route's
+     * deck seeks there once its metadata is in, the HiFi route loads mpv there. Set by the HiFi bridge
+     * when it moves the song it was playing to the other engine (a HiFi failure, HiFi switched off, a
+     * replay after the queue ended), so the listener keeps their place. Only onPlayLocalSong and
+     * onPlayNavidromeSong read it.
+     */
+    startAtSec?: number;
+    /**
+     * false: the song is loaded and left paused, as a paused song moved to the other engine stays
+     * paused. Not given: it plays, as every play does. Only onPlayLocalSong and onPlayNavidromeSong read it.
+     */
+    autoplay?: boolean;
+    /**
+     * The play's own progress and success toasts ('loading', 'loaded') are not shown: the toast that
+     * is showing (why the song left HiFi) stays. Only onPlayLocalSong and onPlayNavidromeSong read it.
+     */
+    quietLoadedToast?: boolean;
 };
 
 export type NextTrackOptions = PlaybackNavigationOptions & {
     allowStopOnMissing?: boolean;
+    /**
+     * The track to step from, when it is deliberately NOT the one the listener can see.
+     *
+     * Next/previous normally step from the displayed track, because during a blend the queue has
+     * already advanced and `currentSong` names the song arriving rather than the one being heard.
+     * Two callers really do mean the internal one: the blend's own advance, and skipping a track
+     * that failed to play - that failure belongs to the active deck, not to what is on screen.
+     */
+    fromSong?: SongResult;
 };
 
 export type UnavailableReplacementRequest = {
@@ -31,9 +70,15 @@ export type UnavailableReplacementRequest = {
     queue: SongResult[];
     isFmCall: boolean;
     options: PlaybackNavigationOptions;
+    /**
+     * The queue and Personal FM of the moment the dialog is confirmed, when a whole-queue write came
+     * since the play that opened it and that play's queue was the store's; null otherwise, and then
+     * `queue` and `isFmCall` stand.
+     */
+    liveQueue?: () => { queue: SongResult[]; isFmCall: boolean } | null;
+    /** Personal FM was ended from outside since the play that opened it (a switch to another platform): the other version plays without it. */
+    fmEnded?: () => boolean;
 };
-
-export type SkipPromptMessageKey = 'status.songUnavailablePrompt' | 'status.playbackErrorPrompt';
 
 export type PlaybackSnapshot = {
     currentSong: SongResult | null;
@@ -62,7 +107,7 @@ export type NowPlayingClockState = {
 };
 
 export type WindowPlaybackHandoffUiState = {
-    currentView: 'home' | 'player';
+    currentView: 'home' | 'player' | 'lattice';
     playerChromeHidden: boolean;
     mainWindowBorderVisible: boolean;
     transparentModeEnabled: boolean;

@@ -1,16 +1,22 @@
-import React, { useMemo, useState, useEffect } from 'react';
-import { motion, AnimatePresence, MotionValue, Variants, useMotionValueEvent } from 'framer-motion';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { DEFAULT_CLASSIC_TUNING, Line, Theme, Word as WordType, AudioBands, type ClassicTuning } from '../../../types';
-import { getLineRenderEndTime, getLineRenderHints } from '../../../utils/lyrics/renderHints';
+import { DEFAULT_CLASSIC_TUNING, AudioBands, type ClassicTuning } from '../../../types';
+import { getLineRenderEndTime } from '../../../utils/lyrics/renderHints';
+import { resolveLyricTextDirection } from '../../../utils/lyrics/textDirection';
 import { useVisualizerRuntime } from '../runtime';
 import { type VisualizerSharedProps } from '../definition';
 import VisualizerShell from '../VisualizerShell';
 import VisualizerSubtitleOverlay from '../VisualizerSubtitleOverlay';
+import { resolveSubtitleFontSizes } from '../subtitleFontSizes';
 import { buildPostLyricLayoutUnits, buildDisplayWordsFromLayoutUnits } from '../../../utils/lyrics/cjkSemanticLayout';
-import { buildWordGraphemeTimings } from '../../../utils/lyrics/graphemeTiming';
 import { resolveThemeFontStack, resolveThemeFontWeight } from '../../../utils/fontStacks';
 import { resolveWordColor } from '../wordColoring';
+import { GlowWord } from '../GlowWord';
+import { getGlowWordLineContainerMotion, resolveGlowWordRenderProfile } from '../glowWordTiming';
+import { buildGlowWordLayoutVariants, glowWordBodyVariants } from '../glowWordVariants';
+import { getGlowWordOverflow, getGlowWordPairGap, measureGlowWordWidth as measureWordWidth, type GlowWordPlacement } from '../glowWordOverlap';
+import { OVERLAP_FIT_LINE_ATTRIBUTE, useOverlapFit } from '../useOverlapFit';
 
 // This mode is the most straightforward lyric pipeline in the folder.
 // First we ask runtime which line is active right now, then read renderHints from that line,
@@ -38,14 +44,11 @@ interface LineLayoutConfig {
     justifyContent: string;
     alignItems: string;
     perspective: number;
-}
-
-interface ClassicLineRenderProfile {
-    renderHints: NonNullable<Line['renderHints']> | null;
-    lineRenderEndTime: number;
-    lineTransitionMode: 'normal' | 'fast' | 'none';
-    wordRevealMode: 'normal' | 'fast' | 'instant';
-    wordLookahead: number;
+    /** With avoidOverlap: room between wrapped rows for the words drawn past their boxes, in px. */
+    rowGap?: number;
+    /** With avoidOverlap: how far the words reach above the first row and below the last, in px. */
+    reachTop?: number;
+    reachBottom?: number;
 }
 
 const clampClassicBreathingFloatMultiplier = (value: number) => Math.min(2, Math.max(0, value));
@@ -58,230 +61,14 @@ const resolveClassicTuning = (tuning?: ClassicTuning): ClassicTuning => ({
     ),
     useLegacyLayout: tuning?.useLegacyLayout ?? DEFAULT_CLASSIC_TUNING.useLegacyLayout,
     wordSpacing: clampClassicWordSpacing(tuning?.wordSpacing ?? DEFAULT_CLASSIC_TUNING.wordSpacing ?? 0.7),
+    avoidOverlap: tuning?.avoidOverlap ?? DEFAULT_CLASSIC_TUNING.avoidOverlap,
 });
 
 // Helper to determine if text contains CJK characters
 const isCJK = (text: string) => /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(text);
 
-const resolveClassicLineRenderProfile = (line: Line | null | undefined): ClassicLineRenderProfile | null => {
-    if (!line) {
-        return null;
-    }
-
-    // Render hints come from the lyric pipeline, not from the visualizer itself.
-    // This function is just repackaging them into something easier to consume frame-by-frame.
-    const renderHints = getLineRenderHints(line);
-    const wordRevealMode = renderHints?.wordRevealMode ?? 'normal';
-
-    return {
-        renderHints,
-        lineRenderEndTime: getLineRenderEndTime(line),
-        lineTransitionMode: renderHints?.lineTransitionMode ?? 'normal',
-        wordRevealMode,
-        wordLookahead: wordRevealMode === 'instant' ? 0.03 : wordRevealMode === 'fast' ? 0.08 : 0.15,
-    };
-};
-
-const getClassicWordActiveEndTime = (word: WordType, renderProfile: ClassicLineRenderProfile) => {
-    if (renderProfile.wordRevealMode === 'instant') {
-        return renderProfile.lineRenderEndTime;
-    }
-
-    if (renderProfile.wordRevealMode === 'fast') {
-        return Math.min(renderProfile.lineRenderEndTime, Math.max(word.endTime, word.startTime + 0.12));
-    }
-
-    return word.endTime;
-};
-
-const getClassicWordDisplayDuration = (word: WordType, renderProfile: ClassicLineRenderProfile) => {
-    const activeEndTime = getClassicWordActiveEndTime(word, renderProfile);
-    const minDuration = renderProfile.wordRevealMode === 'instant'
-        ? 0.08
-        : renderProfile.wordRevealMode === 'fast'
-            ? 0.12
-            : 0.1;
-
-    return Math.max(activeEndTime - word.startTime, minDuration);
-};
-
-const getClassicLineContainerMotion = (renderProfile: ClassicLineRenderProfile | null) => {
-    if (renderProfile?.lineTransitionMode === 'none') {
-        return {
-            initial: { opacity: 1, scale: 1, filter: 'blur(0px)' },
-            animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transitionEnd: { filter: 'none' } },
-            exit: { opacity: 0, scale: 1.02, filter: 'blur(6px)', transition: { duration: 0.12, ease: 'easeOut' as const } },
-        };
-    }
-
-    if (renderProfile?.lineTransitionMode === 'fast') {
-        return {
-            initial: { opacity: 0.35, scale: 0.96, filter: 'blur(4px)' },
-            animate: {
-                opacity: 1,
-                scale: 1,
-                filter: 'blur(0px)',
-                transition: { duration: 0.16, ease: 'easeOut' as const },
-                transitionEnd: { filter: 'none' },
-            },
-            exit: {
-                opacity: 0,
-                scale: 1.04,
-                filter: 'blur(10px)',
-                transition: { duration: 0.16, ease: 'easeInOut' as const },
-            },
-        };
-    }
-
-    return {
-        initial: { opacity: 0, scale: 0.9, filter: 'blur(10px)' },
-        animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transitionEnd: { filter: 'none' } },
-        exit: { opacity: 0, scale: 1.1, filter: 'blur(20px)', transition: { duration: 0.3 } },
-    };
-};
-
-let classicMeasureCanvas: HTMLCanvasElement | null = null;
-
-/**
- * Measures the width of a given word text using a 2D canvas context.
- */
-const measureWordWidth = (text: string, pxSize: number, fontStack: string, fontWeight: number): number => {
-    if (typeof document === 'undefined') {
-        return text.length * pxSize * 0.65;
-    }
-    if (!classicMeasureCanvas) {
-        classicMeasureCanvas = document.createElement('canvas');
-    }
-    const context = classicMeasureCanvas.getContext('2d');
-    if (!context) {
-        return text.length * pxSize * 0.65;
-    }
-    context.font = `${fontWeight} ${pxSize}px ${fontStack}`;
-    return context.measureText(text).width;
-};
-
-const Word: React.FC<{
-    word: WordType;
-    config: WordLayoutConfig;
-    currentTime: MotionValue<number>;
-    theme: Theme;
-    isChaotic: boolean;
-    layoutVariants: Variants;
-    bodyVariants: Variants;
-    glowVariants: Variants;
-    baseColor: string;
-    activeColor: string;
-    renderProfile: ClassicLineRenderProfile;
-    isChorus?: boolean;
-    fontSize: string;
-}> = ({ word, config, currentTime, theme, isChaotic, layoutVariants, bodyVariants, glowVariants, baseColor, activeColor, renderProfile, isChorus, fontSize }) => {
-    const [status, setStatus] = useState<"waiting" | "active" | "passed">("waiting");
-    const rippleScale = useMemo(() => 1.5 + Math.random() * 2, []);
-    const duration = getClassicWordDisplayDuration(word, renderProfile);
-    const activeEndTime = getClassicWordActiveEndTime(word, renderProfile);
-    const graphemeTimings = useMemo(() => buildWordGraphemeTimings(word), [word]);
-
-    useMotionValueEvent(currentTime, "change", (latest: number) => {
-        let newStatus: "waiting" | "active" | "passed" = "waiting";
-
-        if (latest >= word.startTime - renderProfile.wordLookahead && latest <= activeEndTime) {
-            newStatus = "active";
-        } else if (latest > activeEndTime) {
-            newStatus = "passed";
-        } else {
-            newStatus = "waiting";
-        }
-
-        if (newStatus !== status) {
-            setStatus(newStatus);
-        }
-    });
-
-    return (
-        <motion.div
-            key={`${config.id}`}
-            custom={{
-                config,
-                activeColor,
-                baseColor,
-                duration,
-                wordRevealMode: renderProfile.wordRevealMode,
-            }}
-            variants={layoutVariants}
-            initial="waiting"
-            animate={status}
-            // Add `whitespace-nowrap` to prevent unexpected line breaks
-            className="inline-block origin-center relative will-change-transform whitespace-nowrap"
-            style={{
-                fontSize,
-                fontWeight: resolveThemeFontWeight(theme, 700),
-                marginRight: config.marginRight,
-                alignSelf: config.alignSelf,
-                lineHeight: 1.22,
-            }}
-        >
-            {/* Glow Layer - Handles Text Shadow - Absolute Position */}
-            <span
-                className="absolute inset-0 select-none pointer-events-none block"
-                aria-hidden="true"
-            >
-                {graphemeTimings.length > 1 ? (
-                    graphemeTimings.map((timing, index) => (
-                        <motion.span
-                            key={index}
-                            variants={glowVariants}
-                            custom={{
-                                config,
-                                activeColor,
-                                baseColor,
-                                duration,
-                                index,
-                                total: graphemeTimings.length,
-                                charStartTime: timing.startTime,
-                                charEndTime: timing.endTime,
-                                wordStartTime: word.startTime,
-                                wordRevealMode: renderProfile.wordRevealMode,
-                            }}
-                        >
-                            {timing.char}
-                        </motion.span>
-                    ))
-                ) : (
-                    <motion.span
-                        variants={glowVariants}
-                        custom={{ config, activeColor, baseColor, duration, wordRevealMode: renderProfile.wordRevealMode }}
-                    >
-                        {word.text}
-                    </motion.span>
-                )}
-            </span>
-
-            {/* Body Layer - Handles Color and Blur - Relative Position */}
-            <motion.span
-                variants={bodyVariants}
-                custom={{ config, activeColor, baseColor, duration, wordRevealMode: renderProfile.wordRevealMode }}
-                className="relative z-10 block"
-            >
-                {word.text}
-            </motion.span>
-
-            {/* Chorus Ripple Effect */}
-            <AnimatePresence>
-                {isChorus && status === 'active' && (
-                    <motion.span
-                        key="ripple"
-                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[150%] aspect-square rounded-full border-1 pointer-events-none z-0"
-                        style={{ borderColor: activeColor, filter: "blur(1px)" }}
-                        initial={{ scale: 0.2, opacity: 0.8 }}
-                        animate={{ scale: rippleScale, opacity: 0 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.5, ease: "easeOut" }}
-                    />
-                )}
-            </AnimatePresence>
-        </motion.div>
-    );
-};
+/** How the shown line leaves when the text is hidden, rather than replaced by the next line. */
+const TEXT_HIDDEN_EXIT = { opacity: 0, transition: { duration: 0.2, ease: 'easeOut' as const } };
 
 const Visualizer: React.FC<VisualizerProps> = (props) => {
     const {
@@ -297,10 +84,10 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
         subtitleFontScale = 1,
         subtitleOverlayOpacity,
         subtitleOverlayBackground,
+        subtitleUpcomingLyricsBlur,
         isPlayerChromeHidden = false,
         hideTranslationSubtitle = false,
-        showSubtitleTranslation = true,
-        subtitleContentMode,
+        subtitleOverlayLayout,
         classicTuning,
     } = props;
     const { t } = useTranslation();
@@ -315,17 +102,23 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
         lines,
         getLineEndTime: getLineRenderEndTime,
     });
-    const activeLineRenderProfile = activeLine ? resolveClassicLineRenderProfile(activeLine) : null;
-    const activeWordRenderProfile = activeLineRenderProfile ?? (activeLine ? resolveClassicLineRenderProfile(activeLine) : null);
-    const activeLineContainerMotion = getClassicLineContainerMotion(activeLineRenderProfile);
+    const activeLineRenderProfile = activeLine ? resolveGlowWordRenderProfile(activeLine) : null;
+    const activeWordRenderProfile = activeLineRenderProfile ?? (activeLine ? resolveGlowWordRenderProfile(activeLine) : null);
+    const activeLineContainerMotion = getGlowWordLineContainerMotion(activeLineRenderProfile);
 
     const [viewportWidth, setViewportWidth] = useState(() => (
         typeof window === 'undefined' ? 1200 : window.innerWidth
     ));
 
+    // Only the overlap fit reads the height: a line that no longer fits a shorter window shrinks again.
+    const [viewportHeight, setViewportHeight] = useState(() => (
+        typeof window === 'undefined' ? 800 : window.innerHeight
+    ));
+
     useEffect(() => {
         const handleResize = () => {
             setViewportWidth(window.innerWidth);
+            setViewportHeight(window.innerHeight);
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -340,10 +133,18 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
         return buildDisplayWordsFromLayoutUnits(layoutUnits);
     }, [activeLine, resolvedClassicTuning.useLegacyLayout]);
 
-    const mainFontSize = `clamp(${(2.25 * lyricsFontScale).toFixed(3)}rem, ${(6 * lyricsFontScale).toFixed(3)}vw, ${(4.5 * lyricsFontScale).toFixed(3)}rem)`;
+    // With avoidOverlap the spaced-out line may outgrow the lyric area; it then shrinks to fit.
+    const lyricAreaRef = useRef<HTMLDivElement>(null);
+    const overlapFit = useOverlapFit(
+        Boolean(resolvedClassicTuning.avoidOverlap) && !resolvedClassicTuning.useLegacyLayout,
+        activeLine?.startTime,
+        lyricAreaRef,
+        [displayWords, lyricsFontScale, viewportWidth, viewportHeight, resolvedClassicTuning, theme],
+    );
+    const lineFontScale = lyricsFontScale * overlapFit;
+    const mainFontSize = `clamp(${(2.25 * lineFontScale).toFixed(3)}rem, ${(6 * lineFontScale).toFixed(3)}vw, ${(4.5 * lineFontScale).toFixed(3)}rem)`;
     const emptyFontSize = `clamp(${(1.5 * lyricsFontScale).toFixed(3)}rem, ${(3.5 * lyricsFontScale).toFixed(3)}vw, ${(2.25 * lyricsFontScale).toFixed(3)}rem)`;
-    const translationFontSize = `clamp(${(1.125 * lyricsFontScale).toFixed(3)}rem, ${(2.6 * lyricsFontScale).toFixed(3)}vw, ${(1.25 * lyricsFontScale).toFixed(3)}rem)`;
-    const upcomingFontSize = `clamp(${(0.875 * lyricsFontScale).toFixed(3)}rem, ${(2 * lyricsFontScale).toFixed(3)}vw, ${(1 * lyricsFontScale).toFixed(3)}rem)`;
+    const { translationFontSize, upcomingFontSize } = resolveSubtitleFontSizes(lyricsFontScale);
 
     // Generate a stable random layout configuration for the current line.
     // Use the line start time as seed so the same lyric does not reshuffle every rerender.
@@ -384,12 +185,36 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
             const maxPx = 4.5 * fontScale * rem;
             return Math.max(minPx, Math.min(valPx, maxPx));
         };
-        const pxFontSize = getPixelFontSize(lyricsFontScale, viewportWidth);
+        const pxFontSize = getPixelFontSize(lineFontScale, viewportWidth);
         const wordWidths = displayWords.map(w => measureWordWidth(w.text, pxFontSize, fontStack, fontWeight));
 
         const baseSpread = isChaotic ? 60 : isCalm ? 0 : 20;
         const baseRotate = isChaotic ? 30 : isCalm ? 0 : 5;
 
+        // In an RTL line the next word sits to the LEFT, so its physical x offsets close the gap the other way.
+        const rtl = resolveLyricTextDirection(activeLine.fullText) === 'rtl';
+        // avoidOverlap: each pair of neighbours is spaced by how far the two actually reach toward each
+        // other, offsets and turns included; the row gap holds the deepest reach above and below.
+        const avoidOverlap = Boolean(resolvedClassicTuning.avoidOverlap) && !resolvedClassicTuning.useLegacyLayout;
+        let rowReachTop = 0;
+        let rowReachBottom = 0;
+        // The transform word i is drawn with: its config below takes these numbers, and so do the
+        // spacing between it and its neighbours.
+        const placementOf = (i: number): Required<GlowWordPlacement> => {
+            const random = (offset: number) => {
+                const x = Math.sin(seed + i + offset) * 10000;
+                return x - Math.floor(x);
+            };
+            return {
+                width: wordWidths[i] ?? 0,
+                pose: {
+                    scale: isChaotic ? 0.8 + random(4) * 0.6 : 1.1 + random(4) * 0.2,
+                    rotate: resolvedClassicTuning.enableWordRotation ? (random(3) - 0.5) * baseRotate * 2 : 0,
+                    passedRotate: resolvedClassicTuning.enableWordRotation ? (random(8) - 0.5) * 45 : 0,
+                },
+                offset: { x: (random(1) - 0.5) * baseSpread * 2, y: (random(2) - 0.5) * baseSpread * 2 },
+            };
+        };
         const wordConfigs: WordLayoutConfig[] = displayWords.map((w, i) => {
             const wordSeed = seed + i;
 
@@ -415,9 +240,10 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
                 };
             }
 
-            const wordConfigScale = isChaotic ? 0.8 + random(4) * 0.6 : 1.1 + random(4) * 0.2;
-            const xVal = (random(1) - 0.5) * baseSpread * 2;
-            const yVal = (random(2) - 0.5) * baseSpread * 2;
+            const placement = placementOf(i);
+            const wordConfigScale = placement.pose.scale;
+            const xVal = placement.offset.x;
+            const yVal = placement.offset.y;
 
             let marginRight = isChaotic ? `${random(5) * 1.5}rem` : '0.8rem';
 
@@ -431,26 +257,33 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
                 let x_next = 0;
 
                 if (i + 1 < displayWords.length) {
-                    const nextSeed = seed + (i + 1);
-                    const nextRandom = (offset: number) => {
-                        const x = Math.sin(nextSeed + offset) * 10000;
-                        return x - Math.floor(x);
-                    };
-                    const nextConfigScale = isChaotic ? 0.8 + nextRandom(4) * 0.6 : 1.1 + nextRandom(4) * 0.2;
-                    s_next = nextConfigScale * 1.4;
-                    x_next = (nextRandom(1) - 0.5) * baseSpread * 2;
-                    w_next = wordWidths[i + 1] ?? 0;
+                    const next = placementOf(i + 1);
+                    s_next = next.pose.scale * 1.4;
+                    x_next = next.offset.x;
+                    w_next = next.width;
                 }
 
                 const spacingMultiplier = resolvedClassicTuning.wordSpacing ?? 0.7;
                 const gap = 0.05 * pxFontSize;
                 const halfOverflow_i = w_i * (s_i - 1) / 2;
                 const halfOverflow_next = w_next * (s_next - 1) / 2;
-                const xOffsetDiff = xVal - x_next;
+                const xOffsetDiff = rtl ? x_next - xVal : xVal - x_next;
 
                 const calculatedMargin = (halfOverflow_i + halfOverflow_next + xOffsetDiff + gap) * spacingMultiplier;
                 const minMargin = (isChaotic ? 0.08 * pxFontSize : 0.12 * pxFontSize) * spacingMultiplier;
-                const finalMargin = Math.max(minMargin, calculatedMargin);
+                let finalMargin = Math.max(minMargin, calculatedMargin);
+
+                if (avoidOverlap) {
+                    // The word spacing slider still widens the gap; it just can no longer close it past touching.
+                    if (i + 1 < displayWords.length) {
+                        const pairGap = getGlowWordPairGap(placement, placementOf(i + 1), pxFontSize, rtl ? 'rtl' : 'ltr');
+                        finalMargin = Math.max(finalMargin, pairGap + gap);
+                    }
+                    const overflow = getGlowWordOverflow(placement.width, pxFontSize, placement.pose, placement.offset);
+                    rowReachTop = Math.max(rowReachTop, overflow.top);
+                    rowReachBottom = Math.max(rowReachBottom, overflow.bottom);
+                }
+
                 marginRight = `${finalMargin.toFixed(1)}px`;
             }
 
@@ -458,176 +291,25 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
                 id: `${w.text}-${i}-${seed}`,
                 x: xVal,
                 y: yVal,
-                rotate: resolvedClassicTuning.enableWordRotation ? (random(3) - 0.5) * baseRotate * 2 : 0,
+                rotate: placement.pose.rotate,
                 scale: wordConfigScale,
                 marginRight,
                 alignSelf: isChaotic && random(6) > 0.7 ? (random(7) > 0.5 ? 'flex-start' : 'flex-end') : 'auto',
-                passedRotate: resolvedClassicTuning.enableWordRotation ? (random(8) - 0.5) * 45 : 0
+                passedRotate: placement.pose.passedRotate
             };
         });
 
+        if (avoidOverlap) {
+            lineConfig.rowGap = Math.ceil(rowReachTop + rowReachBottom);
+            lineConfig.reachTop = Math.ceil(rowReachTop);
+            lineConfig.reachBottom = Math.ceil(rowReachBottom);
+        }
+
         return { wordConfigs, lineConfig };
-    }, [activeLine, displayWords, resolvedClassicTuning.enableWordRotation, resolvedClassicTuning.useLegacyLayout, resolvedClassicTuning.wordSpacing, theme, lyricsFontScale, viewportWidth]);
+    }, [activeLine, displayWords, resolvedClassicTuning.enableWordRotation, resolvedClassicTuning.useLegacyLayout, resolvedClassicTuning.wordSpacing, resolvedClassicTuning.avoidOverlap, theme, lineFontScale, viewportWidth]);
 
-    // Container motion is the "body" of each word.
-    // waiting/active/passed all reuse the same layout config but interpret it differently.
-    const layoutVariants: Variants = {
-        waiting: ({ config }: any) => ({
-            opacity: 0,
-            scale: 0.5,
-            x: config.x + (Math.sin(config.y) * 100),
-            y: config.y + (Math.cos(config.x) * 50),
-            rotate: resolvedClassicTuning.enableWordRotation ? config.rotate + 20 : 0,
-            transition: { duration: 0.4 }
-        }),
-        active: ({ config }: any) => ({
-            opacity: 1,
-            scale: isNaN(config.scale) ? 1.5 : config.scale * 1.4,
-            x: config.x,
-            y: config.y,
-            rotate: config.rotate,
-            transition: {
-                type: "spring" as const,
-                stiffness: 200,
-                damping: 20,
-                opacity: { duration: 0.1 }
-            }
-        }),
-        passed: ({ config, baseColor }: any) => ({
-            opacity: theme.animationIntensity === 'chaotic' ? 0.9 : 0.82,
-            scale: config.scale || 1,
-            x: config.x,
-            y: config.y,
-            rotate: config.rotate + config.passedRotate,
-            transition: {
-                duration: 0.5,
-                rotate: {
-                    duration: 5,
-                    ease: "linear"
-                }
-            }
-        })
-    };
-
-    // Body layer is where color transition and blur cleanup happen.
-    // Glow is separated so we can overdrive highlight without making the actual glyph unreadable.
-    const bodyVariants: Variants = {
-        waiting: ({ baseColor }: any) => ({
-            color: baseColor,
-            filter: "blur(10px)",
-            transition: { duration: 0.4 }
-        }),
-        active: ({ activeColor, duration, wordRevealMode }: any) => ({
-            color: activeColor,
-            filter: "none",
-            transition: {
-                color: { duration: duration || 0.2, ease: "linear" },
-                filter: { type: "tween", duration: wordRevealMode === 'instant' ? 0.08 : wordRevealMode === 'fast' ? 0.12 : 0.2 }
-            },
-            transitionEnd: {
-                filter: "none"
-            }
-        }),
-        passed: ({ baseColor, wordRevealMode }: any) => ({
-            color: baseColor,
-            filter: "blur(0px)",
-            transition: {
-                color: { duration: wordRevealMode === 'instant' ? 0.12 : wordRevealMode === 'fast' ? 0.24 : 0.8, ease: "easeInOut" },
-                filter: { duration: wordRevealMode === 'instant' ? 0.12 : wordRevealMode === 'fast' ? 0.2 : 0.5 }
-            },
-            transitionEnd: {
-                filter: "none"
-            }
-        })
-    };
-
-    // Glow layer is transparent text + text-shadow only.
-    // This is why active highlights can look large without changing the readable body thickness.
-    const glowVariants: Variants = {
-        waiting: {
-            color: "transparent",
-            textShadow: "none",
-        },
-        active: ({ activeColor, duration, index, total, charStartTime, charEndTime, wordStartTime, wordRevealMode }: any) => {
-            if (wordRevealMode === 'instant') {
-                return {
-                    color: "transparent",
-                    textShadow: [
-                        "none",
-                        `0 0 14px ${activeColor}, 0 0 24px ${activeColor}`,
-                        "none"
-                    ],
-                    transition: {
-                        duration: Math.min(duration || 0.08, 0.12),
-                        times: [0, 0.35, 1],
-                        ease: "easeOut"
-                    }
-                };
-            }
-
-            if (wordRevealMode === 'fast') {
-                return {
-                    color: "transparent",
-                    textShadow: [
-                        "none",
-                        `0 0 18px ${activeColor}, 0 0 32px ${activeColor}`,
-                        "none"
-                    ],
-                    transition: {
-                        duration: Math.min(Math.max(duration || 0.12, 0.12), 0.2),
-                        times: [0, 0.4, 1],
-                        ease: "easeInOut"
-                    }
-                };
-            }
-
-            if (total !== undefined && total > 1) {
-                const singleDuration = duration / total;
-                const hasCharTiming = typeof charStartTime === 'number'
-                    && typeof charEndTime === 'number'
-                    && typeof wordStartTime === 'number';
-                const resolvedCharDuration = hasCharTiming ? charEndTime - charStartTime : 0;
-                const charDuration = hasCharTiming
-                    ? Math.max(resolvedCharDuration, 0.001)
-                    : singleDuration;
-                const charDelay = hasCharTiming
-                    ? Math.max(0, charStartTime - wordStartTime)
-                    : singleDuration * index;
-                return {
-                    color: "transparent",
-                    textShadow: [
-                        "none",
-                        `0 0 20px ${activeColor}, 0 0 40px ${activeColor}`,
-                        "none"
-                    ],
-                    transition: {
-                        duration: charDuration * 6, // stretch the fade over a few letters
-                        times: [0, 0.3, 1], // peak early, then fade
-                        delay: charDelay,
-                        ease: "easeInOut"
-                    }
-                };
-            }
-            return {
-                color: "transparent",
-                textShadow: [
-                    "none",
-                    `0 0 20px ${activeColor}, 0 0 40px ${activeColor}`,
-                    `0 0 20px ${activeColor}, 0 0 40px ${activeColor}`,
-                ],
-                transition: {
-                    duration: (duration || 0.1), // stretch the fade over the word duration
-                    times: [0, 0.9, 1], // peak early, then fade
-                    ease: "easeInOut"
-                }
-            };
-        },
-        passed: ({ wordRevealMode }: any) => ({
-            color: "transparent",
-            textShadow: "none",
-            transition: { duration: wordRevealMode === 'instant' ? 0.12 : wordRevealMode === 'fast' ? 0.22 : 0.9, ease: "easeOut" }
-        })
-    };
+    const layoutVariants = buildGlowWordLayoutVariants(theme.animationIntensity, resolvedClassicTuning.enableWordRotation);
+    const bodyVariants = glowWordBodyVariants;
 
     const lyricContainerFloat = useMemo(() => {
         const multiplier = resolvedClassicTuning.breathingFloatMultiplier;
@@ -667,19 +349,34 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
         >
             {/* Main Container */}
             <motion.div
+                ref={lyricAreaRef}
                 className="relative z-10 w-full h-[70vh] flex items-center justify-center p-8 pointer-events-none will-change-transform"
                 animate={lyricContainerFloat?.animate}
                 transition={lyricContainerFloat?.transition}
             >
-                <AnimatePresence mode='popLayout'>
+                {/* A line hidden because the text is (a window over the player) only fades: the next line's
+                    exit grows and blurs it, and this layer covers most of the screen. */}
+                <AnimatePresence mode='popLayout' custom={!showText}>
                     {showText && activeLine && (
                         <motion.div
                             key={activeLine.startTime}
                             initial={activeLineContainerMotion.initial}
                             animate={activeLineContainerMotion.animate}
-                            exit={activeLineContainerMotion.exit}
+                            custom={!showText}
+                            variants={{ leave: (hidden: boolean) => (hidden ? TEXT_HIDDEN_EXIT : activeLineContainerMotion.exit) }}
+                            exit="leave"
+                            // An RTL line (Uyghur, Arabic...) flows its words from the right.
+                            dir={resolveLyricTextDirection(activeLine.fullText)}
                             className={`flex flex-wrap w-full max-w-6xl content-center ${lineConfig.justifyContent} ${lineConfig.alignItems}`}
-                            style={{ perspective: `${lineConfig.perspective}px`, minHeight: '300px' }}
+                            {...{ [OVERLAP_FIT_LINE_ATTRIBUTE]: activeLine.startTime }}
+                            style={{
+                                perspective: `${lineConfig.perspective}px`,
+                                // The overlap fit measures the content: the rows are centred either way.
+                                minHeight: lineConfig.rowGap === undefined ? '300px' : undefined,
+                                rowGap: lineConfig.rowGap,
+                                paddingTop: lineConfig.reachTop,
+                                paddingBottom: lineConfig.reachBottom,
+                            }}
                         >
                             {displayWords.map((word, idx) => {
                                 const config = wordConfigs[idx] || { id: `fallback-${idx}`, x: 0, y: 0, rotate: 0, scale: 1, marginRight: '0.5rem', alignSelf: 'auto', passedRotate: 0 };
@@ -687,21 +384,20 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
                                 const activeColor = resolveWordColor(word.text, theme.wordColors, theme.accentColor);
 
                                 return (
-                                    <Word
+                                    <GlowWord
                                         key={`${word.text}-${idx}-${activeLine.startTime}`}
                                         word={word}
                                         config={config}
                                         currentTime={currentTime}
                                         theme={theme}
-                                        isChaotic={theme.animationIntensity === 'chaotic'}
                                         layoutVariants={layoutVariants}
                                         bodyVariants={bodyVariants}
-                                        glowVariants={glowVariants}
                                         baseColor={theme.primaryColor}
                                         activeColor={activeColor}
                                         renderProfile={activeWordRenderProfile!}
                                         isChorus={activeLine.isChorus}
                                         fontSize={mainFontSize}
+                                        layoutStyle={{ marginInlineEnd: config.marginRight, alignSelf: config.alignSelf }}
                                     />
                                 );
                             })}
@@ -737,11 +433,11 @@ const Visualizer: React.FC<VisualizerProps> = (props) => {
                 upcomingFontSize={upcomingFontSize}
                 subtitleOverlayOpacity={subtitleOverlayOpacity}
                 subtitleOverlayBackground={subtitleOverlayBackground}
+                subtitleUpcomingLyricsBlur={subtitleUpcomingLyricsBlur}
                 subtitleFontScale={subtitleFontScale}
                 isPlayerChromeHidden={isPlayerChromeHidden}
                 hideTranslationSubtitle={hideTranslationSubtitle}
-                showSubtitleTranslation={showSubtitleTranslation}
-                subtitleContentMode={subtitleContentMode}
+                subtitleOverlayLayout={subtitleOverlayLayout}
             />
         </VisualizerShell>
     );

@@ -156,7 +156,9 @@ export const createSonnetGuide = (
         const drawProgress = Math.min(1, Math.max(0, progress / 0.35));
         const fadeOut = 1 - Math.min(1, Math.max(0, (progress - 0.4) / 0.3));
 
-        graphics.clear();
+        // Empty already (the guide has faded out, or has not begun): clearing an empty Graphics
+        // still dirties its context and re-batches.
+        if (graphics.context.instructions.length > 0) graphics.clear();
         if (drawProgress > 0 && fadeOut > 0) {
             const steps = 20;
             let prevP = p0;

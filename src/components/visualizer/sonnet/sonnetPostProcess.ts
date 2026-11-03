@@ -87,26 +87,35 @@ export const createSonnetHaloLayer = (
     return { layer, filters };
 };
 
-export const applySonnetScenePostProcess = (
+/** The amounts the shared scene chain reads; tempera fills them from its own tuning. */
+export type SonnetPostProcessAmounts = Pick<
+    SonnetPostProcessProfile,
+    'noise' | 'contrast' | 'lensDistortion' | 'lensDispersion' | 'printEffects'
+>;
+
+/**
+ * Builds the scene post-process chain - lens, grain, contrast, then the print passes - and
+ * leaves attaching it to the caller. Shared with tempera, which sets its own pass resolution.
+ */
+export const createSonnetPostProcessFilters = (
     pixi: PixiModule,
-    container: import('pixi.js').Container,
-    profile: SonnetPostProcessProfile,
+    amounts: SonnetPostProcessAmounts,
     seed: number,
 ) => {
     const filters: import('pixi.js').Filter[] = [];
 
     // Lens curvature runs before grading and print passes so halftone/vignette follow the warped frame.
-    if (profile.lensDistortion > 0 || profile.lensDispersion > 0) {
+    if (amounts.lensDistortion > 0 || amounts.lensDispersion > 0) {
         filters.push(createSonnetLensFilter(pixi, {
-            distortion: profile.lensDistortion,
-            dispersion: profile.lensDispersion,
+            distortion: amounts.lensDistortion,
+            dispersion: amounts.lensDispersion,
         }));
     }
 
     // Noise Filter for print/film grain texture
-    if (profile.noise > 0) {
+    if (amounts.noise > 0) {
         const noise = new pixi.NoiseFilter({
-            noise: profile.noise,
+            noise: amounts.noise,
             seed: (seed % 10_000) / 10_000,
             antialias: 'on', // Filter textures skip the canvas MSAA; thin strokes need it back
         });
@@ -115,20 +124,29 @@ export const applySonnetScenePostProcess = (
 
     // ColorMatrix contrast stays opt-in (profile.contrast === 0 by default) because
     // it aliases thin background strokes — the user enables it via tuning.
-    if (profile.contrast > 0) {
+    if (amounts.contrast > 0) {
         const colorMatrix = new pixi.ColorMatrixFilter();
-        colorMatrix.contrast(profile.contrast, false);
+        colorMatrix.contrast(amounts.contrast, false);
         colorMatrix.antialias = 'on';
         filters.push(colorMatrix);
     }
 
     // Fixed print-style passes (RGB shift, halftone, dither, vignette) go last so the
     // halftone screen and vignette frame the already-graded scene.
-    const printFilters = createSonnetPrintFilters(pixi, profile.printEffects);
+    const printFilters = createSonnetPrintFilters(pixi, amounts.printEffects);
     if (printFilters.length > 0) {
         filters.push(...printFilters);
     }
+    return filters;
+};
 
+export const applySonnetScenePostProcess = (
+    pixi: PixiModule,
+    container: import('pixi.js').Container,
+    profile: SonnetPostProcessProfile,
+    seed: number,
+) => {
+    const filters = createSonnetPostProcessFilters(pixi, profile, seed);
     if (filters.length > 0) {
         container.filters = filters;
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldHoldCladdaghFrameForPlaybackReset } from '@/components/visualizer/claddagh/VisualizerCladdagh';
+import { shouldHoldCladdaghFrameForPlaybackReset } from '@/components/visualizer/claddagh/claddaghTimeline';
 
 // Keeps Claddagh from applying a reset clock to a stale final-line render.
 describe('Claddagh playback reset guard', () => {

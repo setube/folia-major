@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Play, Plus } from 'lucide-react';
+import { X, Play, Plus, NotebookPen } from 'lucide-react';
 import { List as VirtualList } from 'react-window';
 import { useTranslation } from 'react-i18next';
 import { getSizedCoverUrl } from '../../utils/coverUrl';
 import { getSongArtistLabel, getSongCoverUrl } from '../../services/onlineMusic/songMetadata';
+import { useSidePanelBottomPx } from '../../hooks/usePlayerBottomBarBottomPx';
 
 export interface SidePanelListProps<T> {
     isOpen: boolean;
@@ -15,6 +16,8 @@ export interface SidePanelListProps<T> {
     itemHeight: number;
     isDaylight: boolean;
     focusedIndex?: number;
+    /** A change of this number scrolls to the focused row again, though it is the row it was. */
+    revealTimes?: number;
     hideTitle?: boolean;
     headerLeadingActions?: React.ReactNode;
     headerActions?: React.ReactNode;
@@ -33,6 +36,7 @@ export function SidePanelList<T>({
     itemHeight,
     isDaylight,
     focusedIndex,
+    revealTimes,
     hideTitle = false,
     headerLeadingActions,
     headerActions,
@@ -41,6 +45,7 @@ export function SidePanelList<T>({
     const [listHeight, setListHeight] = useState(400);
     const listContainerRef = useRef<HTMLDivElement>(null);
     const virtualListRef = useRef<any>(null);
+    const bottomBarBottomPx = useSidePanelBottomPx();
 
     const rowProps = React.useMemo(() => ({ items, renderItem }), [items, renderItem]);
 
@@ -90,7 +95,7 @@ export function SidePanelList<T>({
             } else if (!isOpen) {
                 lastScrollTargetRef.current = null;
             }
-    }, [isOpen, focusedIndex]);
+    }, [isOpen, focusedIndex, revealTimes]);
 
     return (
         <AnimatePresence>
@@ -100,8 +105,10 @@ export function SidePanelList<T>({
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     exit={{ opacity: 0, x: 60, scale: 0.95 }}
                     transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-                    className="absolute right-6 top-24 bottom-28 sm:bottom-6 w-80 max-w-[calc(100vw-3rem)] rounded-3xl z-[80] flex flex-col p-6 shadow-2xl border backdrop-blur-2xl pointer-events-auto theme-glass-panel"
+                    data-testid="side-panel-list"
+                    className="absolute right-6 top-24 w-80 max-w-[calc(100vw-3rem)] rounded-3xl z-[80] flex flex-col p-6 shadow-2xl border backdrop-blur-2xl pointer-events-auto theme-glass-panel"
                     style={{
+                        bottom: bottomBarBottomPx,
                         boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.2)',
                         color: 'var(--text-primary)'
                     }}
@@ -158,9 +165,12 @@ export const TrackListItem = React.memo<{
     style: React.CSSProperties;
     onPlay: () => void;
     onAddToQueue?: () => void;
+    /** 收进速记簿（不动队列）；不给就没有这颗按钮。 */
+    onCollect?: () => void;
     isUnavailable?: boolean;
     isActive?: boolean;
-}>(({ track, index, style, onPlay, onAddToQueue, isUnavailable, isActive }) => {
+    albumTrackLabel?: string | null;
+}>(({ track, index, style, onPlay, onAddToQueue, onCollect, isUnavailable, isActive, albumTrackLabel }) => {
     const { t } = useTranslation();
     const coverUrl = getSongCoverUrl(track) || '';
     const artistName = getSongArtistLabel(track).split(',')[0]?.trim() || 'Unknown Artist';
@@ -196,9 +206,31 @@ export const TrackListItem = React.memo<{
                     )}
                 </div>
                 <div className="flex flex-col min-w-0 flex-1 justify-center">
-                    <div className="text-sm font-semibold truncate leading-tight">{track.name}</div>
+                    <div className="flex min-w-0 items-baseline gap-1.5 leading-tight">
+                        <span className="text-sm font-semibold truncate">{track.name}</span>
+                        {albumTrackLabel && (
+                            <span className="shrink-0 text-[10px] font-medium tabular-nums opacity-45">
+                                {albumTrackLabel}
+                            </span>
+                        )}
+                    </div>
                     <div className="text-[10px] opacity-60 truncate leading-tight mt-0.5">{artistName}</div>
                 </div>
+                {!isUnavailable && onCollect && (
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onCollect();
+                        }}
+                        className="p-2 ml-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                        title={t('scratchpad.collect')}
+                        aria-label={t('scratchpad.collect')}
+                        data-track-action="collect"
+                        style={{ color: 'var(--text-secondary)' }}
+                    >
+                        <NotebookPen size={15} />
+                    </button>
+                )}
                 {!isUnavailable && onAddToQueue && (
                     <button
                         onClick={(e) => {

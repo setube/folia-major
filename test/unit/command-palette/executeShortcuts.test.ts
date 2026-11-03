@@ -19,9 +19,50 @@ const command = (id: string, executeShortcut?: string): CommandPaletteCommand =>
     execute: () => true,
 });
 
+const scopedCommand = (
+    id: string,
+    executeShortcut: string,
+    scope: CommandPaletteCommand['scope'],
+): CommandPaletteCommand => ({ ...command(id, executeShortcut), scope });
+
 describe('execute shortcuts', () => {
     it('rejects duplicate shortcuts', () => {
         expect(() => assertExecuteShortcutsArePrefixFree([command('a', 'n'), command('b', 'n')]))
+            .toThrow(/both use execute shortcut "n"/);
+    });
+
+    it('allows a shortcut to be reused across mutually exclusive player and lattice scopes', () => {
+        expect(() => assertExecuteShortcutsArePrefixFree([
+            scopedCommand('cover', 'c', 'player-surface'),
+            scopedCommand('focus-current', 'c', 'lattice'),
+        ])).not.toThrow();
+    });
+
+    it('still rejects duplicate shortcuts within one scope', () => {
+        expect(() => assertExecuteShortcutsArePrefixFree([
+            scopedCommand('first', 'c', 'lattice'),
+            scopedCommand('second', 'c', 'lattice'),
+        ])).toThrow(/both use execute shortcut "c"/);
+    });
+
+    it('lets suite chrome share a key with lattice and the player, which need other views (B2)', () => {
+        expect(() => assertExecuteShortcutsArePrefixFree([
+            { ...scopedCommand('wall-locate', 'c', 'suite-chrome'), scopeOwner: 'wall' },
+            scopedCommand('focus-current', 'c', 'lattice'),
+            scopedCommand('cover', 'c', 'player-surface'),
+        ])).not.toThrow();
+    });
+
+    it('lets two suites share a chrome key but not one suite, nor a surface that can be on screen with it', () => {
+        const chrome = (id: string, owner: string, shortcut: string): CommandPaletteCommand => (
+            { ...scopedCommand(id, shortcut, 'suite-chrome'), scopeOwner: owner }
+        );
+        expect(() => assertExecuteShortcutsArePrefixFree([chrome('wall-a', 'wall', 'x'), chrome('tiles-a', 'tiles', 'x')])).not.toThrow();
+        expect(() => assertExecuteShortcutsArePrefixFree([chrome('wall-a', 'wall', 'x'), chrome('wall-b', 'wall', 'x')]))
+            .toThrow(/both use execute shortcut "x"/);
+        expect(() => assertExecuteShortcutsArePrefixFree([chrome('wall-a', 'wall', 'x'), scopedCommand('grid-a', 'xy', 'grid-surface')]))
+            .toThrow(/is a prefix of/);
+        expect(() => assertExecuteShortcutsArePrefixFree([chrome('wall-a', 'wall', 'n'), command('next', 'n')]))
             .toThrow(/both use execute shortcut "n"/);
     });
 

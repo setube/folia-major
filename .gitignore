@@ -40,7 +40,7 @@ test/test-song/*
 test/test-ReplayGain
 impl.md
 test-results/
-test-results/.dev-credentials
+.dev-credentials/
 .codex-remote-attachments
 test/manual/lyric-output/*
 test/manual/lyric-audit-output/*    
@@ -53,6 +53,50 @@ commit.md
 .codebuff-ai/reasson/conf.jsonc
 scripts/*
 docs/TODO.md
+design/
+plan/
+
+# Model weights: fetched and hash-verified by build/fetchModels.mjs, shipped in the installer,
+# never committed - 83MB that never changes does not belong in every clone's history.
+models/
 build/windowtolayer
 build/windowtolayer-COPYING
+build/ffmpeg/
+build/koffi/
+build/mac-helper/
+# MNN runtime library (build/buildMnnRuntime.mjs): the pinned source, its build tree, and the result.
+build/mnn/
+build/.mnn-src/
+build/.mnn-build/
+# The transcode fallback's dev slot: same binary as build/ffmpeg/<os>-<arch>, staged here so
+# `npm run dev:electron` runs the audio-only runtime the release ships instead of system PATH.
+# `ffmpeg-8.1.2/` is the mod exporters' slot and is a full build the developer supplies.
+ffmpeg-audio/
+ffmpeg-8.1.2/
 .windowtolayer-src/
+# Local reference clone of upstream main used for pollution review; never ship.
+original/
+# Local upstream implementation references used during investigation; never ship.
+reference/
+# Optional developer override for FFmpeg; packaged builds fetch their pinned runtime.
+# Local hand-made zip bundles of mods (drag-drop install test files); never ship.
+mods/*.zip
+
+
+# Built by packaging/windows/build-wallpaper-helper.mjs (Windows wallpaper mode helper).
+build/folia-wallpaper-helper.exe
+packaging/windows/wallpaper-helper/target/
+
+# Local Rust Spout sender build artifacts.
+build/folia-spout-sender.exe
+packaging/windows/spout-sender/target/
+
+# Python bytecode from the htdemucs runner, written beside it by the downloaded runtime.
+__pycache__/
+
+# Built by build/buildPythonRuntime.mjs - binary artifacts that live on the mirrors, not in git.
+dist-runtime/
+
+# 雾笺的笔顺数据（AnimCJK，Arphic Public License）不进仓库：构建时由 dev/nebbia/nebbiaStrokesPlugin.mjs 生成。
+# 旧做法手动放在 public/ 下的这份也不提交：插件生成的那份会盖住它，插件没生成时它不附授权文本
+public/nebbia-strokes.json

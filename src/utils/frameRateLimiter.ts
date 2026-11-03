@@ -89,10 +89,13 @@ export const createFrameRateLimitedRaf = (
         }
 
         lastProcessedTimestamp = timestamp;
-        const frameCallbacks = Array.from(callbacks.entries());
-        callbacks.clear();
+        const frameHandles = Array.from(callbacks.keys());
 
-        for (const [, callback] of frameCallbacks) {
+        for (const handle of frameHandles) {
+            // Match native RAF: an earlier callback may cancel a later one in the same frame.
+            const callback = callbacks.get(handle);
+            if (!callback) continue;
+            callbacks.delete(handle);
             try {
                 callback(timestamp);
             } catch (error) {
@@ -113,6 +116,10 @@ export const createFrameRateLimitedRaf = (
         },
         cancelAnimationFrame: (handle) => {
             callbacks.delete(handle);
+            if (callbacks.size === 0 && nativeFrameHandle !== null) {
+                nativeCancelAnimationFrame(nativeFrameHandle);
+                nativeFrameHandle = null;
+            }
         },
         setFrameRate: (nextFrameRate) => {
             frameRate = nextFrameRate;
@@ -146,6 +153,20 @@ export const setGlobalVisualizerFrameRate = (frameRate: VisualizerFrameRate) => 
     }
 
     installedLimiter.setFrameRate(frameRate);
+};
+
+// Asks for the display's next frame, past the cap. For work that has to land in the same frame as
+// something the cap does not hold back: a library that took `requestAnimationFrame` before the cap
+// was switched on (framer-motion does, when its module loads) keeps running on every display frame.
+export const requestUncappedAnimationFrame = (callback: AnimationFrameCallback): number => {
+    const frameWindow = window as WindowWithVisualizerFrameRateLimiter;
+    return (frameWindow.__foliaNativeRequestAnimationFrame ?? window.requestAnimationFrame).call(window, callback);
+};
+
+// Cancels a frame asked for with `requestUncappedAnimationFrame`.
+export const cancelUncappedAnimationFrame = (handle: number) => {
+    const frameWindow = window as WindowWithVisualizerFrameRateLimiter;
+    (frameWindow.__foliaNativeCancelAnimationFrame ?? window.cancelAnimationFrame).call(window, handle);
 };
 
 export const restoreGlobalVisualizerFrameRateLimiter = () => {

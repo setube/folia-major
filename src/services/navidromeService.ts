@@ -35,6 +35,10 @@ import md5 from 'blueimp-md5';
 const CONFIG_KEY = 'navidrome_config';
 const ENABLED_KEY = 'navidrome_enabled';
 const SERVER_PROFILE_KEY = 'navidrome_server_profile';
+// 配置从哪来：'server' 表示 Docker 预置写入的，缺省是用户自己填的。预置只覆盖前者。
+const CONFIG_ORIGIN_KEY = 'navidrome_config_origin';
+// 用户在这个浏览器里清除过配置：之后不再自动套用 Docker 预置，免得刚登出一刷新又登回去。
+const PRESET_DISMISSED_KEY = 'navidrome_server_preset_dismissed';
 const MAX_STABLE_URL_SALT_CACHE_ENTRIES = 512;
 type SubsonicParamPrimitive = string | number | boolean;
 type SubsonicParamValue = SubsonicParamPrimitive | SubsonicParamPrimitive[];
@@ -62,17 +66,39 @@ export const getNavidromeConfig = (): NavidromeConfig | null => {
     return null;
 };
 
+export type NavidromeConfigOrigin = 'manual' | 'server';
+
+export const hasNavidromeEnabledPreference = (): boolean => localStorage.getItem(ENABLED_KEY) !== null;
+
+export const getNavidromeConfigOrigin = (): NavidromeConfigOrigin => (
+    localStorage.getItem(CONFIG_ORIGIN_KEY) === 'server' ? 'server' : 'manual'
+);
+
+export const isNavidromeServerPresetDismissed = (): boolean => localStorage.getItem(PRESET_DISMISSED_KEY) === 'true';
+
 // Save configuration
-export const saveNavidromeConfig = (config: NavidromeConfig): void => {
+export const saveNavidromeConfig = (config: NavidromeConfig, origin: NavidromeConfigOrigin = 'manual'): void => {
     clearStableUrlSaltCache();
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    if (origin === 'server') {
+        localStorage.setItem(CONFIG_ORIGIN_KEY, 'server');
+    } else {
+        localStorage.removeItem(CONFIG_ORIGIN_KEY);
+    }
+    localStorage.removeItem(PRESET_DISMISSED_KEY);
 };
 
 // Clear configuration
 export const clearNavidromeConfig = (): void => {
     clearStableUrlSaltCache();
     localStorage.removeItem(CONFIG_KEY);
+    localStorage.removeItem(CONFIG_ORIGIN_KEY);
     clearNavidromeServerProfile();
+};
+
+// 只给设置页「清除」按钮用：用户主动登出才算放弃预置，程序内部的清除不该连带关掉它。
+export const dismissNavidromeServerPreset = (): void => {
+    localStorage.setItem(PRESET_DISMISSED_KEY, 'true');
 };
 
 export const getCachedNavidromeServerProfile = (): NavidromeServerProfile | null => {
@@ -427,7 +453,8 @@ export const navidromeApi = {
         return false;
     },
 
-    getRandomSongs: async (config: NavidromeConfig, size: number = 100): Promise<SubsonicSong[]> => {
+    // null when the songs could not be read; an empty list is the server saying there are none.
+    getRandomSongs: async (config: NavidromeConfig, size: number = 100): Promise<SubsonicSong[] | null> => {
         try {
             const res = await fetchSubsonic<RandomSongsResponse>(config, 'getRandomSongs', {
                 size: size.toString(),
@@ -438,10 +465,11 @@ export const navidromeApi = {
         } catch (e) {
             console.error('[Navidrome] getRandomSongs failed:', e);
         }
-        return [];
+        return null;
     },
 
-    getStarred2: async (config: NavidromeConfig): Promise<SubsonicSong[]> => {
+    // null when the songs could not be read; an empty list is the server saying there are none.
+    getStarred2: async (config: NavidromeConfig): Promise<SubsonicSong[] | null> => {
         try {
             const res = await fetchSubsonic<Starred2Response>(config, 'getStarred2');
             if (res['subsonic-response'].status === 'ok') {
@@ -450,7 +478,7 @@ export const navidromeApi = {
         } catch (e) {
             console.error('[Navidrome] getStarred2 failed:', e);
         }
-        return [];
+        return null;
     },
 
     // Star a song on the Navidrome server
@@ -667,6 +695,10 @@ export const navidromeApi = {
                 path: song.path,
                 bitRate: song.bitRate,
                 suffix: song.suffix,
+                contentType: song.contentType,
+                bitDepth: song.bitDepth,
+                samplingRate: song.samplingRate,
+                channelCount: song.channelCount,
                 starred: song.starred,
                 replayGain: song.replayGain,
             },

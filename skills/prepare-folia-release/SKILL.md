@@ -39,7 +39,8 @@ Use the desktop target version consistently:
 1. In `src/components/modal/newFeaturesRelease.ts`:
    - set `i18nKey` to `releaseNotes.vA_B_C`;
    - replace the feature cards with the selected release items;
-   - reuse suitable `lucide-react` icons and remove only imports made unused by this edit.
+   - reuse suitable `lucide-react` icons and remove only imports made unused by this edit;
+   - for a major (codenamed) update the user names, set `majorUpdate: { codename: '<Name>' }` so the intro shows the "<Name> Update · major update" label (text in `help.majorUpdateLabel`, codename untranslated), and also name the update in each locale's `intro` (precedent: 0.7.1 Pleiades, 0.7.17 Spica); otherwise remove `majorUpdate`.
 2. In every locale returned by `rg -l '"releaseNotes"' src/i18n/locales`:
    - add a new `vA_B_C` object without deleting historical releases;
    - add `intro` plus matching `title` and `description` keys for every card ID;

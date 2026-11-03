@@ -1,6 +1,7 @@
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
 import 'pixi.js/advanced-blend-modes';
 import type { Theme } from '../../../types';
+import { resolveGlowColorStrength } from '../colorMix';
 import { buildSonnetGlyphLayout } from './sonnetGlyphLayout';
 import { resolveSonnetSegmentDepth, resolveSonnetSegmentNormalOffset } from './sonnetMotion';
 import { hashSonnetSeed } from './sonnetRandom';
@@ -33,6 +34,9 @@ export interface GlyphGhostView {
 export interface GlyphView {
     display: import('pixi.js').Container;
     halo: import('pixi.js').Text | null;
+    // Lives in the shot's shared aberration layer, not under `display`; the runtime copies the
+    // wrapper's transform onto it each frame.
+    caWrapper?: import('pixi.js').Container;
     caCyan?: import('pixi.js').Text;
     caRed?: import('pixi.js').Text;
     caOffset?: number;
@@ -87,6 +91,8 @@ interface SonnetTextViewOptions {
     guideLayer: import('pixi.js').Container;
     haloLayer: import('pixi.js').Container;
     textLayer: import('pixi.js').Container;
+    /** Child of `textLayer`, below every glyph wrapper; see sonnetSceneBuilder. */
+    caLayer: import('pixi.js').Container;
 }
 
 export const measureText = (text: string, fontSpec: string, fontSize: number) => {
@@ -143,10 +149,17 @@ export const buildSonnetTextView = (
     const blurAmount = Math.abs(zDepth) * fontSize * 0.12;
     const isBlurry = blurAmount > 2;
 
-    const baseDropShadow = options.glowEnabled && !isDecoration ? {
+    const hasGlow = options.glowEnabled && !isDecoration;
+    const glowBlur = Math.max(12, fontSize * 0.18);
+    let glowStrength = 0;
+    if (hasGlow) {
+        const glowRgb = pixi.Color.shared.setValue(glowColor);
+        glowStrength = resolveGlowColorStrength(glowRgb.red * 255, glowRgb.green * 255, glowRgb.blue * 255);
+    }
+    const baseDropShadow = glowStrength > 0 ? {
         color: glowColor,
-        alpha: 0.8,
-        blur: Math.max(12, fontSize * 0.18),
+        alpha: 0.8 * glowStrength,
+        blur: glowBlur,
         distance: 0,
     } : undefined;
 
@@ -158,7 +171,8 @@ export const buildSonnetTextView = (
         stroke: isDecoration ? { color: glowColor, width: Math.max(1, Math.min(8, fontSize * 0.006)) } : undefined,
         align: 'center',
         dropShadow: baseDropShadow,
-        padding: baseDropShadow ? Math.max(20, baseDropShadow.blur * 2.5) : 0,
+        // Keep the glyph bounds stable when only the glow color becomes dark.
+        padding: hasGlow ? Math.max(20, glowBlur * 2.5) : 0,
     });
 
     // Semi-hero echo ghosts: hollow (stroke-only) copies that split along the
@@ -249,6 +263,7 @@ export const buildSonnetTextView = (
         wrapper.alpha = 0;
 
         // Chromatic Aberration (Dispersion) Effect
+        let caWrapperNode: import('pixi.js').Container | undefined;
         let caCyanNode: import('pixi.js').Text | undefined;
         let caRedNode: import('pixi.js').Text | undefined;
         let caOffsetValue: number | undefined;
@@ -270,7 +285,13 @@ export const buildSonnetTextView = (
             caRed.anchor.set(0.5);
             caRed.alpha = isHero ? 0.8 : 0.5;
 
-            wrapper.addChild(caCyan, caRed);
+            const caWrapper = new pixi.Container();
+            caWrapper.rotation = wrapper.rotation;
+            caWrapper.position.copyFrom(wrapper.position);
+            caWrapper.alpha = 0;
+            caWrapper.addChild(caCyan, caRed);
+            options.caLayer.addChild(caWrapper);
+            caWrapperNode = caWrapper;
             caCyanNode = caCyan;
             caRedNode = caRed;
         }
@@ -305,6 +326,7 @@ export const buildSonnetTextView = (
         return {
             display: wrapper,
             halo: null,
+            caWrapper: caWrapperNode,
             caCyan: caCyanNode,
             caRed: caRedNode,
             caOffset: caOffsetValue,

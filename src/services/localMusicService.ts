@@ -2,10 +2,10 @@ import { LocalSong, LyricData, LocalLibrarySnapshot, LocalLibrarySnapshotFile, L
 import { saveLocalSong, saveLocalSongs, deleteLocalSong as dbDeleteLocalSong, deleteLocalSongs as dbDeleteLocalSongs, saveDirHandles, getDirHandles, deleteDirHandle, getLocalSongs, getLocalLibrarySnapshot, saveLocalLibrarySnapshot, deleteLocalLibrarySnapshot } from './db';
 import { getLocalPlaylists, saveLocalPlaylists } from './localPlaylistService';
 import { parseEmbeddedMetadataAsync, type EmbeddedMetadataResult } from '../utils/localMetadataWorkerClient';
-import { useSettingsUiStore } from '../stores/useSettingsUiStore';
 import { autoMatchBestLyric } from '../utils/lyrics/autoMatchBestLyric';
 import { normalizeLyricMatchText } from '../utils/lyrics/matchScore';
 import { createSafeObjectUrl } from '../utils/blobGuards';
+import { repairFlacMetadata } from '../utils/flacMetadataRepair';
 import { resolveExplicitFileTimedLyricFormat, type ExplicitFileTimedLyricFormat } from '../utils/lyrics/formatDetection';
 import { applyMatchedMetadata } from './localLibraryCatalogService';
 import { buildLyricSearchQuery } from '../utils/lyrics/searchQuery';
@@ -26,11 +26,15 @@ import { hasLocalCoverBinary } from './localCoverBinaryStore';
 import { hasLocalSongCover } from '../utils/localSongCover';
 import { createFoliaIgnoreMatcher, isIgnoredByFoliaMatchers, type FoliaIgnoreMatcher } from '../utils/foliaIgnore';
 import { getLocalLibraryAvailability } from './localLibraryAvailability';
+import { useLyricSettingsStore } from '../stores/useLyricSettingsStore';
+import { getLocalLyricFilePriority, isSameLocalLyricFormatOrder, normalizeLocalLyricFormatOrder, type LocalLyricFileFormat } from '../utils/lyrics/localLyricFormatOrder';
+import { readLyricFile } from '../utils/lyrics/lyricFileDecoding';
+import { isLocalFolderIgnored, normalizeLocalFolderPath, runLocalFolderMutation, setLocalFolderIgnored } from './localLibraryFolderIgnore';
 
 
 type EmbeddedMetadata = EmbeddedMetadataResult;
 
-const EMBEDDED_METADATA_VERSION = 5;
+export const EMBEDDED_METADATA_VERSION = 7;
 
 interface ImportPreparationMetrics {
     getFileMs: number;
@@ -46,6 +50,8 @@ interface FileEntryForImport {
     file: File;
     folderName: string;
     relativePath: string;
+    // A sidecar lyric file of this track was added or modified on disk since the last scan.
+    sidecarLyricFilesChanged?: boolean;
 }
 
 interface LocalLyricFileCandidate {
@@ -79,11 +85,16 @@ interface ImportDiffPlan {
 // In-memory storage for hot-path access. Persistent recovery uses directory handles from IndexedDB.
 const fileHandleMap = new Map<string, FileSystemFileHandle>();
 const localCoverAssetRequestMap = new Map<string, Promise<LocalSong>>();
-const AUDIO_EXTENSIONS = /\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i;
-const LYRIC_EXTENSIONS = /\.(lrc|vtt|ttml|qrc|yrc|krc)$/i;
+// 解析过、确认没有内嵌封面的文件：歌曲 id → 当时文件的「大小:修改时间」。没封面时没有可落库的东西，
+// 不记下来的话每次播放都要在出声前把文件重新解析一遍。文件被替换后大小或修改时间变了，就会重新解析。
+const songsWithoutEmbeddedCover = new Map<string, string>();
+const BROWSER_AUDIO_EXTENSIONS = /\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i;
+const ELECTRON_FALLBACK_AUDIO_EXTENSIONS = /\.(alac|ape|wv|tta|wma|aif|aiff|caf|dsf|dff)$/i;
+const KNOWN_AUDIO_EXTENSIONS = /\.(mp3|flac|m4a|wav|ogg|opus|aac|alac|ape|wv|tta|wma|aif|aiff|caf|dsf|dff)$/i;
+const LYRIC_EXTENSIONS = /\.(lrc|vtt|ttml|qrc|yrc|krc|fia)$/i;
 const TRANSLATION_LYRIC_EXTENSIONS = /\.t\.(lrc|vtt)$/i;
 const IMPORT_CONCURRENCY = 6;
-const LOCAL_MUSIC_UPDATED_EVENT = 'folia-local-music-updated';
+export const LOCAL_MUSIC_UPDATED_EVENT = 'folia-local-music-updated';
 export const LOCAL_MUSIC_SCAN_PROGRESS_EVENT = 'folia-local-music-scan-progress';
 const HYDRATION_BATCH_SIZE = 25;
 const HYDRATION_REFRESH_EVERY = 100;
@@ -205,7 +216,7 @@ function generateId(): string {
 // Expected format: "Artist - Title.mp3", "Artist-Title.mp3", or "Title.mp3".
 export function extractMetadataFromFilename(fileName: string): { title?: string; artist?: string; } {
     // 去掉扩展名
-    let nameWithoutExt = fileName.replace(/\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i, '');
+    let nameWithoutExt = fileName.replace(KNOWN_AUDIO_EXTENSIONS, '');
 
     // 去掉开头的cue切分产生的序号 "01. ", "01 - ", or "1-01 " 
     nameWithoutExt = nameWithoutExt.replace(/^\d{1,3}(?:[-.]\d{1,3})?(?:\s*[-.]\s*|\s+)/, '');
@@ -242,9 +253,10 @@ export function extractMetadataFromFilename(fileName: string): { title?: string;
 
 // Get audio duration from file
 async function getAudioDuration(file: File): Promise<number> {
+    const playbackInput = await repairFlacMetadata(file, true);
     return new Promise((resolve) => {
         const audio = new Audio();
-        const url = createSafeObjectUrl(file);
+        const url = createSafeObjectUrl(playbackInput);
         if (!url) {
             resolve(0);
             return;
@@ -265,39 +277,22 @@ async function getAudioDuration(file: File): Promise<number> {
     });
 }
 
+function canImportElectronFallbackAudio(): boolean {
+    return typeof window !== 'undefined' && typeof window.electron?.requestTranscodeFallback === 'function';
+}
+
 function isAudioFile(file: File): boolean {
-    return file.type.startsWith('audio/') || AUDIO_EXTENSIONS.test(file.name);
+    return BROWSER_AUDIO_EXTENSIONS.test(file.name)
+        || (canImportElectronFallbackAudio() && ELECTRON_FALLBACK_AUDIO_EXTENSIONS.test(file.name));
 }
 
 function isAudioFileName(fileName: string): boolean {
-    return AUDIO_EXTENSIONS.test(fileName);
+    return BROWSER_AUDIO_EXTENSIONS.test(fileName)
+        || (canImportElectronFallbackAudio() && ELECTRON_FALLBACK_AUDIO_EXTENSIONS.test(fileName));
 }
 
 function getFolderCoverPriority(fileName: string): number {
     return PREFERRED_FOLDER_COVER_FILES.indexOf(fileName.toLowerCase());
-}
-
-function getTimedLyricPriority(fileName: string): number {
-    const lowerName = fileName.toLowerCase();
-    if (lowerName.endsWith('.t.lrc') || lowerName.endsWith('.lrc')) {
-        return 0;
-    }
-    if (lowerName.endsWith('.t.vtt') || lowerName.endsWith('.vtt')) {
-        return 1;
-    }
-    if (lowerName.endsWith('.ttml')) {
-        return 2;
-    }
-    if (lowerName.endsWith('.qrc')) {
-        return 3;
-    }
-    if (lowerName.endsWith('.yrc')) {
-        return 4;
-    }
-    if (lowerName.endsWith('.krc')) {
-        return 5;
-    }
-    return Number.MAX_SAFE_INTEGER;
 }
 
 function getParentRelativePath(relativePath: string): string {
@@ -306,16 +301,49 @@ function getParentRelativePath(relativePath: string): string {
 }
 
 function getAudioBasePath(relativePath: string): string {
-    return relativePath.replace(AUDIO_EXTENSIONS, '');
+    return relativePath.replace(KNOWN_AUDIO_EXTENSIONS, '');
 }
 
 function getSidecarLyricBasePath(relativePath: string, kind: 'lyric' | 'translationLyric'): string {
     const withoutLyricSuffix = kind === 'translationLyric'
         ? relativePath.replace(/\.t\.(lrc|vtt)$/i, '')
-        : relativePath.replace(/\.(lrc|vtt|ttml|qrc|yrc|krc)$/i, '');
+        : relativePath.replace(/\.(lrc|vtt|ttml|qrc|yrc|krc|fia)$/i, '');
 
     // Support both "track.lrc" and "track.mp3.lrc" style sidecar lyrics.
     return getAudioBasePath(withoutLyricSuffix);
+}
+
+// Sidecar lyric base paths whose winning file differs between two format orders. Only these
+// tracks need their lyrics re-read after the user reorders formats.
+function collectLyricBasePathsAffectedByFormatOrder(
+    files: LocalLibrarySnapshotFile[],
+    previousOrder: readonly LocalLyricFileFormat[],
+    nextOrder: readonly LocalLyricFileFormat[],
+): Set<string> {
+    const pickWinners = (order: readonly LocalLyricFileFormat[]) => {
+        const winners = new Map<string, { relativePath: string; priority: number; }>();
+        files.forEach((file) => {
+            if (file.kind !== 'lyric' && file.kind !== 'translationLyric') {
+                return;
+            }
+            const key = `${file.kind}:${getSidecarLyricBasePath(file.relativePath, file.kind)}`;
+            const priority = getLocalLyricFilePriority(file.name, order);
+            const existing = winners.get(key);
+            if (!existing || priority < existing.priority) {
+                winners.set(key, { relativePath: file.relativePath, priority });
+            }
+        });
+        return winners;
+    };
+
+    const previousWinners = pickWinners(previousOrder);
+    const affected = new Set<string>();
+    pickWinners(nextOrder).forEach((winner, key) => {
+        if (previousWinners.get(key)?.relativePath !== winner.relativePath) {
+            affected.add(key.slice(key.indexOf(':') + 1));
+        }
+    });
+    return affected;
 }
 
 function getSnapshotFileKind(fileName: string): LocalLibrarySnapshotFile['kind'] {
@@ -416,6 +444,7 @@ async function buildSnapshotTree(
     rootFolderName: string,
     inheritedIgnoreMatchers: readonly FoliaIgnoreMatcher[],
     filesByPath = new Map<string, SnapshotTraversalFile>(),
+    ignoredFolderPaths: ReadonlySet<string> = new Set(),
 ): Promise<SnapshotTraversalResult> {
     const files: LocalLibrarySnapshotFile[] = [];
     const children: LocalLibrarySnapshotNode[] = [];
@@ -464,6 +493,10 @@ async function buildSnapshotTree(
         }
 
         const entryPath = `${currentPath}/${entry.name}`;
+        if (entry.kind === 'directory' && ignoredFolderPaths.has(entryPath)) {
+            children.push({ name: entry.name, relativePath: entryPath, ignored: true, hash: '', files: [], children: [] });
+            continue;
+        }
         const importRelativePath = entryPath.startsWith(`${rootFolderName}/`)
             ? entryPath.slice(rootFolderName.length + 1)
             : entryPath;
@@ -481,6 +514,7 @@ async function buildSnapshotTree(
                     rootFolderName,
                     ignoreMatchers,
                     filesByPath,
+                    ignoredFolderPaths,
                 );
                 children.push(childResult.tree);
                 relevantFileCount += childResult.relevantFileCount;
@@ -561,12 +595,16 @@ async function collectImportDiffPlan(
     rootFolderName: string,
     dirHandle: FileSystemDirectoryHandle,
     existingSongs: LocalSong[],
-    previousSnapshot: LocalLibrarySnapshot | null
+    previousSnapshot: LocalLibrarySnapshot | null,
+    lyricFormatOrder: LocalLyricFileFormat[]
 ): Promise<ImportDiffPlan> {
-    const traversalResult = await buildSnapshotTree(dirHandle, rootFolderName, rootFolderName, []);
+    const ignoredFolderPaths = previousSnapshot?.ignoredFolderPaths || [];
+    const traversalResult = await buildSnapshotTree(dirHandle, rootFolderName, rootFolderName, [], new Map(), new Set(ignoredFolderPaths));
     const snapshot: LocalLibrarySnapshot = {
         rootFolderName,
         scannedAt: Date.now(),
+        ignoredFolderPaths,
+        lyricFormatOrder,
         tree: traversalResult.tree
     };
 
@@ -576,7 +614,22 @@ async function collectImportDiffPlan(
     const currentAudioPaths = new Set<string>();
     const changedAudioPaths = new Set<string>();
     const changedLyricBasePaths = new Set<string>();
+    // Subset of changedLyricBasePaths whose files changed on disk, as opposed to only being
+    // re-ranked by a format order change. Only these may replace lyrics the user uploaded.
+    const lyricFileChangedBasePaths = new Set<string>();
     const changedCoverFolders = new Set<string>();
+    // Built in the same pass over the current files, so mapping a changed sidecar or folder cover
+    // back to its tracks is a lookup instead of a scan of the whole library per path.
+    const audioPathsByBasePath = new Map<string, string[]>();
+    const audioPathsByFolder = new Map<string, string[]>();
+    const appendToGroup = (groups: Map<string, string[]>, key: string, value: string) => {
+        const group = groups.get(key);
+        if (group) {
+            group.push(value);
+        } else {
+            groups.set(key, [value]);
+        }
+    };
     const lyricCandidates = new Map<string, { file: File; priority: number; format?: ExplicitFileTimedLyricFormat; }>();
     const translationLyricCandidates = new Map<string, { file: File; priority: number; }>();
     const coverCandidates = new Map<string, { file: File; priority: number; }>();
@@ -587,6 +640,8 @@ async function collectImportDiffPlan(
 
         if (file.kind === 'audio') {
             currentAudioPaths.add(file.relativePath);
+            appendToGroup(audioPathsByBasePath, getAudioBasePath(file.relativePath), file.relativePath);
+            appendToGroup(audioPathsByFolder, getParentRelativePath(file.relativePath), file.relativePath);
             if (hasChanged || !existingSongsByPath.has(file.relativePath)) {
                 changedAudioPaths.add(file.relativePath);
             }
@@ -596,12 +651,20 @@ async function collectImportDiffPlan(
         if (hasChanged && (file.kind === 'lyric' || file.kind === 'translationLyric')) {
             const basePath = getSidecarLyricBasePath(file.relativePath, file.kind);
             changedLyricBasePaths.add(basePath);
+            lyricFileChangedBasePaths.add(basePath);
         }
 
         if (file.kind === 'cover' && hasChanged) {
             changedCoverFolders.add(getParentRelativePath(file.relativePath));
         }
     });
+
+    // Snapshots written before the order became configurable were scanned with the default order.
+    const previousLyricFormatOrder = normalizeLocalLyricFormatOrder(previousSnapshot?.lyricFormatOrder);
+    if (previousSnapshot && !isSameLocalLyricFormatOrder(previousLyricFormatOrder, lyricFormatOrder)) {
+        collectLyricBasePathsAffectedByFormatOrder(Array.from(currentFiles.values()), previousLyricFormatOrder, lyricFormatOrder)
+            .forEach(basePath => changedLyricBasePaths.add(basePath));
+    }
 
     const previousAudioPaths = Array.from(previousFiles.values())
         .filter(file => file.kind === 'audio')
@@ -616,13 +679,9 @@ async function collectImportDiffPlan(
         }
     });
 
+    // "Track.mp3" and "Track.flac" share one sidecar, so every track with that base path is rebuilt.
     changedLyricBasePaths.forEach(basePath => {
-        const audioFile = Array.from(currentFiles.values()).find(file =>
-            file.kind === 'audio' && getAudioBasePath(file.relativePath) === basePath
-        );
-        if (audioFile) {
-            changedAudioPaths.add(audioFile.relativePath);
-        }
+        audioPathsByBasePath.get(basePath)?.forEach(audioPath => changedAudioPaths.add(audioPath));
     });
 
     previousFiles.forEach((file) => {
@@ -632,11 +691,7 @@ async function collectImportDiffPlan(
     });
 
     changedCoverFolders.forEach(folderPath => {
-        currentFiles.forEach(file => {
-            if (file.kind === 'audio' && getParentRelativePath(file.relativePath) === folderPath) {
-                changedAudioPaths.add(file.relativePath);
-            }
-        });
+        audioPathsByFolder.get(folderPath)?.forEach(audioPath => changedAudioPaths.add(audioPath));
     });
 
     const changedEntries: FileEntryForImport[] = [];
@@ -657,7 +712,7 @@ async function collectImportDiffPlan(
 
         if (snapshotFile.kind === 'lyric' || snapshotFile.kind === 'translationLyric') {
             const baseName = getSidecarLyricBasePath(snapshotFile.relativePath, snapshotFile.kind);
-            const priority = getTimedLyricPriority(snapshotFile.name);
+            const priority = getLocalLyricFilePriority(snapshotFile.name, lyricFormatOrder);
             const format = resolveExplicitFileTimedLyricFormat(snapshotFile.name);
 
             if (snapshotFile.kind === 'translationLyric') {
@@ -701,7 +756,8 @@ async function collectImportDiffPlan(
                 handle: traversedFile.handle,
                 file: traversedFile.file,
                 folderName,
-                relativePath: snapshotFile.relativePath
+                relativePath: snapshotFile.relativePath,
+                sidecarLyricFilesChanged: lyricFileChangedBasePaths.has(getAudioBasePath(snapshotFile.relativePath)),
             });
             continue;
         }
@@ -761,20 +817,29 @@ async function buildImportedSong(
     let localLyricsFormat: ExplicitFileTimedLyricFormat | undefined;
     let localTranslationLyricsContent: string | undefined;
     const lyricReadStartedAt = performance.now();
+    // Uploaded lyrics survive rescans (including a format order change) until a sidecar lyric of
+    // this track changes on disk: whichever explicit action is newer wins.
+    const keepUploadedLyrics = existingSong?.localLyricsOrigin === 'upload' && !entry.sidecarLyricFilesChanged;
+    const keepUploadedTranslation = existingSong?.localTranslationLyricsOrigin === 'upload' && !entry.sidecarLyricFilesChanged;
 
-    if (lrcMap.has(baseName)) {
+    if (keepUploadedLyrics) {
+        localLyricsContent = existingSong?.localLyricsContent;
+        localLyricsFormat = existingSong?.localLyricsFormat;
+    } else if (lrcMap.has(baseName)) {
         try {
             const lyricCandidate = lrcMap.get(baseName)!;
-            localLyricsContent = await lyricCandidate.file.text();
+            localLyricsContent = await readLyricFile(lyricCandidate.file);
             localLyricsFormat = lyricCandidate.format;
         } catch (e) {
             console.error(`[LocalMusic] Failed to read local lyric for ${file.name}`, e);
         }
     }
 
-    if (tlrcMap.has(baseName)) {
+    if (keepUploadedTranslation) {
+        localTranslationLyricsContent = existingSong?.localTranslationLyricsContent;
+    } else if (tlrcMap.has(baseName)) {
         try {
-            localTranslationLyricsContent = await tlrcMap.get(baseName)!.text();
+            localTranslationLyricsContent = await readLyricFile(tlrcMap.get(baseName)!);
         } catch (e) {
             console.error(`[LocalMusic] Failed to read local translation lyric for ${file.name}`, e);
         }
@@ -858,8 +923,10 @@ async function buildImportedSong(
         hasLocalLyrics: !!localLyricsContent,
         localLyricsContent,
         localLyricsFormat: localLyricsContent ? localLyricsFormat : undefined,
+        localLyricsOrigin: localLyricsContent ? (keepUploadedLyrics ? 'upload' : 'sidecar') : undefined,
         hasLocalTranslationLyrics: !!localTranslationLyricsContent,
         localTranslationLyricsContent,
+        localTranslationLyricsOrigin: localTranslationLyricsContent ? (keepUploadedTranslation ? 'upload' : 'sidecar') : undefined,
         hasEmbeddedLyrics: !!embeddedMetadata.lyrics,
         embeddedLyricsContent: embeddedMetadata.lyrics,
         hasEmbeddedTranslationLyrics: !!embeddedMetadata.translationLyrics,
@@ -871,6 +938,7 @@ async function buildImportedSong(
         replayGainAlbumPeak: embeddedMetadata.replayGainAlbumPeak,
         matchedLyrics: existingSong?.matchedLyrics,
         matchedIsPureMusic: existingSong?.matchedIsPureMusic,
+        markedPureMusic: existingSong?.markedPureMusic,
         matchedLyricsSongId: existingSong?.matchedLyricsSongId,
         matchedLyricsSource: existingSong?.matchedLyricsSource,
         matchedLyricsProviderPlatform: existingSong?.matchedLyricsProviderPlatform,
@@ -918,6 +986,9 @@ async function hydrateSongMetadata(song: LocalSong): Promise<LocalSong> {
 
         song.duration = embeddedMetadata.duration || song.duration || 0;
         song.fileSize = file.size;
+        // Kept in step with fileSize: buildLocalSourceRevision reads both, so refreshing only one
+        // makes every cached playback representation look stale and re-transcode on each play.
+        song.fileLastModified = file.lastModified;
         song.mimeType = file.type;
         song.bitrate = embeddedMetadata.bitrate || song.bitrate || 0;
         const filenameMetadata = extractMetadataFromFilename(file.name);
@@ -956,7 +1027,10 @@ async function hydrateSongMetadata(song: LocalSong): Promise<LocalSong> {
     return song;
 }
 
+const removedRootGenerations = new Map<string, number>();
+
 async function hydrateImportedSongsInBackground(rootFolderName: string, songs: LocalSong[]) {
+    const rootGeneration = removedRootGenerations.get(rootFolderName);
     const hydrationStartedAt = performance.now();
     const pendingBatch: LocalSong[] = [];
     let savedCount = 0;
@@ -980,7 +1054,12 @@ async function hydrateImportedSongsInBackground(rootFolderName: string, songs: L
 
         const batch = pendingBatch.splice(0, pendingBatch.length);
         const currentFlush = (async () => {
-            await saveLocalSongs(batch);
+            await runLocalFolderMutation(async () => {
+                if (removedRootGenerations.get(rootFolderName) !== rootGeneration) return;
+                const ignoredPaths = (await getLocalLibrarySnapshot(rootFolderName))?.ignoredFolderPaths || [];
+                const visibleBatch = batch.filter(song => !isLocalFolderIgnored(song.folderName || song.filePath, ignoredPaths));
+                if (visibleBatch.length > 0) await saveLocalSongs(visibleBatch);
+            });
             savedCount += batch.length;
             if (forceNotify || savedCount % HYDRATION_REFRESH_EVERY === 0 || savedCount === songs.length) {
                 notifyLocalMusicUpdated();
@@ -1043,11 +1122,19 @@ async function hydrateImportedSongsInBackground(rootFolderName: string, songs: L
 
 // Import folder using File System Access API (if supported)
 export async function importFolder(expectedRootName?: string): Promise<LocalSong[]> {
+    // Request access in the user gesture before waiting for other library writes.
     try {
         const dirHandle = await getImportDirectoryHandle(expectedRootName);
-        if (!dirHandle) {
-            return [];
-        }
+        if (!dirHandle) return [];
+        return await runLocalFolderMutation(() => importFolderContents(dirHandle, expectedRootName));
+    } catch (error) {
+        if ((error as Error).name === 'AbortError') return [];
+        throw error;
+    }
+}
+
+async function importFolderContents(dirHandle: FileSystemDirectoryHandle, expectedRootName?: string): Promise<LocalSong[]> {
+    try {
         const importStartedAt = performance.now();
 
         let rootFolderName = expectedRootName || dirHandle.name;
@@ -1089,7 +1176,13 @@ export async function importFolder(expectedRootName?: string): Promise<LocalSong
             song.folderName === rootFolderName || (song.folderName && song.folderName.startsWith(`${rootFolderName}/`))
         );
         const previousSnapshot = await getLocalLibrarySnapshot(rootFolderName);
-        const diffPlan = await collectImportDiffPlan(rootFolderName, dirHandle, existingRootSongs, previousSnapshot);
+        const diffPlan = await collectImportDiffPlan(
+            rootFolderName,
+            dirHandle,
+            existingRootSongs,
+            previousSnapshot,
+            useLyricSettingsStore.getState().localLyricFormatOrder
+        );
         console.log(`[LocalMusic][Import] Traversed ${diffPlan.relevantFileCount} relevant files in ${formatImportDuration(performance.now() - traversalStartedAt)}.`);
 
         // Save directory handle for persistence after a successful scan plan is built
@@ -1235,7 +1328,9 @@ function isTitleMatch(localTitle: string, searchTitle: string): boolean {
 
 // Match lyrics for a local song using search API, respecting the configured local/online priority.
 export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
-    if (song.matchedIsPureMusic && !shouldRefreshLocalSongLyricsFromMetadata(song)) {
+    // 用户标记的纯音乐不再自动匹配；与在线判定的纯音乐一样，连带的封面自动匹配也跳过。
+    // 下面每次写回都带 skipIfMarkedPureMusic：匹配途中才标上的，写回时在事务里按库里的最新记录放弃。
+    if (song.markedPureMusic || (song.matchedIsPureMusic && !shouldRefreshLocalSongLyricsFromMetadata(song))) {
         return null;
     }
     try {
@@ -1250,14 +1345,14 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
             (song.hasLocalLyrics && song.localLyricsContent)
             || (song.hasEmbeddedLyrics && song.embeddedLyricsContent)
         );
-        const settings = useSettingsUiStore.getState();
-        const onlineFirst = settings.localLyricsPriority === 'online';
+  const settingsLyricSettings = useLyricSettingsStore.getState();
+        const onlineFirst = settingsLyricSettings.localLyricsPriority === 'online';
 
         console.log(`[LocalMusic] Searching lyrics for: "${searchQuery}"`);
 
         // A selected GridView metadata identity is authoritative and must not be replaced by lyric fallback metadata.
         if (!hasLocalOrEmbeddedLyrics || onlineFirst) {
-            const shouldUseBestLyric = settings.autoUseBestLyric;
+            const shouldUseBestLyric = settingsLyricSettings.autoUseBestLyric;
             if (shouldUseBestLyric || matchContext.metadataCandidate) {
                 const bestMatch = await autoMatchBestLyric(
                     matchContext.title,
@@ -1265,7 +1360,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
                     matchContext.durationMs,
                     {
                         album: matchContext.album,
-                        preferredSource: shouldUseBestLyric ? settings.preferredAlternativeLyricSource : undefined,
+                        preferredSource: shouldUseBestLyric ? settingsLyricSettings.preferredAlternativeLyricSource : undefined,
                         metadataCandidate: matchContext.metadataCandidate,
                         exactMatchOnly: Boolean(matchContext.metadataCandidate && !shouldUseBestLyric),
                     },
@@ -1276,7 +1371,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
                     song.matchedLyrics = undefined;
                     song.matchedLyricsSongId = bestMatch.id ?? matchContext.metadataCandidate?.songId;
                     song.matchedLyricsSource = bestMatch.source ?? matchContext.metadataCandidate?.source;
-                    await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song });
+                    await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song, skipIfMarkedPureMusic: true });
                     return null;
                 }
 
@@ -1288,7 +1383,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
                     song.matchedIsPureMusic = false;
 
                     if (matchContext.metadataCandidate) {
-                        await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song });
+                        await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song, skipIfMarkedPureMusic: true });
                         return bestMatch.lyrics;
                     }
 
@@ -1316,6 +1411,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
                             useOnlineCover: Boolean(coverUrl && !hasLocalSongCover(song)),
                         },
                         protectOrigins: ['manual', 'manual-match', 'split'],
+                        skipIfMarkedPureMusic: true,
                     });
                     return bestMatch.lyrics;
                 }
@@ -1361,6 +1457,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
             }, {
                 songPatch: { ...song, useOnlineCover: Boolean(coverUrl && !hasLocalSongCover(song)) },
                 protectOrigins: ['manual', 'manual-match', 'split'],
+                skipIfMarkedPureMusic: true,
             });
 
             // Return null to indicate no NEW lyrics were fetched (local lyrics are used)
@@ -1377,7 +1474,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
         song.matchedIsPureMusic = processed.isPureMusic;
 
         if (matchContext.metadataCandidate) {
-            await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song });
+            await applyMatchedMetadata(song.id, {}, { lyricsOnly: true, songPatch: song, skipIfMarkedPureMusic: true });
             return processed.lyrics;
         }
 
@@ -1392,6 +1489,7 @@ export async function matchLyrics(song: LocalSong): Promise<LyricData | null> {
         }, {
             songPatch: { ...song, useOnlineCover: Boolean(coverUrl && !hasLocalSongCover(song)) },
             protectOrigins: ['manual', 'manual-match', 'split'],
+            skipIfMarkedPureMusic: true,
         });
         return processed.lyrics;
     } catch (error) {
@@ -1490,6 +1588,7 @@ async function getAccessibleFileHandle(song: LocalSong): Promise<FileSystemFileH
 }
 
 async function cleanupDirHandleIfUnused(rootFolderName: string): Promise<void> {
+    if ((await getLocalLibrarySnapshot(rootFolderName))?.ignoredFolderPaths?.length) return;
     const allSongs = await getLocalSongs();
     const stillUsed = allSongs.some(song => {
         const songRoot = getRootFolderName(song);
@@ -1511,7 +1610,7 @@ export async function getAudioFromLocalSong(song: LocalSong): Promise<string | n
     if (fileHandle) {
         try {
             const file = await fileHandle.getFile();
-            return createSafeObjectUrl(file);
+            return await getAudioFromFile(file);
         } catch (error) {
             console.error('[LocalMusic] Failed to get file from handle:', error);
             // File may have been moved or the stored handle may have become stale.
@@ -1523,7 +1622,7 @@ export async function getAudioFromLocalSong(song: LocalSong): Promise<string | n
     if (recoveredHandle) {
         try {
             const file = await recoveredHandle.getFile();
-            return createSafeObjectUrl(file);
+            return await getAudioFromFile(file);
         } catch (error) {
             console.error('[LocalMusic] Failed to get file from recovered directory handle:', error);
             fileHandleMap.delete(song.id);
@@ -1535,14 +1634,66 @@ export async function getAudioFromLocalSong(song: LocalSong): Promise<string | n
     return null;
 }
 
+/** Resolves the current File for playback recovery without changing the song or minting a URL. */
+export async function getFileFromLocalSong(song: LocalSong): Promise<File | null> {
+    const fileHandle = await getAccessibleFileHandle(song);
+    if (fileHandle) {
+        try {
+            return await fileHandle.getFile();
+        } catch (error) {
+            console.warn(`[LocalMusic] Failed to read local recovery input for ${song.id}:`, error);
+            fileHandleMap.delete(song.id);
+        }
+    }
+
+    const recoveredHandle = await recoverFileHandleFromPersistedDirectory(song);
+    if (!recoveredHandle) return null;
+    try {
+        return await recoveredHandle.getFile();
+    } catch (error) {
+        console.warn(`[LocalMusic] Failed to read recovered local input for ${song.id}:`, error);
+        fileHandleMap.delete(song.id);
+        return null;
+    }
+}
+
+/**
+ * The local file's raw bytes, for callers that need the audio itself rather than a URL to it.
+ *
+ * Automix separation is the caller: it must not mint a blob URL only to read it once and then have to
+ * revoke it, and a local file never enters the online media cache, so its bytes are reachable only
+ * from its own handle. Mirrors getAudioFromLocalSong's resolution (accessible handle, else a recover)
+ * but returns the ArrayBuffer. Null when no handle can be reached - permission not restored, or moved.
+ */
+export async function getLocalSongArrayBuffer(song: LocalSong): Promise<ArrayBuffer | null> {
+    const fileHandle = await getAccessibleFileHandle(song);
+    if (!fileHandle) {
+        console.warn(`[LocalMusic] No accessible handle for song ${song.id} (automix bytes)`);
+        return null;
+    }
+    try {
+        return await (await fileHandle.getFile()).arrayBuffer();
+    } catch (error) {
+        console.error('[LocalMusic] Failed to read local bytes:', error);
+        fileHandleMap.delete(song.id);
+        return null;
+    }
+}
+
 // Extracts and persists one song's embedded cover after an explicit playback-time request.
 async function extractAndPersistSongCover(
     song: LocalSong,
     fileHandle: FileSystemFileHandle,
 ): Promise<LocalSong> {
     const file = await fileHandle.getFile();
+    const fileRevision = `${file.size}:${file.lastModified}`;
+    if (songsWithoutEmbeddedCover.get(song.id) === fileRevision) return song;
     const metadata = await extractEmbeddedMetadata(file, true);
-    if (!metadata.cover || !metadata.coverAssetId) return song;
+    if (!metadata.cover || !metadata.coverAssetId) {
+        songsWithoutEmbeddedCover.set(song.id, fileRevision);
+        return song;
+    }
+    songsWithoutEmbeddedCover.delete(song.id);
     stageLocalCoverAsset(metadata.coverAssetId, metadata.cover);
 
     const updatedSong: LocalSong = {
@@ -1595,7 +1746,7 @@ export async function ensureLocalSongCoverAsset(song: LocalSong): Promise<LocalS
 
 // Get audio blob from File object (for file input imports)
 export async function getAudioFromFile(file: File): Promise<string> {
-    const url = createSafeObjectUrl(file);
+    const url = createSafeObjectUrl(await repairFlacMetadata(file, true));
     if (!url) throw new TypeError('Local audio source must be a File or Blob');
     return url;
 }
@@ -1615,6 +1766,7 @@ export async function deleteSongsByIds(songIds: string[]): Promise<void> {
     uniqueSongIds.forEach(id => {
         fileHandleMap.delete(id);
         localCoverAssetRequestMap.delete(id);
+        songsWithoutEmbeddedCover.delete(id);
     });
     await Promise.all([
         dbDeleteLocalSongs(uniqueSongIds),
@@ -1627,9 +1779,14 @@ export async function deleteSongsByIds(songIds: string[]): Promise<void> {
 }
 
 // Removes an imported root from the app, including empty roots, without deleting disk files.
-export async function removeImportedRoot(rootFolderName: string): Promise<void> {
-    const normalizedRoot = rootFolderName.split('/')[0]?.trim();
+export function removeImportedRoot(rootFolderName: string): Promise<void> {
+    return runLocalFolderMutation(() => removeImportedRootContents(rootFolderName));
+}
+
+async function removeImportedRootContents(rootFolderName: string): Promise<void> {
+    const normalizedRoot = normalizeLocalFolderPath(rootFolderName).split('/')[0];
     if (!normalizedRoot) return;
+    removedRootGenerations.set(normalizedRoot, (removedRootGenerations.get(normalizedRoot) || 0) + 1);
 
     const allSongs = await getLocalSongs();
     const songIds = allSongs
@@ -1670,10 +1827,11 @@ function getLocalSongRootFolderName(song: LocalSong): string | null {
 // Resyncs all imported local roots once, even when the song list contains nested folders.
 export async function resyncAllFolders(): Promise<LocalSong[] | null> {
     const allSongs = await getLocalSongs();
+    const handles = await getDirHandles();
     const rootFolderNames = Array.from(new Set(
-        allSongs
+        [...Object.keys(handles), ...allSongs
             .map(getLocalSongRootFolderName)
-            .filter((rootFolderName): rootFolderName is string => Boolean(rootFolderName))
+            .filter((rootFolderName): rootFolderName is string => Boolean(rootFolderName))]
     ));
 
     if (rootFolderNames.length === 0) {
@@ -1689,8 +1847,26 @@ export async function resyncAllFolders(): Promise<LocalSong[] | null> {
     return importedSongs;
 }
 
+// Clear the app's ignore flag and rescan immediately; disk ignore rules still apply.
+export async function clearFolderIgnore(folderName: string): Promise<void> {
+    const rootFolderName = normalizeLocalFolderPath(folderName).split('/')[0];
+    const dirHandle = await getImportDirectoryHandle(rootFolderName);
+    if (!dirHandle) return;
+    return runLocalFolderMutation(async () => {
+        await setLocalFolderIgnored(folderName, false);
+        await importFolderContents(dirHandle, rootFolderName);
+    });
+}
+
 // Delete all songs from a specific folder (and its nested children)
-export async function deleteFolderSongs(folderName: string): Promise<void> {
+export function deleteFolderSongs(folderName: string): Promise<void> {
+    return runLocalFolderMutation(() => deleteFolderContents(folderName));
+}
+
+async function deleteFolderContents(folderName: string): Promise<void> {
+    folderName = normalizeLocalFolderPath(folderName);
+    if (!folderName.includes('/')) return removeImportedRootContents(folderName);
+    await setLocalFolderIgnored(folderName, true);
     // Get all local songs
     const allSongs = await getLocalSongs();
 
@@ -1703,15 +1879,13 @@ export async function deleteFolderSongs(folderName: string): Promise<void> {
     songIdsToDelete.forEach(id => {
         fileHandleMap.delete(id);
         localCoverAssetRequestMap.delete(id);
+        songsWithoutEmbeddedCover.delete(id);
     });
     await Promise.all([
         dbDeleteLocalSongs(songIdsToDelete),
         ...songIdsToDelete.map(id => removeCachedCover(`cover_local_${id}`)),
     ]);
     await removeDeletedSongIdsFromPlaylists(songIdsToDelete);
-
-    const rootFolderName = folderName.split('/')[0];
-    await cleanupDirHandleIfUnused(rootFolderName);
 
     notifyLocalMusicUpdated();
     console.log(`[LocalMusic] Deleted ${songsToDelete.length} songs from folder tree: ${folderName}`);

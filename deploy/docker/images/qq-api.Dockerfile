@@ -1,7 +1,6 @@
 FROM node:24-alpine
 
 WORKDIR /app
-ENV NODE_ENV=production
 ENV PORT=3000
 ENV QQ_AUTH_STATE_PATH=/app/.auth-state/qq-device.json
 
@@ -11,6 +10,7 @@ COPY deploy/docker/qq-api/package.json deploy/docker/qq-api/package-lock.json ./
 RUN npm ci --omit=dev
 RUN mkdir -p /app/.auth-state && chown node:node /app/.auth-state
 
+ENV NODE_ENV=production
 USER node
 EXPOSE 3000
 
